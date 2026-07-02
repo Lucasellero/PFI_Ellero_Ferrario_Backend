@@ -1,8 +1,11 @@
 pyyaml>=6.0
-# Dependencias de vlm/ (CLIP via ONNX):
+# Dependencias de vlm/ (CLIP via ONNX, opcional — sin esto el runner
+# corre solo con pose estimation, sin clasificación de actividad):
 onnxruntime>=1.17.0
 Pillow>=10.0.0
-# El resto ya están en vision/requirements.txt:
-#   ultralytics>=8.3.0
-#   opencv-python>=4.10.0
-#   numpy>=1.26
+# runner/ importa código de vision/ y events/ directamente (no como paquetes
+# instalados), así que también hace falta instalar sus requirements:
+#   pip install -r ../vision/requirements.txt   (ultralytics, opencv-python, numpy)
+#   pip install -r ../events/requirements.txt   (pydantic)
+# Y, para que CLIP funcione, generar los modelos ONNX una vez en dev:
+#   cd ../vlm && pip install -r requirements-export.txt && python export_onnx.py

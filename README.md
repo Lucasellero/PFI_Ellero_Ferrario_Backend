@@ -20,26 +20,38 @@ adelante, un stream RTSP en vivo.
 ## Arquitectura (fase local)
 
 ```
-videos/ (dataset)
+videos/ (dataset) ──┐
+cameras.yaml (streams en vivo) ──► runner/ (orquesta N cámaras en paralelo)
+    │                                  │
+    │                     por cámara: ├──► vision/  (pose estimation, caídas e inmovilidad — YOLOv11n-pose)
+    │                                  └──► vlm/     (clasificación semántica de actividad — CLIP, consulta periódica)
+    │                                            │
+    │                                            ▼
+    │                                        events/  (esquema de evento común + SQLite)
+    │                                            │
+    │                                            ▼
+    │                                        baseline/ (clustering dinámico → línea base → detección de desvíos)
     │
-    ├──► vision/  (pose estimation, detección de caídas e inmovilidad — YOLOv11n-pose)
-    │        │
-    ├──► vlm/     (clasificación semántica de actividades — VLM local, consulta periódica)
-    │        │
-    │        ▼
-    │    events/  (esquema de evento común + almacenamiento local en SQLite)
-    │        │
-    │        ▼
-    │    baseline/ (clustering dinámico → línea base de comportamiento → detección de desvíos)
+    ├──► vision/main.py / vlm/main.py (modo batch, sin runner/, para procesar el dataset de una)
     │
     └──► evaluation/ (validación cualitativa: video anotado, inspección manual — no hay ground truth todavía)
+
+dashboard/ (panel web: arranca/para runner/, gestiona cameras.yaml, muestra eventos y preview en vivo)
 ```
 
-`vision/` y `vlm/` son independientes entre sí (ambos leen `videos/` y
-escriben a `events/`). `baseline/` depende únicamente de que existan eventos
-en el store, no del código interno de `vision/` o `vlm/`. Esto es
-intencional: son las líneas de trabajo pensadas para desarrollarse en
-paralelo (ver más abajo).
+`vision/` y `vlm/` son independientes entre sí (ambos leen frames y escriben
+a `events/`). `baseline/` depende únicamente de que existan eventos en el
+store, no del código interno de `vision/` o `vlm/`. Esto es intencional: son
+las líneas de trabajo pensadas para desarrollarse en paralelo (ver más
+abajo).
+
+`runner/` es la forma de correr `vision/` + `vlm/` juntos sobre varias
+fuentes en simultáneo (archivos en loop o streams RTSP/HTTP/webcam), pensada
+para la fase con cámaras reales. `vision/main.py` y `vlm/main.py` siguen
+existiendo como scripts batch independientes para procesar el dataset de
+`videos/` de una sola vez, sin pasar por `runner/`. `dashboard/` es la capa
+de operación sobre `runner/`: no duplica lógica de detección, solo la
+orquesta (arranca el subproceso) y visualiza lo que hay en `events/`.
 
 ## Dataset de video
 
@@ -67,6 +79,8 @@ rompe a todos los módulos que dependen de él.
 | `events/` | Esquema común + almacenamiento local (SQLite) | [events/README.md](events/README.md) |
 | `baseline/` | Línea base de comportamiento (clustering dinámico) + detección de desvíos | [baseline/README.md](baseline/README.md) |
 | `evaluation/` | Validación cualitativa (video anotado, inspección manual) | [evaluation/README.md](evaluation/README.md) |
+| `runner/` | Orquesta `vision/` + `vlm/` sobre N cámaras (archivo o stream en vivo) en paralelo | [runner/README.md](runner/README.md) |
+| `dashboard/` | Panel web: arranca/para `runner/`, gestiona `cameras.yaml`, eventos y preview en vivo | [dashboard/README.md](dashboard/README.md) |
 
 ## Cómo trabajar en paralelo (varias sesiones de Claude Code)
 
@@ -84,7 +98,12 @@ rompe a todos los módulos que dependen de él.
    virtual. `vision/`, `vlm/` y `baseline/` **no se importan código entre
    sí** — la única comunicación entre ellos es a través de `events/`, que sí
    está pensado para ser importado directamente (como librería local, sin
-   servidor) por cualquiera de los tres.
+   servidor) por cualquiera de los tres. La única excepción es `runner/`,
+   que sí importa `vision/` y `vlm/` directamente para correrlos juntos por
+   cámara (ver `runner/README.md`) — es orquestación, no lógica de
+   detección duplicada. `dashboard/` no importa código de detección de
+   ninguno de los tres: solo lanza `runner/` como subproceso y lee
+   `events/` para mostrar resultados.
 
 ## Setup general
 
@@ -107,13 +126,21 @@ comandos) en su README.
       que muestren la transición completa parado→cayendo→acostado, no los
       clips cortos usados para calibrar la postura — hay un dataset más
       grande disponible para esta etapa.
-- [ ] `vlm/`: clasificación de actividades con consultas periódicas a un VLM
-      local open-source.
-- [ ] `events/`: store local funcionando end-to-end (ya con esquema listo).
+- [x] `vlm/`: clasificación de actividades vía CLIP (zero-shot, prompt
+      ensembling sobre las 14 actividades del dataset), exportado a ONNX
+      para correr sin PyTorch en el Pi (ver `vlm/README.md`). Modo batch
+      (`vlm/main.py`) sobre el dataset y modo en vivo (vía `runner/`).
+- [x] `events/`: store local funcionando end-to-end (SQLite).
+- [x] `runner/` + `dashboard/`: orquestación multi-cámara (archivo o stream
+      en vivo) y panel web de control — primera versión de la migración a
+      ingesta en vivo (ver más abajo), corriendo todavía sobre PC de
+      desarrollo, no sobre Raspberry Pi.
 - [ ] `baseline/`: clustering dinámico + detección de desvíos (Snoun et al.
       2024).
 - [ ] `evaluation/`: exportar video anotado para inspección visual.
-- [ ] *(fase futura, no ahora)* migrar `vision/` a ingesta RTSP + despliegue
-      en Raspberry Pi 5.
+- [ ] *(fase futura, no ahora)* desplegar `runner/` en Raspberry Pi 5 (el
+      código ya soporta streams RTSP/webcam vía `cameras.yaml`, falta
+      validar en el hardware real).
 - [ ] *(fase futura, no ahora)* exponer `events/` + `baseline/` vía API
-      (FastAPI) para una futura app móvil.
+      (FastAPI) para una futura app móvil — separado de `dashboard/`, que es
+      panel de operación local, no la API pública del sistema final.

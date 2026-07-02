@@ -8,10 +8,23 @@ al de pose estimation) sobre frames muestreados de un video, y genera una
 descripción textual + etiqueta de actividad (ej. "cocinando", "mirando
 televisión", "leyendo").
 
+## Dos modos de uso
+
+- **Batch** (`vlm/main.py`): procesa un archivo o todo `../videos/` de una
+  sola vez, muestreando cada `--interval` segundos. Pensado para el dataset
+  grabado.
+- **En vivo** (vía `../runner/`): `runner/camera_worker.py` importa
+  `ClipActivityClassifier` directamente y lo corre sobre cada cámara
+  configurada en `cameras.yaml`, clasificando cada `clip_interval_s`
+  segundos en paralelo con la detección de pose. Ver `../runner/README.md`.
+  Requiere haber generado los modelos ONNX primero (ver Setup abajo) — si no
+  están, `runner/` sigue funcionando pero sin clasificación de actividad.
+
 ## Entrada
 
-Un archivo de video en `../videos/<nombre>.mp4`. Se muestrea un frame cada
-N segundos (configurable) en vez de procesar todos los frames.
+Un archivo de video en `../videos/<nombre>.mp4` (modo batch) o un frame en
+vivo de `../runner/` (modo en vivo). Se muestrea un frame cada N segundos
+(configurable) en vez de procesar todos los frames.
 
 ## Salida
 
