@@ -1,0 +1,1555 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Monitor de Actividad</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0d1117;
+      --surface:  #161b22;
+      --surface2: #1c2128;
+      --border:   #30363d;
+      --primary:  #4d8bf8;
+      --success:  #3fb950;
+      --danger:   #f85149;
+      --warning:  #d29922;
+      --text:     #c9d1d9;
+      --muted:    #6e7681;
+      --mono:     'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font-size: 13px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Header ─────────────────────────────────────────────────────────── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 18px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-shrink: 0;
+      user-select: none;
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 700;
+      font-size: 14px;
+      color: var(--text);
+    }
+    .logo-icon { font-size: 18px; }
+    .logo-sub { font-size: 11px; font-weight: 400; color: var(--muted); margin-top: 1px; }
+
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      transition: all 0.2s;
+    }
+    .status-pill.stopped {
+      background: rgba(110,118,129,.12);
+      color: var(--muted);
+      border: 1px solid rgba(110,118,129,.25);
+    }
+    .status-pill.running {
+      background: rgba(63,185,80,.12);
+      color: var(--success);
+      border: 1px solid rgba(63,185,80,.3);
+    }
+    .status-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      flex-shrink: 0;
+    }
+    .status-pill.running .status-dot { animation: blink 2s ease-in-out infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.35} }
+
+    .spacer { flex: 1; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all .15s;
+      white-space: nowrap;
+    }
+    .btn:disabled { opacity: .4; cursor: not-allowed; pointer-events: none; }
+
+    .btn-start {
+      background: var(--success);
+      color: #0d1117;
+      border-color: var(--success);
+    }
+    .btn-start:hover { background: #45c55a; }
+
+    .btn-stop {
+      background: transparent;
+      color: var(--danger);
+      border-color: rgba(248,81,73,.4);
+    }
+    .btn-stop:hover { background: rgba(248,81,73,.1); }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--muted);
+      border-color: var(--border);
+    }
+    .btn-ghost:hover { color: var(--text); border-color: var(--muted); }
+
+    .btn-primary {
+      background: var(--primary);
+      color: #fff;
+      border-color: var(--primary);
+    }
+    .btn-primary:hover { background: #3a7ae0; }
+
+    .btn-sm { padding: 4px 10px; font-size: 11px; }
+
+    /* ── Main grid ───────────────────────────────────────────────────────── */
+    main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    /* ── Left panel ──────────────────────────────────────────────────────── */
+    .left-panel {
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .section {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .section.grow { flex: 1; overflow: hidden; min-height: 0; }
+
+    .section-label {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    /* Camera cards */
+    .camera-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      overflow-y: auto;
+      flex: 1;
+      min-height: 0;
+      padding-right: 2px;
+    }
+    .camera-list::-webkit-scrollbar { width: 4px; }
+    .camera-list::-webkit-scrollbar-track { background: transparent; }
+    .camera-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    .cam-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 9px 11px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      cursor: pointer;
+      transition: border-color .15s, background .15s;
+    }
+    .cam-card:hover { border-color: var(--muted); }
+    .cam-card.selected {
+      border-color: var(--primary);
+      background: rgba(77,139,248,.08);
+    }
+
+    .cam-icon {
+      width: 30px; height: 30px;
+      border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 15px;
+      flex-shrink: 0;
+    }
+    .cam-icon.ip     { background: rgba(77,139,248,.15); }
+    .cam-icon.video  { background: rgba(63,185,80,.15); }
+    .cam-info { flex: 1; min-width: 0; }
+    .cam-id { font-weight: 600; font-size: 12px; }
+    .cam-src {
+      font-size: 11px; color: var(--muted);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .cam-badge {
+      font-size: 10px; font-weight: 700; padding: 2px 6px;
+      border-radius: 4px; flex-shrink: 0;
+    }
+    .cam-badge.ip    { background: rgba(77,139,248,.15); color: var(--primary); }
+    .cam-badge.video { background: rgba(63,185,80,.15); color: var(--success); }
+
+    .btn-icon {
+      background: none; border: none; cursor: pointer; padding: 4px;
+      border-radius: 4px; color: var(--muted); font-size: 14px; line-height: 1;
+      flex-shrink: 0;
+    }
+    .btn-icon:hover { color: var(--danger); background: rgba(248,81,73,.1); }
+
+    .empty-state { color: var(--muted); font-size: 12px; padding: 6px 0; }
+
+    /* Add-camera buttons row */
+    .add-btns { display: flex; gap: 6px; }
+    .add-btns .btn { flex: 1; }
+
+    /* Add-camera form */
+    .add-form {
+      display: none;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .add-form.open { display: flex; }
+
+    .tab-row {
+      display: flex;
+      background: var(--border);
+      border-radius: 6px;
+      padding: 2px;
+      gap: 2px;
+    }
+    .tab-btn {
+      flex: 1; padding: 5px; border: none; background: transparent;
+      color: var(--muted); font-size: 11px; font-weight: 600; cursor: pointer;
+      border-radius: 4px; transition: all .15s;
+    }
+    .tab-btn.active { background: var(--surface); color: var(--text); }
+
+    .field { display: flex; flex-direction: column; gap: 4px; }
+    .field label { font-size: 10px; font-weight: 600; color: var(--muted); letter-spacing: .05em; }
+    .field input, .field select {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 9px;
+      color: var(--text);
+      font-size: 12px;
+      outline: none;
+      width: 100%;
+    }
+    .field input:focus, .field select:focus { border-color: var(--primary); }
+    .field select option { background: var(--surface2); }
+
+    .check-row {
+      display: flex; align-items: center; gap: 7px;
+      font-size: 11px; color: var(--muted); cursor: pointer;
+    }
+    .check-row input[type=checkbox] { accent-color: var(--primary); cursor: pointer; }
+
+    .form-actions { display: flex; gap: 6px; margin-top: 2px; }
+    .form-actions .btn { flex: 1; }
+
+    /* Upload */
+    .drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: 8px;
+      padding: 18px 12px;
+      text-align: center;
+      cursor: pointer;
+      transition: all .15s;
+      color: var(--muted);
+    }
+    .drop-zone:hover, .drop-zone.drag-over {
+      border-color: var(--primary);
+      background: rgba(77,139,248,.05);
+      color: var(--text);
+    }
+    .drop-icon { font-size: 22px; margin-bottom: 6px; }
+    .drop-hint { font-size: 11px; line-height: 1.5; }
+
+    .upload-row {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .upload-row.visible { display: flex; }
+    .prog-bar { flex: 1; height: 3px; background: var(--border); border-radius: 3px; overflow: hidden; }
+    .prog-fill { height: 100%; background: var(--primary); border-radius: 3px; transition: width .3s; }
+
+    .upload-done { font-size: 11px; color: var(--success); display: flex; align-items: center; gap: 5px; }
+
+    /* ── Right panel ─────────────────────────────────────────────────────── */
+    .right-panel {
+      display: grid;
+      grid-template-rows: auto 1fr 180px;
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    /* ── View header ─────────────────────────────────────────────────────── */
+    .view-header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 8px 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .view-toggle {
+      display: flex;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .view-btn {
+      padding: 5px 14px;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all .15s;
+      white-space: nowrap;
+    }
+    .view-btn.active { background: var(--primary); color: #fff; }
+    .view-btn:not(.active):hover { color: var(--text); }
+
+    .selected-cam-info {
+      display: none;
+      align-items: center;
+      gap: 6px;
+    }
+    .selected-cam-info.visible { display: flex; }
+    .selected-cam-pill {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--primary);
+      background: rgba(77,139,248,.12);
+      border: 1px solid rgba(77,139,248,.3);
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+
+    .counter {
+      font-size: 10px;
+      background: var(--border);
+      padding: 2px 7px;
+      border-radius: 10px;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .counter.has-events { background: rgba(77,139,248,.2); color: var(--primary); }
+
+    /* ── Content area ────────────────────────────────────────────────────── */
+    .content-area {
+      overflow: hidden;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Multi view ──────────────────────────────────────────────────────── */
+    #multiView {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    .video-grid-wrap {
+      flex: 1.4;
+      overflow-y: auto;
+      overflow-x: hidden;
+      min-height: 0;
+      padding: 10px;
+    }
+    .video-grid-wrap::-webkit-scrollbar { width: 4px; }
+    .video-grid-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    .video-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 10px;
+      align-content: start;
+    }
+
+    .grid-empty-state {
+      color: var(--muted);
+      font-size: 12px;
+      padding: 24px;
+      text-align: center;
+      line-height: 1.7;
+    }
+
+    /* Camera cells */
+    .cam-cell {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: border-color .15s, box-shadow .15s;
+      display: flex;
+      flex-direction: column;
+    }
+    .cam-cell:hover { border-color: var(--muted); }
+    .cam-cell.selected {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px rgba(77,139,248,.25);
+    }
+
+    @keyframes cellFlash {
+      0%   { border-color: var(--primary); box-shadow: 0 0 8px rgba(77,139,248,.5); }
+      100% { border-color: var(--border);  box-shadow: none; }
+    }
+    .cam-cell.event-flash { animation: cellFlash .7s ease-out forwards; }
+
+    .cam-cell-video {
+      position: relative;
+      aspect-ratio: 16/9;
+      background: #080c12;
+      overflow: hidden;
+    }
+
+    .cam-feed-img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: none;
+    }
+
+    .cam-feed-video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+      background: #000;
+    }
+
+    .cam-cell-placeholder {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 10px;
+      background: #080c12;
+    }
+    .cam-cell-placeholder .ph-icon { font-size: 22px; opacity: .4; }
+
+    .cam-cell-footer {
+      padding: 5px 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border-top: 1px solid var(--border);
+    }
+
+    .cam-cell-name {
+      font-size: 11px;
+      font-weight: 600;
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .live-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--border);
+      flex-shrink: 0;
+      transition: background .3s;
+    }
+    .live-dot.active {
+      background: var(--success);
+      animation: blink 2s ease-in-out infinite;
+    }
+
+    /* Events band (within multi view) */
+    .events-band {
+      flex: 1;
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 80px;
+    }
+
+    .events-band-header {
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+      background: var(--surface);
+    }
+
+    /* Shared events scroll */
+    .events-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .events-scroll::-webkit-scrollbar { width: 4px; }
+    .events-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    .event-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 11px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      animation: fadeIn .2s ease;
+      flex-shrink: 0;
+    }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(-3px)} to{opacity:1;transform:none} }
+
+    .event-card.fall       { border-left: 3px solid var(--danger); }
+    .event-card.immobility { border-left: 3px solid var(--warning); }
+    .event-card.activity   { border-left: 3px solid var(--primary); }
+
+    .ev-icon { font-size: 17px; flex-shrink: 0; }
+    .ev-body { flex: 1; min-width: 0; }
+    .ev-type { font-weight: 700; font-size: 12px; }
+    .ev-type.fall       { color: var(--danger); }
+    .ev-type.immobility { color: var(--warning); }
+    .ev-type.activity   { color: var(--primary); }
+    .ev-meta { font-size: 10px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ev-ts { font-size: 10px; color: var(--muted); font-family: var(--mono); flex-shrink: 0; }
+
+    .no-events {
+      color: var(--muted);
+      text-align: center;
+      padding: 24px 16px;
+      font-size: 12px;
+      line-height: 1.8;
+    }
+    .no-events-icon { font-size: 26px; margin-bottom: 8px; }
+
+    /* ── Single view ─────────────────────────────────────────────────────── */
+    #singleView {
+      flex: 1;
+      display: none;
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    .single-split {
+      display: grid;
+      grid-template-columns: 3fr 2fr;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    .single-feed-area {
+      background: #000;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      border-right: 1px solid var(--border);
+    }
+
+    .single-feed-img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      display: none;
+    }
+
+    .single-feed-video {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      display: none;
+      background: #000;
+    }
+
+    .feed-no-cam {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+      line-height: 1.7;
+      padding: 20px;
+    }
+    .feed-no-cam-icon { font-size: 38px; opacity: .3; }
+
+    .single-feed-info {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      background: rgba(0,0,0,.7);
+      padding: 4px 10px;
+      border-radius: 5px;
+      display: none;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #fff;
+      backdrop-filter: blur(4px);
+    }
+
+    .single-events-side {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    .single-events-hdr {
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+      background: var(--surface);
+    }
+
+    /* ── Logs ────────────────────────────────────────────────────────────── */
+    .logs-panel {
+      display: flex;
+      flex-direction: column;
+      background: #090d13;
+      overflow: hidden;
+      border-top: 1px solid var(--border);
+    }
+    .panel-header {
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .logs-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 6px 12px;
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.65;
+    }
+    .logs-scroll::-webkit-scrollbar { width: 4px; }
+    .logs-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    .log-line { white-space: pre-wrap; word-break: break-all; }
+    .log-line.info    { color: #768390; }
+    .log-line.warning { color: var(--warning); }
+    .log-line.error   { color: var(--danger); }
+    .log-line.system  { color: var(--primary); font-weight: 600; }
+
+    /* ── Toast ───────────────────────────────────────────────────────────── */
+    #toasts {
+      position: fixed;
+      bottom: 16px; right: 16px;
+      display: flex; flex-direction: column; gap: 6px;
+      z-index: 999;
+    }
+    .toast {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 9px 14px;
+      font-size: 12px;
+      animation: fadeIn .2s ease;
+      max-width: 300px;
+    }
+    .toast.ok  { border-left: 3px solid var(--success); }
+    .toast.err { border-left: 3px solid var(--danger); }
+
+    /* ── Warning banner ──────────────────────────────────────────────────── */
+    #restartWarning {
+      display: none;
+      background: rgba(210,153,34,.1);
+      border-bottom: 1px solid rgba(210,153,34,.3);
+      padding: 6px 18px;
+      font-size: 11px;
+      color: var(--warning);
+      text-align: center;
+      flex-shrink: 0;
+    }
+    #restartWarning.visible { display: block; }
+
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  </style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <div class="logo">
+    <span class="logo-icon">👁</span>
+    <div>
+      <div>Monitor de Actividad</div>
+      <div class="logo-sub">Sistema local de detección de caídas</div>
+    </div>
+  </div>
+
+  <div class="status-pill stopped" id="statusPill">
+    <span class="status-dot"></span>
+    <span id="statusLabel">DETENIDO</span>
+  </div>
+
+  <div class="spacer"></div>
+
+  <button class="btn btn-start" id="btnStart" onclick="startRunner()">▶ Iniciar</button>
+  <button class="btn btn-stop"  id="btnStop"  onclick="stopRunner()" disabled>■ Detener</button>
+</header>
+
+<!-- Restart warning -->
+<div id="restartWarning">
+  ⚠ Los cambios en las cámaras se aplicarán la próxima vez que inicies el sistema.
+</div>
+
+<!-- Main -->
+<main>
+
+  <!-- ── Left panel ── -->
+  <div class="left-panel">
+
+    <!-- Cameras section -->
+    <div class="section grow">
+      <div class="section-label">Fuentes de video</div>
+
+      <div class="camera-list" id="camList">
+        <div class="empty-state">Cargando…</div>
+      </div>
+
+      <div class="add-btns">
+        <button class="btn btn-ghost btn-sm" onclick="openAddForm('ip')">📡 + IP / RTSP</button>
+        <button class="btn btn-ghost btn-sm" onclick="openAddForm('video')">🎞 + Video</button>
+      </div>
+
+      <!-- Add-camera form -->
+      <div class="add-form" id="addForm">
+        <div class="tab-row">
+          <button class="tab-btn active" id="tabIp"    onclick="switchTab('ip')">📡 Cámara IP</button>
+          <button class="tab-btn"        id="tabVideo" onclick="switchTab('video')">🎞 Archivo</button>
+        </div>
+
+        <div class="field">
+          <label>ID de cámara</label>
+          <input id="fId" type="text" placeholder="ej: cam_sala" autocomplete="off">
+        </div>
+
+        <!-- IP fields -->
+        <div id="ipFields">
+          <div class="field">
+            <label>URL (RTSP / HTTP / índice webcam)</label>
+            <input id="fUrl" type="text" placeholder="rtsp://usuario:pass@192.168.1.x:554/stream">
+          </div>
+          <label class="check-row">
+            <input type="checkbox" id="fRealtime" checked> Tiempo real
+          </label>
+        </div>
+
+        <!-- Video fields -->
+        <div id="videoFields" style="display:none">
+          <div class="field">
+            <label>Archivo de video</label>
+            <select id="fVideo"><option value="">Seleccioná un video…</option></select>
+          </div>
+          <label class="check-row">
+            <input type="checkbox" id="fLoop" checked> Loop (repetir al terminar)
+          </label>
+        </div>
+
+        <div class="form-actions">
+          <button class="btn btn-primary btn-sm" onclick="addCamera()">Agregar</button>
+          <button class="btn btn-ghost   btn-sm" onclick="closeAddForm()">Cancelar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Upload section -->
+    <div class="section">
+      <div class="section-label">Subir video para análisis</div>
+
+      <div class="drop-zone" id="dropZone"
+           onclick="document.getElementById('fileInput').click()"
+           ondragover="event.preventDefault(); this.classList.add('drag-over')"
+           ondragleave="this.classList.remove('drag-over')"
+           ondrop="onDrop(event)">
+        <div class="drop-icon">📂</div>
+        <div class="drop-hint">Arrastrá un video aquí<br>o hacé clic para seleccionar<br><span style="opacity:.5">MP4 · AVI</span></div>
+      </div>
+
+      <input id="fileInput" type="file" accept=".mp4,.avi,.MP4,.AVI" style="display:none"
+             onchange="uploadFile(this.files[0])">
+
+      <div class="upload-row" id="uploadRow">
+        <span id="uploadName" style="flex-shrink:0; max-width:120px; overflow:hidden; text-overflow:ellipsis;"></span>
+        <div class="prog-bar"><div class="prog-fill" id="progFill" style="width:0"></div></div>
+      </div>
+
+      <div id="uploadDone"></div>
+    </div>
+  </div>
+
+  <!-- ── Right panel ── -->
+  <div class="right-panel">
+
+    <!-- View mode header -->
+    <div class="view-header">
+      <div class="view-toggle">
+        <button id="btnMulti"  class="view-btn active" onclick="setViewMode('multi')">⊞ Todas las fuentes</button>
+        <button id="btnSingle" class="view-btn"        onclick="setViewMode('single')">⊡ Vista única</button>
+      </div>
+
+      <div class="selected-cam-info" id="selectedCamInfo">
+        <span style="font-size:11px; color:var(--muted);">Viendo:</span>
+        <span class="selected-cam-pill" id="selectedCamPill"></span>
+      </div>
+
+      <div class="spacer"></div>
+      <span class="counter" id="evCount">0</span>
+      <button class="btn btn-ghost btn-sm" onclick="clearEventView()">Limpiar vista</button>
+    </div>
+
+    <!-- Content area -->
+    <div class="content-area">
+
+      <!-- ── MULTI VIEW ── -->
+      <div id="multiView">
+
+        <!-- Video grid -->
+        <div class="video-grid-wrap">
+          <div class="video-grid" id="videoGrid">
+            <div class="grid-empty-state">Cargando fuentes…</div>
+          </div>
+        </div>
+
+        <!-- Events in multi mode -->
+        <div class="events-band">
+          <div class="events-band-header">
+            <span class="section-label">Eventos detectados</span>
+          </div>
+          <div class="events-scroll" id="evListMulti">
+            <div class="no-events">
+              <div class="no-events-icon">📭</div>
+              Iniciá el sistema para ver eventos en tiempo real.
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ── SINGLE VIEW ── -->
+      <div id="singleView">
+        <div class="single-split">
+
+          <!-- Video feed -->
+          <div class="single-feed-area">
+            <div class="feed-no-cam" id="feedNoCam">
+              <div class="feed-no-cam-icon">⏸</div>
+              <div>Seleccioná una fuente desde el panel<br>izquierdo o desde la vista de todas.</div>
+            </div>
+            <img id="singleFeedImg" class="single-feed-img" alt=""
+                 onload="onSingleLoad(this)"
+                 onerror="onSingleError(this)">
+            <video id="singleFeedVideo" class="single-feed-video"
+                   autoplay muted playsinline loop preload="auto"></video>
+            <div class="single-feed-info" id="singleFeedInfo">
+              <span id="singleCamLabel"></span>
+              <span class="live-dot" id="singleLiveDot"></span>
+            </div>
+          </div>
+
+          <!-- Events for selected cam -->
+          <div class="single-events-side">
+            <div class="single-events-hdr">
+              <span class="section-label">Acciones detectadas</span>
+              <span class="counter" id="singleEvCount">0</span>
+            </div>
+            <div class="events-scroll" id="evListSingle">
+              <div class="no-events">
+                <div class="no-events-icon">📭</div>
+                Seleccioná una fuente para ver<br>sus eventos aquí.
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Logs (always visible) -->
+    <div class="logs-panel">
+      <div class="panel-header" style="background: var(--surface);">
+        <span class="section-label">Logs del sistema</span>
+        <div class="spacer"></div>
+        <button class="btn btn-ghost btn-sm" onclick="clearLogs()">Limpiar</button>
+      </div>
+      <div class="logs-scroll" id="logsScroll">
+        <div class="log-line system">Panel listo · esperando conexión al runner…</div>
+      </div>
+    </div>
+
+  </div><!-- /.right-panel -->
+
+</main>
+
+<div id="toasts"></div>
+
+<script>
+// ── Estado ──────────────────────────────────────────────────────────────────
+let ws          = null;
+let isRunning   = false;
+let activeTab   = 'ip';
+let evCount     = 0;
+let singleEvCount = 0;
+let lastEvId    = 0;
+let camerasDirty = false;
+let viewMode    = 'multi';   // 'multi' | 'single'
+let selectedCam = null;
+let activeCameras = [];
+let allEvents   = [];        // buffer para filtrar en vista única
+let framePoller = null;
+
+// ── Init ────────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  connectWS();
+  loadCameras();
+  loadVideos();
+  startFramePoller();
+});
+
+// ── WebSocket ────────────────────────────────────────────────────────────────
+function connectWS() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen  = () => addLog('system', '● Conectado al servidor.');
+  ws.onclose = () => {
+    addLog('system', '✕ Conexión cerrada. Reconectando en 3 s…');
+    setTimeout(connectWS, 3000);
+  };
+  ws.onerror = () => {};
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    switch (msg.type) {
+      case 'status': applyStatus(msg.running); break;
+      case 'log':    addLog(classifyLog(msg.text), msg.text); break;
+      case 'event':  handleEvent(msg); break;
+      case 'ping':   break;
+    }
+  };
+}
+
+// ── Status ───────────────────────────────────────────────────────────────────
+function applyStatus(running) {
+  isRunning = running;
+  const pill  = document.getElementById('statusPill');
+  const label = document.getElementById('statusLabel');
+  document.getElementById('btnStart').disabled = running;
+  document.getElementById('btnStop').disabled  = !running;
+  pill.className  = 'status-pill ' + (running ? 'running' : 'stopped');
+  label.textContent = running ? 'ACTIVO' : 'DETENIDO';
+
+  // actualizar íconos y textos de placeholder en celdas
+  document.querySelectorAll('.ph-icon').forEach(el => {
+    el.textContent = running ? '⏳' : '⏸';
+  });
+  document.querySelectorAll('.ph-text').forEach(el => {
+    el.textContent = running ? 'Conectando…' : 'Sistema detenido';
+  });
+
+  // actualizar el placeholder de la vista única
+  const feedIcon = document.querySelector('#feedNoCam .feed-no-cam-icon');
+  const feedText = document.querySelector('#feedNoCam div:last-child');
+  if (feedIcon) feedIcon.textContent = running ? '⏳' : '⏸';
+  if (feedText && selectedCam) {
+    feedText.textContent = running
+      ? 'Conectando con ' + selectedCam + '…'
+      : 'Sistema detenido — presioná Iniciar para ver el feed.';
+  }
+}
+
+// ── Runner control ───────────────────────────────────────────────────────────
+async function startRunner() {
+  const res = await apiFetch('POST', '/api/start');
+  if (res.ok) {
+    camerasDirty = false;
+    document.getElementById('restartWarning').classList.remove('visible');
+    toast('ok', '▶ Sistema iniciado');
+  } else {
+    const err = await res.json().catch(() => ({}));
+    toast('err', err.detail || 'No se pudo iniciar');
+  }
+}
+
+async function stopRunner() {
+  const res = await apiFetch('POST', '/api/stop');
+  if (res.ok) {
+    toast('ok', '■ Sistema detenido');
+  } else {
+    const err = await res.json().catch(() => ({}));
+    toast('err', err.detail || 'No se pudo detener');
+  }
+}
+
+// ── Frame poller ─────────────────────────────────────────────────────────────
+function startFramePoller() {
+  if (framePoller) return;
+  framePoller = setInterval(pollFrames, 400);
+}
+
+function stopFramePoller() {
+  if (framePoller) { clearInterval(framePoller); framePoller = null; }
+}
+
+function pollFrames() {
+  const t = Date.now();
+  // Solo pollear fuentes en vivo (para video-archivos el browser maneja la reproducción)
+  if (viewMode === 'multi') {
+    activeCameras.forEach(cam => {
+      const cell = document.querySelector(`.cam-cell[data-cam="${CSS.escape(cam.id)}"]`);
+      if (!cell) return;
+      const img = cell.querySelector('.cam-feed-img');
+      if (img) img.src = `/api/frame/${encodeURIComponent(cam.id)}?t=${t}`;
+    });
+  }
+  if (selectedCam && viewMode === 'single') {
+    const img = document.getElementById('singleFeedImg');
+    if (img) img.src = `/api/frame/${encodeURIComponent(selectedCam)}?t=${t}`;
+  }
+}
+
+// ── Cameras ───────────────────────────────────────────────────────────────────
+async function loadCameras() {
+  const res = await apiFetch('GET', '/api/cameras');
+  if (!res.ok) return;
+  const data = await res.json();
+  renderCameras(data.cameras || []);
+}
+
+function renderCameras(cams) {
+  activeCameras = cams;
+  const list = document.getElementById('camList');
+
+  if (!cams.length) {
+    list.innerHTML = '<div class="empty-state">Sin fuentes configuradas.</div>';
+    renderVideoGrid([]);
+    return;
+  }
+
+  list.innerHTML = cams.map(cam => {
+    const isIp = /^(rtsp|rtsps|http|https):\/\//.test(cam.source) || /^\d+$/.test(cam.source);
+    const cls   = isIp ? 'ip' : 'video';
+    const icon  = isIp ? '📡' : '🎞';
+    const badge = isIp ? 'IP' : 'VIDEO';
+    const src   = cam.source.length > 34 ? '…' + cam.source.slice(-31) : cam.source;
+    const sel   = cam.id === selectedCam ? 'selected' : '';
+    return `
+      <div class="cam-card ${sel}" data-cam-id="${escHtml(cam.id)}"
+           onclick="viewCamera('${escHtml(cam.id)}')">
+        <div class="cam-icon ${cls}">${icon}</div>
+        <div class="cam-info">
+          <div class="cam-id">${escHtml(cam.id)}</div>
+          <div class="cam-src" title="${escHtml(cam.source)}">${escHtml(src)}</div>
+        </div>
+        <span class="cam-badge ${cls}">${badge}</span>
+        <button class="btn-icon"
+                onclick="event.stopPropagation(); removeCamera('${escHtml(cam.id)}')"
+                title="Eliminar">✕</button>
+      </div>`;
+  }).join('');
+
+  renderVideoGrid(cams);
+}
+
+function renderVideoGrid(cams) {
+  const grid = document.getElementById('videoGrid');
+  if (!cams.length) {
+    grid.innerHTML = '<div class="grid-empty-state">Sin fuentes configuradas.<br>Agregá una cámara desde el panel izquierdo.</div>';
+    return;
+  }
+  grid.innerHTML = cams.map(cam => {
+    const live  = isLiveSource(cam.source);
+    const icon  = live ? '📡' : '🎞';
+    const sel   = cam.id === selectedCam ? 'selected' : '';
+
+    const videoContent =
+      `<img class="cam-feed-img" alt="${escHtml(cam.id)}"
+              onload="onCellLoad(this)" onerror="onCellError(this)">
+         <div class="cam-cell-placeholder">
+           <span class="ph-icon">${isRunning ? '⏳' : '⏸'}</span>
+           <span class="ph-text">${isRunning ? 'Conectando…' : 'Sistema detenido'}</span>
+         </div>`;
+
+    return `
+      <div class="cam-cell ${sel}" data-cam="${escHtml(cam.id)}"
+           onclick="onCellClick('${escHtml(cam.id)}')">
+        <div class="cam-cell-video">${videoContent}</div>
+        <div class="cam-cell-footer">
+          <span style="font-size:13px">${icon}</span>
+          <span class="cam-cell-name">${escHtml(cam.id)}</span>
+          <span class="live-dot"></span>
+        </div>
+      </div>`;
+  }).join('');
+
+  // Para fuentes en vivo, dispara un poll inmediato si el runner está activo
+  if (framePoller) pollFrames();
+}
+
+function onCellClick(camId) {
+  selectCamera(camId);
+  setViewMode('single');
+}
+
+function viewCamera(camId) {
+  selectCamera(camId);
+  setViewMode('single');
+}
+
+function onCellLoad(img) {
+  img.style.display = 'block';
+  const ph = img.nextElementSibling;
+  if (ph) ph.style.display = 'none';
+  const dot = img.closest('.cam-cell').querySelector('.live-dot');
+  if (dot) dot.classList.add('active');
+}
+
+function onCellError(img) {
+  img.style.display = 'none';
+  const ph = img.nextElementSibling;
+  if (ph) ph.style.display = 'flex';
+  const dot = img.closest('.cam-cell')?.querySelector('.live-dot');
+  if (dot) dot.classList.remove('active');
+}
+
+function onSingleLoad(img) {
+  img.style.display = 'block';
+  document.getElementById('feedNoCam').style.display = 'none';
+  const info = document.getElementById('singleFeedInfo');
+  info.style.display = 'flex';
+  document.getElementById('singleLiveDot').classList.add('active');
+}
+
+function onSingleError(img) {
+  img.style.display = 'none';
+  if (selectedCam) {
+    document.getElementById('feedNoCam').style.display = 'none';
+    // Mostrar overlay con mensaje de espera
+    const info = document.getElementById('singleFeedInfo');
+    info.style.display = 'flex';
+    document.getElementById('singleLiveDot').classList.remove('active');
+  } else {
+    document.getElementById('feedNoCam').style.display = 'flex';
+    document.getElementById('singleFeedInfo').style.display = 'none';
+  }
+}
+
+// ── View mode ─────────────────────────────────────────────────────────────────
+function setViewMode(mode) {
+  viewMode = mode;
+  document.getElementById('multiView').style.display  = mode === 'multi'  ? 'flex' : 'none';
+  document.getElementById('singleView').style.display = mode === 'single' ? 'flex' : 'none';
+  document.getElementById('btnMulti').classList.toggle('active',  mode === 'multi');
+  document.getElementById('btnSingle').classList.toggle('active', mode === 'single');
+
+  const info = document.getElementById('selectedCamInfo');
+  if (mode === 'single') {
+    info.classList.add('visible');
+    // Si no hay cámara seleccionada y hay cámaras disponibles, tomar la primera
+    if (!selectedCam && activeCameras.length > 0) {
+      selectCamera(activeCameras[0].id);
+    }
+  } else {
+    info.classList.remove('visible');
+  }
+
+  // Si el poller está activo, actualizar inmediatamente
+  if (framePoller) pollFrames();
+}
+
+function selectCamera(camId) {
+  selectedCam = camId;
+
+  // Actualizar selección en panel izquierdo y grid
+  document.querySelectorAll('.cam-card').forEach(c =>
+    c.classList.toggle('selected', c.dataset.camId === camId));
+  document.querySelectorAll('.cam-cell').forEach(c =>
+    c.classList.toggle('selected', c.dataset.cam === camId));
+
+  // Actualizar pill y etiqueta de overlay
+  document.getElementById('selectedCamPill').textContent = camId;
+  document.getElementById('singleCamLabel').textContent  = camId;
+
+  // Ocultar todos los elementos de feed
+  document.getElementById('feedNoCam').style.display       = 'none';
+  document.getElementById('singleFeedImg').style.display   = 'none';
+  document.getElementById('singleFeedVideo').style.display = 'none';
+  document.getElementById('singleFeedInfo').style.display  = 'flex';
+  document.getElementById('singleLiveDot').classList.remove('active');
+
+  // Siempre intentar cargar el último frame analizado
+  const img = document.getElementById('singleFeedImg');
+  img.src = `/api/frame/${encodeURIComponent(camId)}?t=${Date.now()}`;
+
+  rebuildSingleEvents(camId);
+}
+
+function rebuildSingleEvents(camId) {
+  const list = document.getElementById('evListSingle');
+  const filtered = allEvents.filter(e => e.video_id === camId);
+  singleEvCount = filtered.length;
+
+  if (!filtered.length) {
+    list.innerHTML = '<div class="no-events"><div class="no-events-icon">📭</div>Sin eventos para esta fuente.</div>';
+  } else {
+    list.innerHTML = '';
+    filtered.forEach(ev => list.appendChild(buildEventCard(ev)));
+  }
+  const c = document.getElementById('singleEvCount');
+  c.textContent = singleEvCount;
+  c.classList.toggle('has-events', singleEvCount > 0);
+}
+
+// ── Add / remove cameras ──────────────────────────────────────────────────────
+function openAddForm(tab) {
+  document.getElementById('addForm').classList.add('open');
+  switchTab(tab);
+}
+function closeAddForm() {
+  document.getElementById('addForm').classList.remove('open');
+  document.getElementById('fId').value  = '';
+  document.getElementById('fUrl').value = '';
+}
+function switchTab(tab) {
+  activeTab = tab;
+  document.getElementById('tabIp').classList.toggle('active', tab === 'ip');
+  document.getElementById('tabVideo').classList.toggle('active', tab === 'video');
+  document.getElementById('ipFields').style.display    = tab === 'ip'    ? 'flex' : 'none';
+  document.getElementById('videoFields').style.display = tab === 'video' ? 'flex' : 'none';
+  document.getElementById('ipFields').style.flexDirection    = 'column';
+  document.getElementById('ipFields').style.gap              = '8px';
+  document.getElementById('videoFields').style.flexDirection = 'column';
+  document.getElementById('videoFields').style.gap           = '8px';
+}
+
+async function addCamera() {
+  const id = document.getElementById('fId').value.trim();
+  if (!id) { toast('err', 'El ID es requerido'); return; }
+
+  let payload = { id, realtime: false, loop: true };
+
+  if (activeTab === 'ip') {
+    const url = document.getElementById('fUrl').value.trim();
+    if (!url) { toast('err', 'La URL es requerida'); return; }
+    payload.source   = url;
+    payload.realtime = document.getElementById('fRealtime').checked;
+    payload.loop     = false;
+  } else {
+    const sel = document.getElementById('fVideo').value;
+    if (!sel) { toast('err', 'Seleccioná un archivo'); return; }
+    payload.source = sel;
+    payload.loop   = document.getElementById('fLoop').checked;
+  }
+
+  const res = await apiFetch('POST', '/api/cameras/add', payload);
+  if (res.ok) {
+    toast('ok', `Cámara "${id}" agregada`);
+    closeAddForm();
+    loadCameras();
+    if (isRunning) showRestartWarning();
+  } else {
+    const err = await res.json().catch(() => ({}));
+    toast('err', err.detail || 'Error al agregar');
+  }
+}
+
+async function removeCamera(id) {
+  if (!confirm(`¿Eliminar la fuente "${id}"?`)) return;
+  const res = await apiFetch('DELETE', `/api/cameras/${encodeURIComponent(id)}`);
+  if (res.ok) {
+    toast('ok', `"${id}" eliminada`);
+    if (selectedCam === id) { selectedCam = null; }
+    loadCameras();
+    if (isRunning) showRestartWarning();
+  }
+}
+
+function showRestartWarning() {
+  camerasDirty = true;
+  document.getElementById('restartWarning').classList.add('visible');
+}
+
+// ── Videos ────────────────────────────────────────────────────────────────────
+async function loadVideos() {
+  const res = await apiFetch('GET', '/api/videos');
+  if (!res.ok) return;
+  const data = await res.json();
+  const sel = document.getElementById('fVideo');
+  sel.innerHTML = '<option value="">Seleccioná un video…</option>' +
+    data.videos.map(v =>
+      `<option value="${escHtml(v.path)}">[${escHtml(v.folder)}] ${escHtml(v.name)}</option>`
+    ).join('');
+}
+
+// ── Upload ────────────────────────────────────────────────────────────────────
+function onDrop(e) {
+  e.preventDefault();
+  document.getElementById('dropZone').classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file) uploadFile(file);
+}
+
+async function uploadFile(file) {
+  if (!file) return;
+  const row  = document.getElementById('uploadRow');
+  const fill = document.getElementById('progFill');
+  const name = document.getElementById('uploadName');
+  const done = document.getElementById('uploadDone');
+
+  row.classList.add('visible');
+  name.textContent = file.name;
+  fill.style.width = '15%';
+
+  const form = new FormData();
+  form.append('file', file);
+
+  try {
+    fill.style.width = '50%';
+    const res = await fetch('/api/upload-video', { method: 'POST', body: form });
+    fill.style.width = '100%';
+    if (res.ok) {
+      const data = await res.json();
+      done.innerHTML += `<div class="upload-done">✓ ${escHtml(data.name)}</div>`;
+      toast('ok', `"${data.name}" subido`);
+      await loadVideos();
+    } else {
+      toast('err', 'Error al subir el archivo');
+    }
+  } catch {
+    toast('err', 'Error de red');
+  } finally {
+    setTimeout(() => {
+      row.classList.remove('visible');
+      fill.style.width = '0';
+      document.getElementById('fileInput').value = '';
+    }, 1200);
+  }
+}
+
+// ── Events ────────────────────────────────────────────────────────────────────
+const EVENT_ICONS  = { fall: '⚠️', immobility: '💤', activity: '🏃' };
+const EVENT_LABELS = { fall: 'Caída detectada', immobility: 'Inmovilidad', activity: 'Actividad' };
+
+function handleEvent(ev) {
+  if (ev.id && ev.id <= lastEvId) return;
+  if (ev.id) lastEvId = Math.max(lastEvId, ev.id);
+
+  // Guardar en buffer
+  allEvents.unshift(ev);
+  if (allEvents.length > 300) allEvents.pop();
+
+  // Renderizar en multi-view
+  const listMulti = document.getElementById('evListMulti');
+  const empty = listMulti.querySelector('.no-events');
+  if (empty) empty.remove();
+  listMulti.insertBefore(buildEventCard(ev), listMulti.firstChild);
+  while (listMulti.children.length > 60) listMulti.removeChild(listMulti.lastChild);
+
+  // Contador global
+  evCount++;
+  const counter = document.getElementById('evCount');
+  counter.textContent = evCount;
+  counter.classList.add('has-events');
+
+  // Renderizar en single-view si es la cámara seleccionada
+  if (viewMode === 'single' && selectedCam && ev.video_id === selectedCam) {
+    const listSingle = document.getElementById('evListSingle');
+    const emptyS = listSingle.querySelector('.no-events');
+    if (emptyS) emptyS.remove();
+    listSingle.insertBefore(buildEventCard(ev), listSingle.firstChild);
+    while (listSingle.children.length > 40) listSingle.removeChild(listSingle.lastChild);
+    singleEvCount++;
+    const cs = document.getElementById('singleEvCount');
+    cs.textContent = singleEvCount;
+    cs.classList.add('has-events');
+  }
+
+  // Parpadeo de celda en el grid
+  flashCamCell(ev.video_id);
+}
+
+function buildEventCard(ev) {
+  const icon  = EVENT_ICONS[ev.event_type]  || '❓';
+  const label = EVENT_LABELS[ev.event_type] || ev.event_type;
+  const ts    = typeof ev.video_timestamp_s === 'number'
+    ? `@${ev.video_timestamp_s.toFixed(1)} s` : '';
+  const meta  = ev.metadata ? formatMeta(ev.metadata) : '';
+
+  const card = document.createElement('div');
+  card.className = `event-card ${ev.event_type}`;
+  card.innerHTML = `
+    <span class="ev-icon">${icon}</span>
+    <div class="ev-body">
+      <div class="ev-type ${ev.event_type}">${label}</div>
+      <div class="ev-meta">📷 ${escHtml(ev.video_id)}${meta ? ' · ' + escHtml(meta) : ''}</div>
+    </div>
+    <span class="ev-ts">${ts}</span>`;
+  return card;
+}
+
+function formatMeta(meta) {
+  const parts = [];
+  if (meta.aspect_ratio   !== undefined) parts.push(`AR ${meta.aspect_ratio.toFixed(2)}`);
+  if (meta.torso_angle_deg !== undefined) parts.push(`ang ${meta.torso_angle_deg.toFixed(1)}°`);
+  if (meta.duration_s      !== undefined) parts.push(`dur ${meta.duration_s.toFixed(0)} s`);
+  if (meta.activity_label  !== undefined) parts.push(meta.activity_label);
+  return parts.join(' · ');
+}
+
+function flashCamCell(camId) {
+  const cell = document.querySelector(`.cam-cell[data-cam="${CSS.escape(camId)}"]`);
+  if (!cell) return;
+  cell.classList.remove('event-flash');
+  void cell.offsetWidth; // fuerza reflow para reiniciar la animación
+  cell.classList.add('event-flash');
+}
+
+function clearEventView() {
+  allEvents = [];
+  evCount = singleEvCount = lastEvId = 0;
+
+  document.getElementById('evListMulti').innerHTML =
+    '<div class="no-events"><div class="no-events-icon">📭</div>Vista limpiada.</div>';
+  document.getElementById('evListSingle').innerHTML =
+    '<div class="no-events"><div class="no-events-icon">📭</div>Vista limpiada.</div>';
+
+  ['evCount', 'singleEvCount'].forEach(id => {
+    const el = document.getElementById(id);
+    el.textContent = '0';
+    el.classList.remove('has-events');
+  });
+}
+
+// ── Logs ──────────────────────────────────────────────────────────────────────
+function classifyLog(text) {
+  if (/ERROR/i.test(text))        return 'error';
+  if (/WARNING|WARN/i.test(text)) return 'warning';
+  if (/^[▶■●✕]/.test(text.trimStart())) return 'system';
+  return 'info';
+}
+
+function addLog(cls, text) {
+  const scroll  = document.getElementById('logsScroll');
+  const atBottom = scroll.scrollHeight - scroll.scrollTop <= scroll.clientHeight + 40;
+  const line = document.createElement('div');
+  line.className   = `log-line ${cls}`;
+  line.textContent = text;
+  scroll.appendChild(line);
+  if (atBottom) scroll.scrollTop = scroll.scrollHeight;
+  while (scroll.children.length > 600) scroll.removeChild(scroll.firstChild);
+}
+
+function clearLogs() {
+  document.getElementById('logsScroll').innerHTML = '';
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function toast(type, msg) {
+  const el = document.createElement('div');
+  el.className   = `toast ${type}`;
+  el.textContent = msg;
+  document.getElementById('toasts').appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+
+// ── Source type helpers ───────────────────────────────────────────────────────
+function isLiveSource(source) {
+  return /^(rtsp|rtsps|http|https):\/\//.test(source) || /^\d+$/.test(source);
+}
+
+function videoFileUrl(source) {
+  // Codifica cada segmento pero preserva las barras
+  return '/api/video-file/' + source.split('/').map(encodeURIComponent).join('/');
+}
+
+// ── Utils ─────────────────────────────────────────────────────────────────────
+async function apiFetch(method, path, body) {
+  const opts = { method, headers: {} };
+  if (body) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  return fetch(path, opts);
+}
+
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+</script>
+</body>
+</html>

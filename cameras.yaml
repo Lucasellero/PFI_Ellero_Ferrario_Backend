@@ -1,0 +1,11 @@
+cameras:
+- id: asd
+  source: videos/sentado/Uselaptop_p12_r00_v14_c05.mp4
+  realtime: false
+  loop: false
+- id: readbook
+  source: videos/sentado/Readbook_p12_r00_v05_c05_old.mp4
+  realtime: false
+  loop: true
+pose_model: yolo11n-pose.pt
+log_level: INFO

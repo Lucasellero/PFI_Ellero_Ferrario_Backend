@@ -22,19 +22,58 @@ clasificar en una categoría cerrada, `activity_label`.
 
 Los eventos se persisten vía `../events/store.py`, igual que en `vision/`.
 
-## Decisión pendiente: qué modelo/runtime usar
+## Decisión de modelo: CLIP (OpenAI, ViT-B/32)
 
-Evaluar entre modelos locales open-source (ej. Qwen2-VL, LLaVA, Moondream)
-corriendo vía Ollama o `transformers`, priorizando velocidad de inferencia en
-CPU/GPU local sobre precisión máxima — recordar que en el informe (Sec.
-2.2.4) Schönfeldt et al. (2025) muestran que un VLM open-source alcanza
-desempeño comparable a modelos especializados (F1 = 0.89) en clasificación de
-comportamiento sedentario. Documentar acá la elección final y por qué.
+Se eligió CLIP en lugar de un VLM generativo (LLaVA, Moondream, etc.) por las
+siguientes razones:
+
+- **Velocidad**: corre bien en CPU sin cuantización; ViT-B/32 es el punto de
+  entrada más liviano. Para mayor precisión, `--model ViT-L/14`.
+- **Zero-shot sin fine-tuning**: los prompts en lenguaje natural
+  ("a photo of a person reading a book") permiten clasificar directamente las
+  14 actividades del dataset Toyota Smarthome sin ajuste adicional.
+- **Sin servidor externo**: se descarga al primer uso y queda cacheado
+  localmente (`~/.cache/clip/`), cumpliendo el requisito de privacidad.
+- **Trade-off aceptado**: CLIP no genera texto libre — la `description` en
+  `metadata` es el prompt textual que ganó la clasificación, no una descripción
+  generada. Si en el futuro se necesita texto generativo, se puede cambiar el
+  clasificador sin tocar `main.py`.
 
 ## Setup
 
-Pendiente de definir junto con la elección de modelo (ver arriba). Agregar
-la dependencia elegida a `requirements.txt` de este módulo.
+### En la máquina de desarrollo (una sola vez)
+
+```bash
+cd vlm/
+pip install -r requirements-export.txt
+python export_onnx.py
+```
+
+Genera `vlm/models/` con:
+- `clip_image_encoder_int8.onnx` (~85 MB, INT8 cuantizado para ARM)
+- `text_features.npy` (embeddings pre-computados, ~28 KB)
+- `labels.json`
+
+Copiar `vlm/models/` al Pi antes de correr.
+
+### En el Pi 5
+
+```bash
+cd vlm/
+pip install -r requirements.txt   # solo onnxruntime + opencv, sin PyTorch
+python main.py --video <archivo>.mp4
+```
+
+**Por qué esta separación:** PyTorch pesa ~1.5 GB instalado en ARM y solo se necesita para exportar el modelo. En el Pi solo se usa `onnxruntime`, que pesa ~30 MB y es ~2-4x más rápido en CPU ARM que PyTorch.
+
+### Estimación de rendimiento en Pi 5
+
+| Componente | Tiempo por inferencia | Cores usados |
+|---|---|---|
+| YOLO11n-pose (vision/) | ~150-300ms/frame | 2-4 |
+| CLIP ONNX INT8 (vlm/) | ~300-600ms/frame | 2 (limitado) |
+
+CLIP muestrea cada 10s (default), dejando el CPU libre para YOLO entre clasificaciones.
 
 ## Fuera de alcance por ahora
 

@@ -1,0 +1,12 @@
+# Dependencias para la máquina de desarrollo (exportar CLIP a ONNX).
+# Correr UNA VEZ: python export_onnx.py → genera vlm/models/
+git+https://github.com/openai/CLIP.git
+torch>=2.0.0
+torchvision>=0.15.0
+onnx>=1.14.0
+onnxscript
+onnxruntime>=1.17.0
+Pillow>=10.0.0
+numpy>=1.26
+ftfy
+regex

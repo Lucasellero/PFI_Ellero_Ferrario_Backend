@@ -14,3 +14,6 @@ videos/**/*.mov
 
 # Cache de features derivado del dataset (se regenera con evaluate_posture.py)
 vision/posture_features.csv
+vlm/models/
+*.onnx
+*.onnx.data
