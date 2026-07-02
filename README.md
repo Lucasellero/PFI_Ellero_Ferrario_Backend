@@ -1,1 +1,119 @@
-# PFI_Ellero_Ferrario_Backend
+# Sistema de monitoreo no invasivo para adultos mayores — PFI Ellero/Ferrario
+
+Repositorio de desarrollo del Proyecto Final de Ingeniería (UADE, 2026). Para
+el marco teórico, el estado del arte y la justificación de cada decisión de
+diseño, ver el informe del proyecto.
+
+## Fase actual: validación local sobre dataset de video
+
+Esta etapa **no** integra Raspberry Pi, cámaras IP ni servicios en la nube.
+Todo el pipeline corre en la PC de desarrollo, procesando un dataset de
+videos ya grabados (carpeta `videos/`, ver más abajo). El objetivo es validar
+la lógica de detección (pose estimation, caídas, inmovilidad, clasificación
+de actividades) de forma reproducible antes de integrar hardware real.
+
+Los módulos están pensados para que la arquitectura final del informe (edge
+en Raspberry Pi + cloud) sea una extensión de este código, no una reescritura:
+el mismo pipeline que hoy lee un archivo de video de `videos/` va a leer, más
+adelante, un stream RTSP en vivo.
+
+## Arquitectura (fase local)
+
+```
+videos/ (dataset)
+    │
+    ├──► vision/  (pose estimation, detección de caídas e inmovilidad — YOLOv11n-pose)
+    │        │
+    ├──► vlm/     (clasificación semántica de actividades — VLM local, consulta periódica)
+    │        │
+    │        ▼
+    │    events/  (esquema de evento común + almacenamiento local en SQLite)
+    │        │
+    │        ▼
+    │    baseline/ (clustering dinámico → línea base de comportamiento → detección de desvíos)
+    │
+    └──► evaluation/ (validación cualitativa: video anotado, inspección manual — no hay ground truth todavía)
+```
+
+`vision/` y `vlm/` son independientes entre sí (ambos leen `videos/` y
+escriben a `events/`). `baseline/` depende únicamente de que existan eventos
+en el store, no del código interno de `vision/` o `vlm/`. Esto es
+intencional: son las líneas de trabajo pensadas para desarrollarse en
+paralelo (ver más abajo).
+
+## Dataset de video
+
+Los archivos van en `videos/` (no versionados en git, ver `.gitignore`). No
+hay estructura de subcarpetas ni etiquetas de ground truth todavía: cualquier
+`.mp4`/`.avi`/`.mov` copiado ahí es candidato a ser procesado. El nombre de
+archivo (sin extensión) se usa como `video_id` en el esquema de eventos.
+Como no hay etiquetas, la validación de esta primera etapa es cualitativa
+(ver `evaluation/`), no un cálculo de precision/recall — eso queda como
+trabajo futuro si se etiqueta el dataset.
+
+## Esquema de eventos (contrato entre módulos)
+
+Ver [`events/README.md`](events/README.md) y [`events/schema.py`](events/schema.py).
+Este es el contrato que separa `vision/`/`vlm/` (productores) de `baseline/`
+(consumidor). **Cualquier cambio a este esquema debe coordinarse**, porque
+rompe a todos los módulos que dependen de él.
+
+## Módulos
+
+| Módulo | Qué hace | Spec |
+|---|---|---|
+| `vision/` | Pose estimation + detección de caídas/inmovilidad prolongada | [vision/README.md](vision/README.md) |
+| `vlm/` | Clasificación semántica de actividades vía VLM local | [vlm/README.md](vlm/README.md) |
+| `events/` | Esquema común + almacenamiento local (SQLite) | [events/README.md](events/README.md) |
+| `baseline/` | Línea base de comportamiento (clustering dinámico) + detección de desvíos | [baseline/README.md](baseline/README.md) |
+| `evaluation/` | Validación cualitativa (video anotado, inspección manual) | [evaluation/README.md](evaluation/README.md) |
+
+## Cómo trabajar en paralelo (varias sesiones de Claude Code)
+
+1. `events/schema.py` ya está definido — es el contrato. No cambiarlo sin
+   avisar a las demás sesiones/módulos que dependen de él.
+2. `vision/` y `vlm/` se pueden desarrollar en paralelo, cada uno en su
+   propia sesión: ninguno depende del código del otro, solo del esquema de
+   eventos y de `videos/`.
+3. `baseline/` puede arrancar en paralelo generando eventos sintéticos que
+   respeten `MonitoringEvent` — no necesita esperar a que `vision/`/`vlm/`
+   estén terminados, y se integra contra eventos reales después.
+4. `evaluation/` puede arrancar apenas `vision/` tenga una versión mínima
+   que devuelva detecciones por frame — no necesita el pipeline completo.
+5. Cada módulo tiene su propio `requirements.txt` y su propio entorno
+   virtual. `vision/`, `vlm/` y `baseline/` **no se importan código entre
+   sí** — la única comunicación entre ellos es a través de `events/`, que sí
+   está pensado para ser importado directamente (como librería local, sin
+   servidor) por cualquiera de los tres.
+
+## Setup general
+
+Python 3.12+. Cada módulo documenta su propio setup (dependencias,
+comandos) en su README.
+
+## Roadmap (según el Gantt del informe)
+
+- [x] `vision/` — clasificación de postura (parado/sentado/acostado) por
+      frame, calibrada empíricamente (proceso completo en
+      `vision/README.md`). La calibración usó en su momento una
+      clasificación manual por carpeta que resultó no ser ground truth
+      confiable de postura (mezclaba actividad con postura) — se descartó
+      esa estructura; la referencia de acá en adelante es el modelo y su
+      matriz de confusión sobre casos verificados a mano, no una
+      categorización previa sin validar.
+- [ ] `vision/` — detección de caídas/inmovilidad como evento (heurística
+      basada en YOLOv11n-pose, siguiendo Giri et al. 2025 — velocidad
+      vertical, aspect ratio, ángulo de torso). Necesita videos más largos
+      que muestren la transición completa parado→cayendo→acostado, no los
+      clips cortos usados para calibrar la postura — hay un dataset más
+      grande disponible para esta etapa.
+- [ ] `vlm/`: clasificación de actividades con consultas periódicas a un VLM
+      local open-source.
+- [ ] `events/`: store local funcionando end-to-end (ya con esquema listo).
+- [ ] `baseline/`: clustering dinámico + detección de desvíos (Snoun et al.
+      2024).
+- [ ] `evaluation/`: exportar video anotado para inspección visual.
+- [ ] *(fase futura, no ahora)* migrar `vision/` a ingesta RTSP + despliegue
+      en Raspberry Pi 5.
+- [ ] *(fase futura, no ahora)* exponer `events/` + `baseline/` vía API
+      (FastAPI) para una futura app móvil.

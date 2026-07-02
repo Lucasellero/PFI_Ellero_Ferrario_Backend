@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.db
+*.pt
+.env
+.DS_Store
+
+# Dataset de video: no versionar los archivos, solo la estructura y el README
+videos/**/*.mp4
+videos/**/*.avi
+videos/**/*.mov
+
+# Cache de features derivado del dataset (se regenera con evaluate_posture.py)
+vision/posture_features.csv
