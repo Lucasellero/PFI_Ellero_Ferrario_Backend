@@ -42,7 +42,7 @@ para logs) y del store de eventos (SQLite) para los datos, igual que
 | `GET /api/videos` | lista videos disponibles en `videos/` |
 | `POST /api/upload-video` | sube un archivo a `videos/uploads/` |
 | `GET /api/video-file/{path}` | sirve un video para reproducirlo en el browser |
-| `GET /api/frame/{cam_id}` | último frame preview de esa cámara (`frames/{id}.jpg`) |
+| `GET /api/frame/{cam_id}` | último frame preview de esa cámara (`frames/{id}.jpg`, con esqueleto de YOLO dibujado encima si hay detección) |
 | `GET /api/frames/list` | qué cámaras tienen preview disponible |
 | `GET /api/events` | eventos del store, paginado por `since_id` |
 | `WS /ws` | push de logs del runner + eventos nuevos + estado, cada ~1s |

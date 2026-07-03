@@ -120,12 +120,18 @@ comandos) en su README.
       esa estructura; la referencia de acá en adelante es el modelo y su
       matriz de confusión sobre casos verificados a mano, no una
       categorización previa sin validar.
-- [ ] `vision/` — detección de caídas/inmovilidad como evento (heurística
-      basada en YOLOv11n-pose, siguiendo Giri et al. 2025 — velocidad
-      vertical, aspect ratio, ángulo de torso). Necesita videos más largos
-      que muestren la transición completa parado→cayendo→acostado, no los
-      clips cortos usados para calibrar la postura — hay un dataset más
-      grande disponible para esta etapa.
+- [x] `vision/` — detección de caídas como evento (heurística basada en
+      YOLOv11n-pose, siguiendo Giri et al. 2025, calibrada y evaluada con
+      ground truth real sobre 78 clips en 4 datasets — proceso completo en
+      `vision/README.md`). **91% recall, 1 falso positivo, 1.2s de latencia
+      promedio.** Casos perdidos: mayormente caídas hacia una cama (la
+      premisa de velocidad vertical no aplica igual que cayendo al piso).
+      *Futuro:* combinar con `vlm/` (CLIP) como filtro de confirmación
+      semántica para el modo de falla dominante en la literatura —
+      confundir acostarse/sentarse voluntario con una caída (ver
+      `vision/README.md`).
+- [ ] `vision/` — inmovilidad prolongada como evento: implementada pero sin
+      calibrar (umbrales de la literatura, sin dataset de validación).
 - [x] `vlm/`: clasificación de actividades vía CLIP (zero-shot, prompt
       ensembling sobre las 14 actividades del dataset), exportado a ONNX
       para correr sin PyTorch en el Pi (ver `vlm/README.md`). Modo batch

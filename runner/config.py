@@ -11,7 +11,7 @@ import yaml
 class CameraConfig:
     id: str
     source: str          # ruta a archivo, URL RTSP/HTTP, o índice de webcam ("0")
-    realtime: bool = False   # si True, throttlea a los FPS del video (más lento pero fiel)
+    realtime: bool = True    # si True, descarta frames viejos para no ir más lento que el tiempo real
     loop: bool = True        # si True, reinicia el video cuando termina (solo archivos)
 
 

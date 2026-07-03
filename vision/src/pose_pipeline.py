@@ -1,8 +1,18 @@
 """Pose estimation + heurística de caída/inmovilidad con YOLOv11n-pose (Ultralytics).
 
 Descriptores según Giri et al. (2025), citado en el informe (Sec. 2.2.7):
-velocidad vertical de la cadera, aspect ratio del bounding box y ángulo de
-orientación del torso, calculados sobre una ventana corta de frames.
+velocidad vertical de la cadera y aspect ratio del bounding box.
+
+Heurística de caída calibrada empíricamente sobre 41 videos de caída reales
+(`videos/fall1/` + `videos/fall2/`, ver `calibrate_falls.py`): la velocidad
+vertical y el aspect ratio "acostado" NO ocurren en el mismo frame — el pico
+de velocidad pasa durante la caída (~0.3-1s) y el aspect ratio recién se
+estabiliza después, cuando el cuerpo termina de asentarse en el piso. Por
+eso la detección es en dos fases (pico de velocidad, después confirmación
+por postura), no una condición simultánea. El ángulo de torso, calibrado
+inicialmente según Giri et al., se descartó de la condición porque en
+caídas laterales no llega a valores altos y hacía perder ~2/16 casos sin
+mejorar la precisión de los que sí detectaba.
 """
 from __future__ import annotations
 
@@ -16,8 +26,20 @@ from ultralytics import YOLO
 # Índices de keypoints COCO (formato usado por los modelos de pose de YOLO).
 L_SHOULDER, R_SHOULDER, L_HIP, R_HIP = 5, 6, 11, 12
 
-FALL_ASPECT_RATIO = 1.4               # width/height por encima de esto => persona acostada
-FALL_VERTICAL_VELOCITY = 0.35         # caída normalizada de cadera por segundo
+# Pares de keypoints COCO que forman el esqueleto, para dibujar overlays de debug.
+SKELETON_EDGES = [
+    (5, 6), (5, 11), (6, 12), (11, 12),          # torso
+    (5, 7), (7, 9), (6, 8), (8, 10),              # brazos
+    (11, 13), (13, 15), (12, 14), (14, 16),       # piernas
+    (0, 5), (0, 6),                                # cabeza-hombros
+]
+
+FALL_VELOCITY_WINDOW_S = 0.4          # ventana para medir la velocidad vertical de la cadera
+FALL_VERTICAL_VELOCITY = 0.25         # hip_y normalizado / segundo => posible caída en curso
+FALL_ASPECT_RATIO = 1.1               # width/height por encima de esto => postura final acostada
+FALL_CONFIRM_WINDOW_S = 1.5           # tiempo máx. entre el pico de velocidad y la postura final
+FALL_COOLDOWN_S = 3.0                 # tras confirmar una caída, no reportar otra hasta pasado esto
+MIN_KEYPOINT_CONFIDENCE = 0.2         # confianza promedio mínima de keypoints para no descartar el frame
 IMMOBILITY_WINDOW_S = 30.0            # segundos de movimiento casi nulo => evento de inmovilidad
 IMMOBILITY_MOVEMENT_THRESHOLD = 0.02  # desplazamiento normalizado de keypoints entre frames
 
@@ -33,16 +55,32 @@ class PoseSample:
 
 def detect_person(model: YOLO, image: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
     """Corre el modelo de pose sobre un frame y devuelve (keypoints, bbox) de la
-    primera persona detectada, o None si no se detectó a nadie.
+    persona detectada, o None si no hay ninguna detección confiable.
 
-    Solo se trackea la primera persona: el informe excluye explícitamente el
-    soporte multi-residente (Sec. 1.2.2).
+    Si hay más de una persona en el frame, se toma la del bounding box más
+    grande (más cercana/prominente a cámara) como sujeto principal — el
+    informe excluye explícitamente el soporte multi-residente (Sec. 1.2.2),
+    así que esto es una heurística de desambiguación, no tracking real.
+    Se descartan detecciones con confianza promedio de keypoints por debajo
+    de MIN_KEYPOINT_CONFIDENCE (oclusión, movimiento, sujeto lejos de
+    cámara) siguiendo el criterio de calidad usado en Benabdennour et al.
+    (2026, IEEE Access) para este mismo problema.
     """
     result = model(image, verbose=False)[0]
     if result.keypoints is None or len(result.keypoints.xy) == 0:
         return None
-    kpts = result.keypoints.xy[0].cpu().numpy()
-    box = result.boxes.xyxy[0].cpu().numpy()
+
+    boxes = result.boxes.xyxy.cpu().numpy()
+    areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+    idx = int(areas.argmax())
+
+    if result.keypoints.conf is not None:
+        mean_confidence = float(result.keypoints.conf[idx].mean())
+        if mean_confidence < MIN_KEYPOINT_CONFIDENCE:
+            return None
+
+    kpts = result.keypoints.xy[idx].cpu().numpy()
+    box = boxes[idx]
     return kpts, box
 
 
@@ -67,25 +105,56 @@ def build_pose_sample(kpts: np.ndarray, box: np.ndarray, w: int, h: int, timesta
     )
 
 
+def draw_pose(image: np.ndarray, kpts: np.ndarray, box: np.ndarray) -> np.ndarray:
+    """Dibuja el bounding box y el esqueleto de una detección sobre una copia
+    del frame. Solo para debug/visualización (ej. preview del dashboard) —
+    no se usa en la lógica de detección."""
+    import cv2
+
+    out = image.copy()
+    x1, y1, x2, y2 = box.astype(int)
+    cv2.rectangle(out, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+    for a, b in SKELETON_EDGES:
+        if a >= len(kpts) or b >= len(kpts):
+            continue
+        xa, ya = kpts[a]
+        xb, yb = kpts[b]
+        if (xa <= 0 and ya <= 0) or (xb <= 0 and yb <= 0):
+            continue
+        cv2.line(out, (int(xa), int(ya)), (int(xb), int(yb)), (0, 200, 255), 2)
+
+    for x, y in kpts:
+        if x <= 0 and y <= 0:
+            continue
+        cv2.circle(out, (int(x), int(y)), 3, (0, 0, 255), -1)
+
+    return out
+
+
 class FallImmobilityDetector:
     """Consume frames de un video y emite eventos 'fall' / 'immobility'.
 
-    Los umbrales de módulo son un punto de partida tomado de la literatura
-    citada en el informe; hay que calibrarlos mirando los resultados sobre
-    el dataset real (ver evaluation/).
+    Umbrales de caída calibrados sobre 41 clips de caída reales, ver
+    docstring del módulo y `calibrate_falls.py`. Los de inmovilidad siguen
+    siendo un punto de partida de la literatura, sin calibrar todavía.
     """
 
-    def __init__(self, model_path: str = "yolo11n-pose.pt", history_seconds: float = 5.0):
+    def __init__(self, model_path: str = "yolo11n-pose.pt", history_seconds: float = 1.5):
         self._model = YOLO(model_path)
         self._history: deque[PoseSample] = deque()
         self._history_seconds = history_seconds
         self._immobile_since: float | None = None
         self._immobility_reported = False
+        self._last_velocity_spike_t: float | None = None
+        self._fall_cooldown_until: float = float("-inf")
+        self.last_detection: tuple[np.ndarray, np.ndarray] | None = None
 
     def process_frame(self, image: np.ndarray, timestamp_s: float) -> list[dict]:
         events: list[dict] = []
         h, w = image.shape[:2]
         detection = detect_person(self._model, image)
+        self.last_detection = detection
         if detection is None:
             return events
         kpts, box = detection
@@ -112,17 +181,40 @@ class FallImmobilityDetector:
             self._history.popleft()
 
     def _detect_fall(self, sample: PoseSample) -> bool:
-        if len(self._history) < 2:
+        """Dos fases: (1) un pico de velocidad vertical marca una posible caída
+        en curso, (2) si dentro de FALL_CONFIRM_WINDOW_S el aspect ratio se
+        estabiliza en postura acostada, se confirma el evento. No exige que
+        ambas condiciones ocurran en el mismo frame (ver docstring del módulo).
+        """
+        if sample.timestamp_s < self._fall_cooldown_until:
             return False
-        prev = self._history[0]
-        dt = max(sample.timestamp_s - prev.timestamp_s, 1e-3)
-        vertical_velocity = (sample.hip_y - prev.hip_y) / dt
 
-        return (
-            vertical_velocity > FALL_VERTICAL_VELOCITY
+        velocity = self._vertical_velocity(sample)
+        if velocity is not None and velocity > FALL_VERTICAL_VELOCITY:
+            self._last_velocity_spike_t = sample.timestamp_s
+
+        if (
+            self._last_velocity_spike_t is not None
             and sample.aspect_ratio > FALL_ASPECT_RATIO
-            and sample.torso_angle_deg > 45
-        )
+            and sample.timestamp_s - self._last_velocity_spike_t <= FALL_CONFIRM_WINDOW_S
+        ):
+            self._last_velocity_spike_t = None
+            self._fall_cooldown_until = sample.timestamp_s + FALL_COOLDOWN_S
+            return True
+        return False
+
+    def _vertical_velocity(self, sample: PoseSample) -> float | None:
+        """Velocidad vertical de la cadera vs. la muestra más cercana a
+        FALL_VELOCITY_WINDOW_S segundos atrás (no frame-a-frame, no el
+        historial completo: ambos extremos diluyen el pico real de la caída)."""
+        if not self._history:
+            return None
+        target_t = sample.timestamp_s - FALL_VELOCITY_WINDOW_S
+        ref = min(self._history, key=lambda s: abs(s.timestamp_s - target_t))
+        dt = sample.timestamp_s - ref.timestamp_s
+        if dt < FALL_VELOCITY_WINDOW_S / 2:
+            return None
+        return (sample.hip_y - ref.hip_y) / dt
 
     def _track_immobility(self, sample: PoseSample) -> list[dict]:
         events: list[dict] = []

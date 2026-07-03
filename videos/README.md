@@ -1,7 +1,20 @@
 # `videos/`
 
-Dataset plano: todos los `.mp4` van directo acá, sin subcarpetas. El nombre
-de archivo (sin extensión) es el `video_id` usado en `events/schema.py`.
+Dataset de actividades cotidianas: `.mp4` planos, directo en `videos/`. El
+nombre de archivo (sin extensión) es el `video_id` usado en
+`events/schema.py`.
+
+**Excepción:** `videos/fall1/` a `videos/fall4/` (16+25+21+17 = 79 clips)
+sí son subcarpetas — son clips de caídas reales, usados para calibrar y
+evaluar `FallImmobilityDetector` (ver `vision/README.md`, sección
+"Detección de caída como evento"). `fall3/` y `fall4/` incluyen además un
+`Fall.csv` por carpeta con el segundo exacto de inicio/fin de cada caída y
+de las actividades previas (Sitting/Walking/Standing) — ground truth
+anotado a mano, usado solo para evaluar en desarrollo (`evaluate_falls.py`),
+no algo que el sistema tenga disponible en producción. Se mantienen
+separados del resto porque son un dataset distinto (caídas simuladas de
+~2-15s), no parte del dataset de actividades de Toyota Smarthome descripto
+abajo.
 
 Sigue el patrón `Actividad_pXX_rXX_vXX_cXX.mp4` (actividad, participante,
 repetición, video, cámara) — parece un subset del dataset **Toyota
@@ -41,10 +54,9 @@ Actividades cotidianas grabadas con múltiples cámaras (`_c01` a `_c07`):
 de actividad sedentaria fina que `vlm/` tiene que distinguir más adelante
 (misma postura, actividad distinta — ver Sec. 2.2.3 del informe).
 
-No hay una etiqueta explícita de "caída" en el dataset actual — son clips
-cortos (~1-2s) que no capturan la transición completa. Hay un dataset más
-grande con videos más largos y la secuencia completa para esa etapa (ver
-roadmap en el README raíz).
+Este dataset de actividades no tiene etiqueta de "caída" — son clips cortos
+(~1-2s) que no capturan la transición completa. Para eso se usan
+`videos/fall1/` y `videos/fall2/` (ver arriba).
 
 Los archivos de video no se versionan en git (ver `.gitignore`), solo este
 README y `legacy_folder_labels.csv`.

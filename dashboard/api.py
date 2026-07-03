@@ -201,7 +201,7 @@ async def add_camera(body: dict) -> dict:
     cameras.append({
         "id": cam_id,
         "source": source,
-        "realtime": bool(body.get("realtime", False)),
+        "realtime": bool(body.get("realtime", True)),
         "loop": bool(body.get("loop", True)),
     })
     data["cameras"] = cameras

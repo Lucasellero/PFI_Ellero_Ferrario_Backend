@@ -1297,7 +1297,7 @@ async function addCamera() {
   const id = document.getElementById('fId').value.trim();
   if (!id) { toast('err', 'El ID es requerido'); return; }
 
-  let payload = { id, realtime: false, loop: true };
+  let payload = { id, realtime: true, loop: true };
 
   if (activeTab === 'ip') {
     const url = document.getElementById('fUrl').value.trim();

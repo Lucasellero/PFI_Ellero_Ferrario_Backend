@@ -36,7 +36,7 @@ Vive en la raíz del proyecto:
 cameras:
 - id: asd
   source: videos/Uselaptop_p12_r00_v14_c05.mp4   # archivo, URL RTSP/HTTP, o índice de webcam ("0")
-  realtime: false   # si true, throttlea a los FPS del video (más lento pero fiel a un stream real)
+  realtime: true    # ver "Tiempo real y frame dropping" abajo — recomendado en true
   loop: true         # si true, reinicia el archivo al terminar (ignorado en streams en vivo)
 pose_model: yolo11n-pose.pt
 log_level: INFO
@@ -54,6 +54,34 @@ fuente), no el tiempo relativo al archivo — necesario para que el detector
 de inmovilidad de `vision/` tenga sentido cuando un archivo hace loop o
 cuando la fuente es un stream en vivo sin timestamps propios.
 
+## Tiempo real y frame dropping
+
+YOLO11n-pose tarda ~150-300ms por frame en CPU — mucho más que la duración
+real de un frame de video (~33ms a 30fps). Si se procesara cada frame en
+orden sin descartar ninguno, el contenido se "estira" en el tiempo: se ve
+en cámara lenta con un archivo (`VideoFileLoop`), y con una cámara real se
+traduce en un atraso creciente en vez de cámara lenta, porque los frames
+siguen llegando aunque no se procesen a tiempo (`LiveStream`).
+
+Con `realtime: true`, ambas fuentes descartan frames "viejos" para no
+quedarse atrás en vez de encolarlos:
+
+- `VideoFileLoop` compara cada frame leído contra su tiempo "programado"
+  (`frame_idx / fps`) y el tiempo real transcurrido; si ya está atrasado
+  más de un frame de duración, lo saltea sin entregarlo al pipeline.
+- `LiveStream` usa un thread lector en background que drena la
+  cámara/stream tan rápido como puede y siempre deja el frame más reciente
+  disponible en una variable compartida — `frames()` nunca entrega un frame
+  viejo, aunque el consumidor tarde más que el intervalo real entre frames.
+
+Se pierde densidad de muestreo bajo carga (no se procesan todos los
+frames), pero la heurística de caída de `vision/` ya trabaja con ventanas
+de ~0.4-1.5s, no depende de ver cada frame individual — ver
+`vision/README.md`. Con `realtime: false` no hay descarte: se procesa cada
+frame del archivo en orden, tan rápido como el CPU pueda, útil para pasadas
+batch donde importa completitud y no la sensación de tiempo real (por
+ejemplo, reprocesar un archivo para popular el store de eventos).
+
 ## CLIP es opcional
 
 Si `vlm/` no está disponible (no se pudo importar) o no se generaron los
@@ -66,7 +94,10 @@ pose estimation — loggea una advertencia y no clasifica actividad. Ver
 Cada worker guarda 1 de cada 5 frames como `../frames/<cam_id>.jpg`
 (escritura atómica vía archivo temporal + `replace`), que expone
 `dashboard/` en `GET /api/frame/{cam_id}` para mostrar la cámara en vivo en
-el panel.
+el panel. Si YOLO detectó a alguien en ese frame, el preview incluye el
+overlay del esqueleto (bounding box + keypoints + huesos, vía
+`vision/src/pose_pipeline.draw_pose()`) — así se puede ver en el dashboard
+qué está detectando el pipeline, no solo la imagen cruda de la cámara.
 
 ## Setup
 

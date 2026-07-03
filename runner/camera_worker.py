@@ -17,7 +17,7 @@ sys.path.insert(0, str(_ROOT / "vision"))
 
 from schema import EventType, MonitoringEvent  # noqa: E402  (de events/)
 from store import EventStore                   # noqa: E402  (de events/)
-from src.pose_pipeline import FallImmobilityDetector  # noqa: E402  (de vision/)
+from src.pose_pipeline import FallImmobilityDetector, draw_pose  # noqa: E402  (de vision/)
 
 from .camera_source import make_source
 from .config import CameraConfig
@@ -77,13 +77,17 @@ class CameraWorker(threading.Thread):
                 if self._stop.is_set():
                     break
 
-                # ── Frame preview para el dashboard ───────────────────────
-                self._frame_count += 1
-                if self._frame_count % _FRAME_PREVIEW_EVERY_N == 0:
-                    self._save_preview(frame.image)
-
                 # ── Pose pipeline (todos los frames) ──────────────────────
                 raw_events = detector.process_frame(frame.image, frame.timestamp_s)
+
+                # ── Frame preview para el dashboard (con esqueleto de YOLO) ─
+                self._frame_count += 1
+                if self._frame_count % _FRAME_PREVIEW_EVERY_N == 0:
+                    preview = frame.image
+                    if detector.last_detection is not None:
+                        kpts, box = detector.last_detection
+                        preview = draw_pose(frame.image, kpts, box)
+                    self._save_preview(preview)
                 for raw in raw_events:
                     event = MonitoringEvent(
                         video_id=self._config.id,
