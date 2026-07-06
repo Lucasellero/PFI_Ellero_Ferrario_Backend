@@ -1,5 +1,6 @@
-"""Evaluación con ground truth real: usa los CSV de videos/fallN/Fall.csv
-(inicio/fin exacto de cada caída y de las actividades previas) para medir
+"""Evaluación con ground truth real: usa los CSV videos/**/Fall.csv
+(ej. GMDCSA-24/fall1/Fall.csv, CAUCAFall/Fall.csv; inicio/fin exacto de cada
+caída y de las actividades previas) para medir
 recall real (¿el evento cayó dentro de la ventana de caída anotada?) y
 falsos positivos (¿disparó durante una actividad marcada como no-caída,
 ej. Sitting/Walking/Standing?). No es parte del pipeline productivo.
@@ -50,16 +51,23 @@ def parse_classes(raw: str, video_id: str = "") -> list[tuple[str, float, float,
 
 
 def load_ground_truth() -> list[dict]:
-    """Recorre videos/fallN/Fall.csv y arma la lista de casos a evaluar."""
+    """Recorre videos/**/Fall.csv (cualquier profundidad, ej. GMDCSA-24/fall1/
+    o CAUCAFall/) y arma la lista de casos a evaluar.
+
+    Incluye también los clips sin ninguna caída (ej. Walk/Hop/Kneel de
+    CAUCAFall): no cuentan para el recall, pero sí para falsos positivos —
+    antes se descartaban del todo, lo que dejaba 50 clips de actividades
+    normales sin evaluar nunca como posible fuente de FP.
+    """
     cases = []
-    for csv_path in sorted(glob.glob("../videos/fall*/Fall.csv")):
+    for csv_path in sorted(glob.glob("../videos/**/Fall.csv", recursive=True)):
         folder = Path(csv_path).parent
         for row in csv.DictReader(open(csv_path, encoding="utf-8-sig")):
             classes_field = row.get(" Classes") or row.get("Classes") or ""
             segments = parse_classes(classes_field, video_id=f"{folder.name}/{row['File Name']}")
             fall_segments = [s for s in segments if s[3]]
             nonfall_segments = [s for s in segments if not s[3]]
-            if not fall_segments:
+            if not fall_segments and not nonfall_segments:
                 continue
             cases.append({
                 "video": str(folder / row["File Name"]),
@@ -87,11 +95,13 @@ def run_detector(video_path: str) -> list[dict]:
 
 def main() -> None:
     cases = load_ground_truth()
-    print(f"{len(cases)} casos con caída anotada (de {len(glob.glob('../videos/fall*/Fall.csv'))} carpetas)\n")
+    fall_cases = [c for c in cases if c["fall_segments"]]
+    n_csv = len(glob.glob('../videos/**/Fall.csv', recursive=True))
+    print(f"{len(fall_cases)} casos con caída anotada, {len(cases) - len(fall_cases)} clips sin caída (de {n_csv} carpetas)\n")
 
     true_positives = 0
     false_negatives = 0
-    false_positives_in_fall_videos = 0  # eventos fuera de la ventana de caída anotada
+    false_positives_in_nonfall_segments = 0  # eventos fuera de la ventana de caída anotada (incluye clips 100% sin caída)
     latencies = []
 
     for case in cases:
@@ -106,32 +116,34 @@ def main() -> None:
                     hit = True
                     latencies.append(t - start)
                     break
-        if hit:
-            true_positives += 1
-        else:
-            false_negatives += 1
+        if case["fall_segments"]:
+            if hit:
+                true_positives += 1
+            else:
+                false_negatives += 1
 
         # Falsos positivos: eventos que caen en un tramo marcado explícitamente
-        # como no-caída (Sitting/Walking/Standing/etc.)
+        # como no-caída (Sitting/Walking/Standing/etc., o el clip entero si no
+        # tiene ninguna caída)
         fp_here = 0
         for t in event_times:
             for start, end in case["nonfall_segments"]:
                 if start <= t <= end:
                     fp_here += 1
                     break
-        false_positives_in_fall_videos += fp_here
+        false_positives_in_nonfall_segments += fp_here
 
-        status = "OK" if hit else "MISS"
+        status = "OK" if hit else ("MISS" if case["fall_segments"] else "-")
         fp_note = f" ({fp_here} FP en tramo no-caída)" if fp_here else ""
         print(f"{case['video']}: {status}  eventos={[round(t,2) for t in event_times]}{fp_note}")
 
-    total = len(cases)
+    total = len(fall_cases)
     recall = true_positives / total if total else 0.0
     avg_latency = sum(latencies) / len(latencies) if latencies else float("nan")
     print("\n=== RESUMEN ===")
     print(f"Recall: {true_positives}/{total} ({recall*100:.1f}%)")
     print(f"Falsos negativos: {false_negatives}")
-    print(f"Falsos positivos en tramos no-caída: {false_positives_in_fall_videos}")
+    print(f"Falsos positivos en tramos no-caída (de {len(cases)} clips evaluados): {false_positives_in_nonfall_segments}")
     print(f"Latencia promedio (evento - inicio real de la caída): {avg_latency:.2f}s")
 
 

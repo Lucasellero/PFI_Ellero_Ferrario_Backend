@@ -7,14 +7,23 @@ venv/
 .env
 .DS_Store
 
-# Dataset de video: no versionar los archivos, solo la estructura y el README
+# Dataset de video: no versionar los archivos, solo la estructura, el README
+# y el ground truth derivado (Fall.csv, kaggle_data.csv, etc.)
 videos/**/*.mp4
 videos/**/*.avi
 videos/**/*.mov
 
+# CAUCAFall: dataset crudo (frames png + labels YOLO por frame, ~40k archivos)
+# y material del paper — se regenera Fall.csv con build_caucafall_groundtruth.py
+videos/CAUCAFall/CAUCAFall/**/*.png
+videos/CAUCAFall/CAUCAFall/**/*.txt
+videos/CAUCAFall/*.xlsx
+videos/CAUCAFall/*.jpeg
+
 # Cache de features derivado del dataset (se regenera con evaluate_posture.py)
 vision/posture_features.csv
 vision/fall_calibration.csv
+vision/fall_descriptors_cache.pkl
 vlm/models/
 *.onnx
 *.onnx.data

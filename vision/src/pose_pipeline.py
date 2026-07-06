@@ -3,16 +3,26 @@
 Descriptores según Giri et al. (2025), citado en el informe (Sec. 2.2.7):
 velocidad vertical de la cadera y aspect ratio del bounding box.
 
-Heurística de caída calibrada empíricamente sobre 41 videos de caída reales
-(`videos/fall1/` + `videos/fall2/`, ver `calibrate_falls.py`): la velocidad
-vertical y el aspect ratio "acostado" NO ocurren en el mismo frame — el pico
-de velocidad pasa durante la caída (~0.3-1s) y el aspect ratio recién se
-estabiliza después, cuando el cuerpo termina de asentarse en el piso. Por
-eso la detección es en dos fases (pico de velocidad, después confirmación
-por postura), no una condición simultánea. El ángulo de torso, calibrado
+Heurística de caída calibrada empíricamente: la velocidad vertical y el
+aspect ratio "acostado" NO ocurren en el mismo frame — el pico de velocidad
+pasa durante la caída (~0.3-1s) y el aspect ratio recién se estabiliza
+después, cuando el cuerpo termina de asentarse en el piso. Por eso la
+detección es en dos fases (pico de velocidad, después confirmación por
+postura), no una condición simultánea. El ángulo de torso, calibrado
 inicialmente según Giri et al., se descartó de la condición porque en
 caídas laterales no llega a valores altos y hacía perder ~2/16 casos sin
 mejorar la precisión de los que sí detectaba.
+
+La velocidad vertical se normaliza por el alto del bbox de la persona (no
+por el alto del frame): sin eso, el umbral quedaba atado a la distancia
+cámara-sujeto de un único setup. Los umbrales actuales (`FALL_VERTICAL_VELOCITY`,
+`FALL_ASPECT_RATIO`) se recalibraron con un grid search sobre 128 clips con
+caída + 51 sin caída de dos datasets con cámaras distintas (`videos/GMDCSA-24/`,
+mismo encuadre fijo; `videos/CAUCAFall/`, encuadre/distancia variable por
+sujeto — ver `recalibrate_fall_thresholds.py`), para generalizar entre
+setups de cámara en vez de sobreajustar a uno solo. Recall combinado 85.2%
+(vs. 66.4% con los umbrales viejos y la velocidad sin normalizar), FP 18/179
+clips evaluados.
 """
 from __future__ import annotations
 
@@ -35,8 +45,8 @@ SKELETON_EDGES = [
 ]
 
 FALL_VELOCITY_WINDOW_S = 0.4          # ventana para medir la velocidad vertical de la cadera
-FALL_VERTICAL_VELOCITY = 0.25         # hip_y normalizado / segundo => posible caída en curso
-FALL_ASPECT_RATIO = 1.1               # width/height por encima de esto => postura final acostada
+FALL_VERTICAL_VELOCITY = 0.12         # "alturas de persona" por segundo (hip_y / bbox_height_frac) => posible caída en curso
+FALL_ASPECT_RATIO = 1.4               # width/height por encima de esto => postura final acostada
 FALL_CONFIRM_WINDOW_S = 1.5           # tiempo máx. entre el pico de velocidad y la postura final
 FALL_COOLDOWN_S = 3.0                 # tras confirmar una caída, no reportar otra hasta pasado esto
 MIN_KEYPOINT_CONFIDENCE = 0.2         # confianza promedio mínima de keypoints para no descartar el frame
@@ -48,6 +58,7 @@ IMMOBILITY_MOVEMENT_THRESHOLD = 0.02  # desplazamiento normalizado de keypoints 
 class PoseSample:
     timestamp_s: float
     hip_y: float               # normalizado (0 = arriba, 1 = abajo del frame)
+    bbox_height_frac: float    # alto del bbox / alto del frame, para normalizar la velocidad por la escala de la persona
     aspect_ratio: float
     torso_angle_deg: float
     keypoints: np.ndarray      # normalizados a [0, 1] por ancho/alto del frame
@@ -99,6 +110,7 @@ def build_pose_sample(kpts: np.ndarray, box: np.ndarray, w: int, h: int, timesta
     return PoseSample(
         timestamp_s=timestamp_s,
         hip_y=float(hip[1] / h),
+        bbox_height_frac=float(bh / h),
         aspect_ratio=aspect_ratio,
         torso_angle_deg=torso_angle_deg,
         keypoints=kpts / np.array([w, h]),
@@ -135,9 +147,10 @@ def draw_pose(image: np.ndarray, kpts: np.ndarray, box: np.ndarray) -> np.ndarra
 class FallImmobilityDetector:
     """Consume frames de un video y emite eventos 'fall' / 'immobility'.
 
-    Umbrales de caída calibrados sobre 41 clips de caída reales, ver
-    docstring del módulo y `calibrate_falls.py`. Los de inmovilidad siguen
-    siendo un punto de partida de la literatura, sin calibrar todavía.
+    Umbrales de caída recalibrados sobre 179 clips de dos datasets con
+    cámaras distintas, ver docstring del módulo y
+    `recalibrate_fall_thresholds.py`. Los de inmovilidad siguen siendo un
+    punto de partida de la literatura, sin calibrar todavía.
     """
 
     def __init__(self, model_path: str = "yolo11n-pose.pt", history_seconds: float = 1.5):
@@ -206,7 +219,17 @@ class FallImmobilityDetector:
     def _vertical_velocity(self, sample: PoseSample) -> float | None:
         """Velocidad vertical de la cadera vs. la muestra más cercana a
         FALL_VELOCITY_WINDOW_S segundos atrás (no frame-a-frame, no el
-        historial completo: ambos extremos diluyen el pico real de la caída)."""
+        historial completo: ambos extremos diluyen el pico real de la caída).
+
+        Se normaliza por el alto del bbox de la persona (promedio entre la
+        muestra actual y la de referencia), no por el alto del frame: sin
+        esto, el mismo movimiento real da velocidades distintas según la
+        distancia cámara-sujeto (más lejos => bbox más chico => se subestima
+        la velocidad y se pierden caídas; más cerca => se sobreestima y
+        dispara con movimientos normales). Confirmado empíricamente al
+        evaluar sobre CAUCAFall, que varía la distancia de cámara por sujeto
+        (recall 28% vs. 91% en los clips propios, todos a la misma distancia).
+        """
         if not self._history:
             return None
         target_t = sample.timestamp_s - FALL_VELOCITY_WINDOW_S
@@ -214,7 +237,10 @@ class FallImmobilityDetector:
         dt = sample.timestamp_s - ref.timestamp_s
         if dt < FALL_VELOCITY_WINDOW_S / 2:
             return None
-        return (sample.hip_y - ref.hip_y) / dt
+        scale = (sample.bbox_height_frac + ref.bbox_height_frac) / 2
+        if scale <= 1e-6:
+            return None
+        return (sample.hip_y - ref.hip_y) / scale / dt
 
     def _track_immobility(self, sample: PoseSample) -> list[dict]:
         events: list[dict] = []

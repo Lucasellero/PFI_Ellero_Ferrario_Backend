@@ -5,10 +5,16 @@
 ```
 vision/
 ├── main.py               # pipeline de eventos (fall/immobility) → events/store.py
-└── src/
-    ├── capture.py          # lee frames de un archivo de video (VideoFile)
-    ├── pose_pipeline.py    # YOLOv11n-pose + descriptores (PoseSample) + FallImmobilityDetector
-    └── posture.py          # classify_posture(): parado / sentado / acostado a partir de un PoseSample
+├── src/
+│   ├── capture.py          # lee frames de un archivo de video (VideoFile)
+│   ├── pose_pipeline.py    # YOLOv11n-pose + descriptores (PoseSample) + FallImmobilityDetector
+│   └── posture.py          # classify_posture(): parado / sentado / acostado a partir de un PoseSample
+├── evaluate_falls.py                    # recall/FP contra Fall.csv (dev, no productivo)
+├── calibrate_falls.py                   # calibración original (GMDCSA-24), ver historia abajo
+├── recalibrate_fall_thresholds.py       # grid search de umbrales con cache de descriptores
+├── extend_descriptor_cache.py           # suma clips nuevos a fall_descriptors_cache.pkl sin recomputar todo
+├── build_caucafall_groundtruth.py       # genera videos/CAUCAFall/Fall.csv desde sus etiquetas por frame
+└── build_kaggle_multicam_groundtruth.py # genera videos/Kaggle/Fall.csv desde kaggle_data.csv
 ```
 
 `pose_pipeline.py` es la base compartida: expone `detect_person()` (corre
@@ -118,11 +124,12 @@ alguien, es justo lo que tiene que predecir solo. `evaluate_falls.py` usa
 estos CSV para medir contra el timestamp real (no solo "¿detectó algo en
 algún momento del clip?") y para detectar falsos positivos dentro de los
 tramos ya etiquetados como no-caída del mismo clip. Sobre 78 casos
-evaluables (1 quedó sin rango de tiempo parseable en el CSV original):
+evaluables (1 quedó sin rango de tiempo parseable en el CSV original), con
+los umbrales originales:
 
-- **Recall: 91% (71/78)**
-- **Falsos positivos: 1/78** (dentro de tramos explícitamente no-caída)
-- **Latencia promedio: 1.2s** desde el inicio real de la caída hasta el evento
+- Recall: 91% (71/78)
+- Falsos positivos: 1/78 (dentro de tramos explícitamente no-caída)
+- Latencia promedio: 1.2s desde el inicio real de la caída hasta el evento
 
 De los 7 casos no detectados: 5 son caídas **hacia la cama** estando ya
 sentado en el borde (la cama está a una altura similar a la posición final
@@ -137,6 +144,72 @@ riesgo es meter falsos positivos nuevos (confundir acostarse/sentarse
 voluntario con una caída es, según la literatura — ver `vlm/README.md` y
 el paper de Benabdennour et al. 2026 abajo —, el modo de falla más común en
 todo el campo, no algo específico de esta heurística).
+
+**Recalibración multi-dataset (bug de distancia de cámara):** el sistema
+está pensado para funcionar como app de **una sola cámara en un hogar**, con
+setups (ángulo/distancia) que varían de instalación en instalación — no una
+cámara fija conocida de antemano. Al evaluar los umbrales de arriba sobre
+`videos/CAUCAFall/` (100 clips de otro dataset, con distancia de cámara
+variable por sujeto — ver `build_caucafall_groundtruth.py`), el recall cayó
+a 28% y los falsos positivos subieron a 19/50. La causa: `hip_y` en
+`build_pose_sample()` se normalizaba contra el **alto del frame**, no contra
+el tamaño de la persona — el mismo movimiento real de cadera da una
+velocidad calculada distinta según qué tan lejos esté la cámara (más lejos
+→ se subestima → se pierden caídas; más cerca → se sobreestima → dispara
+con movimientos normales).
+
+Fix: `_vertical_velocity()` ahora normaliza por el alto del bbox de la
+persona (`bbox_height_frac`), no por el alto del frame — invariante a
+distancia de cámara. Con eso, `recalibrate_fall_thresholds.py` recalibró
+`FALL_VERTICAL_VELOCITY` y `FALL_ASPECT_RATIO` por grid search sobre 179
+clips (GMDCSA-24 completo + CAUCAFall completo, incluyendo los 51 clips sin
+ninguna caída — antes ni se evaluaban como fuente de FP, ver fix en
+`evaluate_falls.py`). El script cachea los descriptores por frame en
+`fall_descriptors_cache.pkl` para poder barrear ~70 combinaciones de
+umbrales sin correr YOLO de nuevo por cada una.
+
+Resultado con los umbrales nuevos (`FALL_VERTICAL_VELOCITY=0.12`,
+`FALL_ASPECT_RATIO=1.4`, en unidades de "alturas de persona/segundo"):
+
+| Dataset | Recall antes | Recall después | FP antes | FP después |
+|---|---|---|---|---|
+| GMDCSA-24 (78 casos) | 91% | **96.2%** (75/78) | 1/78 | 2/79 |
+| CAUCAFall (50 casos) | 28% | **68.0%** (34/50) | 19/50 | 16/100 |
+| Combinado (128 casos) | 66.4% | **85.2%** (109/128) | 20 | 18/179 |
+
+Mejoró en ambos datasets a la vez (no fue trade-off): la causa real era el
+bug de normalización, no una tensión inherente entre "andar bien en un
+setup" y "generalizar a otros". Latencia promedio subió de 1.2s a 2.3s (el
+aspect ratio más exigente tarda un poco más en confirmarse), aceptable para
+este caso de uso.
+
+**Dataset pendiente, no incluido todavía en la calibración:** `videos/Kaggle/`
+(Multiple Cameras Fall Dataset, Auvinet et al. — 24 escenas grabadas
+simultáneamente con 8 cámaras en una habitación amoblada como living/casa,
+no institucional). Ground truth en `kaggle_data.csv` (frame de inicio/fin
+por cámara, `build_kaggle_multicam_groundtruth.py` lo convierte al formato
+`Fall.csv`).
+
+Se probó con chute01 (8 cámaras, un solo evento de caída) y dio recall
+2/8 — mucho peor que GMDCSA-24/CAUCAFall, pero **no se confía en ese
+número**: la ventana de caída anotada da ~0.25s (contra >1s típico en los
+otros datasets) al convertir frame→segundo con el FPS que reporta el propio
+`.avi` (120). No se pudo confirmar si ese FPS es real o si el contenedor
+quedó mal etiquetado en el re-upload de Kaggle (se buscaron frames
+duplicados como evidencia de un FPS inflado 4x y no aparecieron, así que
+tampoco se puede descartar sin más investigación). Sumado a que estos
+`.avi` tienen bastante corrupción de frames (warnings de FFmpeg tipo
+`ac-tex damaged`) y que son mucho más largos que los de los otros dos
+datasets (hasta ~4200 frames vs. ~100-300, carísimo correr YOLO-pose frame
+a frame en CPU sobre las 24 escenas × 8 cámaras completas), se decidió
+**dejarlo afuera de la calibración por ahora** en vez de confiar en un
+timing dudoso. `videos/Kaggle/Fall.csv.pending` guarda lo ya generado (para
+no recalcularlo) pero no se llama `Fall.csv` a propósito — así
+`evaluate_falls.py`/`recalibrate_fall_thresholds.py`, que buscan
+`videos/**/Fall.csv` recursivamente, no lo mezclan sin querer en las
+métricas agregadas. Para retomarlo: confirmar el FPS real (ej. contando
+frames en un tramo de duración conocida por otro medio) antes de volver a
+generar el `Fall.csv` real.
 
 **Trabajo futuro (no implementado):** para resolver justamente la
 ambigüedad "cayó vs. se acostó/sentó voluntariamente" — el modo de falla
