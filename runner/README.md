@@ -40,7 +40,9 @@ cameras:
   loop: true         # si true, reinicia el archivo al terminar (ignorado en streams en vivo)
 pose_model: yolo11n-pose.pt
 log_level: INFO
-clip_interval_s: 10.0   # segundos entre clasificaciones CLIP por cámara
+clip_interval_s: 10.0      # segundos entre ventanas de clasificación CLIP por cámara
+clip_min_confidence: 0.4   # confianza mínima para emitir un evento de actividad
+clip_heartbeat_s: 60.0     # cada cuánto re-emitir una actividad que sigue igual
 ```
 
 Si `source` empieza con `rtsp://`, `http(s)://`, o es un entero (índice de
@@ -81,6 +83,28 @@ de ~0.4-1.5s, no depende de ver cada frame individual — ver
 frame del archivo en orden, tan rápido como el CPU pueda, útil para pasadas
 batch donde importa completitud y no la sensación de tiempo real (por
 ejemplo, reprocesar un archivo para popular el store de eventos).
+
+## Clasificación de actividades (CLIP)
+
+Pensada para una cámara fija transmitiendo continuamente la habitación de
+una persona. Cada `clip_interval_s` se abre una **ventana de muestreo**: se
+clasifican 3 frames espaciados ~1s y se promedian los scores — un frame
+único es ruidoso (persona de espaldas, a mitad de un movimiento) y el
+promedio estabiliza la predicción. Además:
+
+- **Recorte a la persona**: cada frame se recorta al bounding box que ya
+  calculó el detector de pose (con 25% de margen) antes de pasar por CLIP.
+  En una cámara fija el fondo constante domina la similitud (una TV visible
+  empuja todo hacia `WatchTV`); clasificar solo a la persona elimina ese
+  sesgo.
+- **Sin persona, sin evento**: si YOLO no detecta a nadie en la ventana, no
+  se clasifica nada (una habitación vacía no tiene actividad).
+- **Umbral de confianza** (`clip_min_confidence`): las ventanas ambiguas se
+  descartan (quedan en el log) en vez de emitir una etiqueta dudosa.
+- **Deduplicación**: se emite evento cuando la actividad *cambia*; si sigue
+  igual se re-emite cada `clip_heartbeat_s` con `ongoing: true` en el
+  metadata, para que el análisis posterior pueda reconstruir duraciones sin
+  ahogarse en eventos repetidos.
 
 ## CLIP es opcional
 

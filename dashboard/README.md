@@ -52,6 +52,24 @@ nuevos cada 2 segundos (`_background_broadcaster`), solo si hay clientes
 conectados. Al conectar, un cliente recibe el estado actual y los últimos
 30 eventos antes de empezar a recibir novedades.
 
+## Vistas del panel
+
+- **Todas las fuentes**: grilla con el preview de cada cámara y una banda
+  común con todos los eventos mezclados.
+- **Vista única**: una cámara seleccionada en grande, con sus eventos
+  separados por detector en dos paneles apilados: **Postura · YOLO**
+  (caídas e inmovilidad, del pipeline de pose de `vision/`) y
+  **Actividad · CLIP** (clasificación de escena de `vlm/`), cada uno con su
+  contador y su scroll — así las actividades frecuentes de CLIP no
+  entierran las caídas. La separación se decide por `event_type` (solo CLIP
+  emite `activity`).
+
+Las tarjetas de eventos CLIP muestran como título la actividad predicha
+traducida al español con ícono propio (mapa `ACTIVITY_ES` en
+`static/index.html`: `Walk` → "🚶 Caminando", `Readbook` → "📖 Leyendo un
+libro", etc.) y la confianza de la predicción en la línea de metadata. Una
+clase que no esté en el mapa se muestra con su etiqueta cruda.
+
 ## Seguridad de rutas de archivo
 
 `upload-video` sanitiza el nombre (`Path(file.filename).name`, descarta

@@ -106,6 +106,27 @@ def _softmax(x: np.ndarray) -> np.ndarray:
     return e / e.sum()
 
 
+def crop_to_person(image_bgr: np.ndarray, box, margin: float = 0.25) -> np.ndarray:
+    """Recorta el frame al bounding box de la persona, con margen relativo.
+
+    En una cámara fija de habitación el fondo es constante y domina la
+    similitud de CLIP (una TV visible empuja todo hacia WatchTV aunque la
+    persona esté caminando). Clasificar solo el recorte de la persona
+    elimina ese sesgo. `box` es xyxy (como devuelve el detector de pose).
+    """
+    h, w = image_bgr.shape[:2]
+    x1, y1, x2, y2 = (float(v) for v in box)
+    mx = (x2 - x1) * margin
+    my = (y2 - y1) * margin
+    x1 = max(0, int(x1 - mx))
+    y1 = max(0, int(y1 - my))
+    x2 = min(w, int(x2 + mx))
+    y2 = min(h, int(y2 + my))
+    if x2 - x1 < 32 or y2 - y1 < 32:  # bbox degenerado: mejor el frame completo
+        return image_bgr
+    return image_bgr[y1:y2, x1:x2]
+
+
 class ClipActivityClassifier:
     """Clasifica un frame BGR. Sin dependencia de PyTorch en runtime."""
 

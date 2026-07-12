@@ -83,6 +83,8 @@ def main() -> None:
             stop_event=stop_event,
             clip_classifier=clip,
             clip_interval_s=config.clip_interval_s,
+            clip_min_confidence=config.clip_min_confidence,
+            clip_heartbeat_s=config.clip_heartbeat_s,
         )
         for cam in config.cameras
     ]

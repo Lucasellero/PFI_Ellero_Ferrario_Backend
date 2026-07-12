@@ -20,7 +20,9 @@ class RunnerConfig:
     cameras: list[CameraConfig]
     pose_model: str = "yolo11n-pose.pt"
     log_level: str = "INFO"
-    clip_interval_s: float = 10.0  # segundos entre clasificaciones CLIP por cámara
+    clip_interval_s: float = 10.0        # segundos entre ventanas de clasificación CLIP por cámara
+    clip_min_confidence: float = 0.4     # confianza mínima para emitir un evento de actividad
+    clip_heartbeat_s: float = 60.0       # cada cuánto re-emitir una actividad que continúa igual
 
 
 def load_config(path: Path) -> RunnerConfig:
@@ -31,4 +33,6 @@ def load_config(path: Path) -> RunnerConfig:
         pose_model=data.get("pose_model", "yolo11n-pose.pt"),
         log_level=data.get("log_level", "INFO"),
         clip_interval_s=float(data.get("clip_interval_s", 10.0)),
+        clip_min_confidence=float(data.get("clip_min_confidence", 0.4)),
+        clip_heartbeat_s=float(data.get("clip_heartbeat_s", 60.0)),
     )

@@ -317,7 +317,7 @@
     /* ── Right panel ─────────────────────────────────────────────────────── */
     .right-panel {
       display: grid;
-      grid-template-rows: auto 1fr 180px;
+      grid-template-rows: auto 1fr;
       overflow: hidden;
       min-height: 0;
     }
@@ -658,6 +658,17 @@
       min-width: 0;
     }
 
+    .single-events-group {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 0;
+    }
+    .single-events-group + .single-events-group {
+      border-top: 1px solid var(--border);
+    }
+
     .single-events-hdr {
       padding: 8px 14px;
       border-bottom: 1px solid var(--border);
@@ -668,38 +679,25 @@
       background: var(--surface);
     }
 
-    /* ── Logs ────────────────────────────────────────────────────────────── */
-    .logs-panel {
-      display: flex;
-      flex-direction: column;
-      background: #090d13;
-      overflow: hidden;
-      border-top: 1px solid var(--border);
+    .detector-badge {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      padding: 2px 7px;
+      border-radius: 10px;
+      white-space: nowrap;
     }
-    .panel-header {
-      padding: 8px 16px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-shrink: 0;
+    .detector-badge.yolo {
+      background: rgba(248,81,73,.12);
+      color: var(--danger);
+      border: 1px solid rgba(248,81,73,.3);
     }
-    .logs-scroll {
-      flex: 1;
-      overflow-y: auto;
-      padding: 6px 12px;
-      font-family: var(--mono);
-      font-size: 11px;
-      line-height: 1.65;
+    .detector-badge.clip {
+      background: rgba(77,139,248,.12);
+      color: var(--primary);
+      border: 1px solid rgba(77,139,248,.3);
     }
-    .logs-scroll::-webkit-scrollbar { width: 4px; }
-    .logs-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
-
-    .log-line { white-space: pre-wrap; word-break: break-all; }
-    .log-line.info    { color: #768390; }
-    .log-line.warning { color: var(--warning); }
-    .log-line.error   { color: var(--danger); }
-    .log-line.system  { color: var(--primary); font-weight: 600; }
 
     /* ── Toast ───────────────────────────────────────────────────────────── */
     #toasts {
@@ -752,11 +750,12 @@
 
   <div class="status-pill stopped" id="statusPill">
     <span class="status-dot"></span>
-    <span id="statusLabel">DETENIDO</span>
+    <span id="statusLabel">APAGADO</span>
   </div>
 
   <div class="spacer"></div>
 
+  <a class="btn btn-ghost" href="/logs">📄 Ver logs</a>
   <button class="btn btn-start" id="btnStart" onclick="startRunner()">▶ Iniciar</button>
   <button class="btn btn-stop"  id="btnStop"  onclick="stopRunner()" disabled>■ Detener</button>
 </header>
@@ -867,6 +866,7 @@
       </div>
 
       <div class="spacer"></div>
+      <button class="btn btn-ghost btn-sm" id="btnToggleOverlay" onclick="toggleOverlay()">👁 Ocultar overlay YOLO</button>
       <span class="counter" id="evCount">0</span>
       <button class="btn btn-ghost btn-sm" onclick="clearEventView()">Limpiar vista</button>
     </div>
@@ -922,33 +922,44 @@
 
           <!-- Events for selected cam -->
           <div class="single-events-side">
-            <div class="single-events-hdr">
-              <span class="section-label">Acciones detectadas</span>
-              <span class="counter" id="singleEvCount">0</span>
-            </div>
-            <div class="events-scroll" id="evListSingle">
-              <div class="no-events">
-                <div class="no-events-icon">📭</div>
-                Seleccioná una fuente para ver<br>sus eventos aquí.
+
+            <!-- Eventos de postura (YOLO) -->
+            <div class="single-events-group">
+              <div class="single-events-hdr">
+                <span class="section-label">🦴 Postura · YOLO</span>
+                <span class="detector-badge yolo">caídas · inmovilidad</span>
+                <div class="spacer"></div>
+                <span class="counter" id="singleEvCountYolo">0</span>
+              </div>
+              <div class="events-scroll" id="evListSingleYolo">
+                <div class="no-events">
+                  <div class="no-events-icon">📭</div>
+                  Seleccioná una fuente para ver<br>sus eventos de postura aquí.
+                </div>
               </div>
             </div>
+
+            <!-- Eventos de actividad (CLIP) -->
+            <div class="single-events-group">
+              <div class="single-events-hdr">
+                <span class="section-label">🧠 Actividad · CLIP</span>
+                <span class="detector-badge clip">clasificación de escena</span>
+                <div class="spacer"></div>
+                <span class="counter" id="singleEvCountClip">0</span>
+              </div>
+              <div class="events-scroll" id="evListSingleClip">
+                <div class="no-events">
+                  <div class="no-events-icon">📭</div>
+                  Seleccioná una fuente para ver<br>sus actividades aquí.
+                </div>
+              </div>
+            </div>
+
           </div>
 
         </div>
       </div>
 
-    </div>
-
-    <!-- Logs (always visible) -->
-    <div class="logs-panel">
-      <div class="panel-header" style="background: var(--surface);">
-        <span class="section-label">Logs del sistema</span>
-        <div class="spacer"></div>
-        <button class="btn btn-ghost btn-sm" onclick="clearLogs()">Limpiar</button>
-      </div>
-      <div class="logs-scroll" id="logsScroll">
-        <div class="log-line system">Panel listo · esperando conexión al runner…</div>
-      </div>
     </div>
 
   </div><!-- /.right-panel -->
@@ -963,7 +974,8 @@ let ws          = null;
 let isRunning   = false;
 let activeTab   = 'ip';
 let evCount     = 0;
-let singleEvCount = 0;
+let singleEvCountYolo = 0;
+let singleEvCountClip = 0;
 let lastEvId    = 0;
 let camerasDirty = false;
 let viewMode    = 'multi';   // 'multi' | 'single'
@@ -971,29 +983,26 @@ let selectedCam = null;
 let activeCameras = [];
 let allEvents   = [];        // buffer para filtrar en vista única
 let framePoller = null;
+let showOverlay = true;      // bbox + keypoints de YOLO en el preview de cada cámara
 
 // ── Init ────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   connectWS();
   loadCameras();
   loadVideos();
+  loadOverlayState();
   startFramePoller();
 });
 
 // ── WebSocket ────────────────────────────────────────────────────────────────
 function connectWS() {
   ws = new WebSocket(`ws://${location.host}/ws`);
-  ws.onopen  = () => addLog('system', '● Conectado al servidor.');
-  ws.onclose = () => {
-    addLog('system', '✕ Conexión cerrada. Reconectando en 3 s…');
-    setTimeout(connectWS, 3000);
-  };
+  ws.onclose = () => setTimeout(connectWS, 3000);
   ws.onerror = () => {};
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     switch (msg.type) {
       case 'status': applyStatus(msg.running); break;
-      case 'log':    addLog(classifyLog(msg.text), msg.text); break;
       case 'event':  handleEvent(msg); break;
       case 'ping':   break;
     }
@@ -1008,7 +1017,7 @@ function applyStatus(running) {
   document.getElementById('btnStart').disabled = running;
   document.getElementById('btnStop').disabled  = !running;
   pill.className  = 'status-pill ' + (running ? 'running' : 'stopped');
-  label.textContent = running ? 'ACTIVO' : 'DETENIDO';
+  label.textContent = running ? 'ACTIVO' : 'APAGADO';
 
   // actualizar íconos y textos de placeholder en celdas
   document.querySelectorAll('.ph-icon').forEach(el => {
@@ -1050,6 +1059,32 @@ async function stopRunner() {
     const err = await res.json().catch(() => ({}));
     toast('err', err.detail || 'No se pudo detener');
   }
+}
+
+// ── Overlay YOLO (bbox + keypoints) ─────────────────────────────────────────
+async function loadOverlayState() {
+  const res = await apiFetch('GET', '/api/overlay');
+  if (!res.ok) return;
+  const data = await res.json();
+  showOverlay = data.show_overlay !== false;
+  updateOverlayButton();
+}
+
+async function toggleOverlay() {
+  const next = !showOverlay;
+  const res = await apiFetch('POST', '/api/overlay', { show_overlay: next });
+  if (res.ok) {
+    showOverlay = next;
+    updateOverlayButton();
+    toast('ok', showOverlay ? 'Overlay YOLO visible en todas las cámaras' : 'Overlay YOLO oculto en todas las cámaras');
+  } else {
+    toast('err', 'No se pudo cambiar el overlay');
+  }
+}
+
+function updateOverlayButton() {
+  const btn = document.getElementById('btnToggleOverlay');
+  btn.textContent = showOverlay ? '👁 Ocultar overlay YOLO' : '👁‍🗨 Mostrar overlay YOLO';
 }
 
 // ── Frame poller ─────────────────────────────────────────────────────────────
@@ -1255,20 +1290,40 @@ function selectCamera(camId) {
   rebuildSingleEvents(camId);
 }
 
-function rebuildSingleEvents(camId) {
-  const list = document.getElementById('evListSingle');
-  const filtered = allEvents.filter(e => e.video_id === camId);
-  singleEvCount = filtered.length;
+// CLIP emite eventos 'activity'; YOLO (pose) emite 'fall' e 'immobility'.
+function detectorOf(ev) {
+  return ev.event_type === 'activity' ? 'clip' : 'yolo';
+}
 
-  if (!filtered.length) {
-    list.innerHTML = '<div class="no-events"><div class="no-events-icon">📭</div>Sin eventos para esta fuente.</div>';
-  } else {
-    list.innerHTML = '';
-    filtered.forEach(ev => list.appendChild(buildEventCard(ev)));
-  }
-  const c = document.getElementById('singleEvCount');
-  c.textContent = singleEvCount;
-  c.classList.toggle('has-events', singleEvCount > 0);
+function rebuildSingleEvents(camId) {
+  const filtered = allEvents.filter(e => e.video_id === camId);
+  const yolo = filtered.filter(e => detectorOf(e) === 'yolo');
+  const clip = filtered.filter(e => detectorOf(e) === 'clip');
+
+  const fill = (listId, events, emptyMsg) => {
+    const list = document.getElementById(listId);
+    if (!events.length) {
+      list.innerHTML = `<div class="no-events"><div class="no-events-icon">📭</div>${emptyMsg}</div>`;
+    } else {
+      list.innerHTML = '';
+      events.forEach(ev => list.appendChild(buildEventCard(ev)));
+    }
+  };
+  fill('evListSingleYolo', yolo, 'Sin eventos de postura para esta fuente.');
+  fill('evListSingleClip', clip, 'Sin actividades detectadas para esta fuente.');
+
+  singleEvCountYolo = yolo.length;
+  singleEvCountClip = clip.length;
+  updateSingleCounters();
+}
+
+function updateSingleCounters() {
+  const cy = document.getElementById('singleEvCountYolo');
+  cy.textContent = singleEvCountYolo;
+  cy.classList.toggle('has-events', singleEvCountYolo > 0);
+  const cc = document.getElementById('singleEvCountClip');
+  cc.textContent = singleEvCountClip;
+  cc.classList.toggle('has-events', singleEvCountClip > 0);
 }
 
 // ── Add / remove cameras ──────────────────────────────────────────────────────
@@ -1401,6 +1456,24 @@ async function uploadFile(file) {
 const EVENT_ICONS  = { fall: '⚠️', immobility: '💤', activity: '🏃' };
 const EVENT_LABELS = { fall: 'Caída detectada', immobility: 'Inmovilidad', activity: 'Actividad' };
 
+// Traducción de las clases CLIP (vlm/models/labels.json) a nombre + ícono
+const ACTIVITY_ES = {
+  'Cook.Cleanup':         { icon: '🧽', name: 'Limpiando la cocina' },
+  'Cook.Stir':            { icon: '🍳', name: 'Cocinando' },
+  'Drink.Fromcan':        { icon: '🥤', name: 'Tomando de una lata' },
+  'Drink.Fromcup':        { icon: '☕', name: 'Tomando de una taza' },
+  'Maketea.Insertteabag': { icon: '🫖', name: 'Preparando té' },
+  'Readbook':             { icon: '📖', name: 'Leyendo un libro' },
+  'Sitdown':              { icon: '🪑', name: 'Sentándose' },
+  'Takepills':            { icon: '💊', name: 'Tomando medicación' },
+  'Uselaptop':            { icon: '💻', name: 'Usando la computadora' },
+  'Usetablet':            { icon: '📱', name: 'Usando una tablet' },
+  'WatchTV':              { icon: '📺', name: 'Mirando TV' },
+  'Enter':                { icon: '🚪', name: 'Entrando a la habitación' },
+  'Walk':                 { icon: '🚶', name: 'Caminando' },
+  'Laydown':              { icon: '🛏️', name: 'Acostándose' },
+};
+
 function handleEvent(ev) {
   if (ev.id && ev.id <= lastEvId) return;
   if (ev.id) lastEvId = Math.max(lastEvId, ev.id);
@@ -1424,15 +1497,14 @@ function handleEvent(ev) {
 
   // Renderizar en single-view si es la cámara seleccionada
   if (viewMode === 'single' && selectedCam && ev.video_id === selectedCam) {
-    const listSingle = document.getElementById('evListSingle');
+    const det = detectorOf(ev);
+    const listSingle = document.getElementById(det === 'clip' ? 'evListSingleClip' : 'evListSingleYolo');
     const emptyS = listSingle.querySelector('.no-events');
     if (emptyS) emptyS.remove();
     listSingle.insertBefore(buildEventCard(ev), listSingle.firstChild);
     while (listSingle.children.length > 40) listSingle.removeChild(listSingle.lastChild);
-    singleEvCount++;
-    const cs = document.getElementById('singleEvCount');
-    cs.textContent = singleEvCount;
-    cs.classList.add('has-events');
+    if (det === 'clip') singleEvCountClip++; else singleEvCountYolo++;
+    updateSingleCounters();
   }
 
   // Parpadeo de celda en el grid
@@ -1440,8 +1512,16 @@ function handleEvent(ev) {
 }
 
 function buildEventCard(ev) {
-  const icon  = EVENT_ICONS[ev.event_type]  || '❓';
-  const label = EVENT_LABELS[ev.event_type] || ev.event_type;
+  let icon  = EVENT_ICONS[ev.event_type]  || '❓';
+  let label = EVENT_LABELS[ev.event_type] || ev.event_type;
+
+  // Para eventos CLIP, el título es la actividad predicha
+  if (ev.event_type === 'activity' && ev.metadata && ev.metadata.activity_label) {
+    const act = ACTIVITY_ES[ev.metadata.activity_label];
+    icon  = act ? act.icon : icon;
+    label = act ? act.name : ev.metadata.activity_label;
+  }
+
   const ts    = typeof ev.video_timestamp_s === 'number'
     ? `@${ev.video_timestamp_s.toFixed(1)} s` : '';
   const meta  = ev.metadata ? formatMeta(ev.metadata) : '';
@@ -1463,7 +1543,7 @@ function formatMeta(meta) {
   if (meta.aspect_ratio   !== undefined) parts.push(`AR ${meta.aspect_ratio.toFixed(2)}`);
   if (meta.torso_angle_deg !== undefined) parts.push(`ang ${meta.torso_angle_deg.toFixed(1)}°`);
   if (meta.duration_s      !== undefined) parts.push(`dur ${meta.duration_s.toFixed(0)} s`);
-  if (meta.activity_label  !== undefined) parts.push(meta.activity_label);
+  if (meta.confidence      !== undefined) parts.push(`confianza ${(meta.confidence * 100).toFixed(0)}%`);
   return parts.join(' · ');
 }
 
@@ -1477,41 +1557,18 @@ function flashCamCell(camId) {
 
 function clearEventView() {
   allEvents = [];
-  evCount = singleEvCount = lastEvId = 0;
+  evCount = singleEvCountYolo = singleEvCountClip = lastEvId = 0;
 
-  document.getElementById('evListMulti').innerHTML =
-    '<div class="no-events"><div class="no-events-icon">📭</div>Vista limpiada.</div>';
-  document.getElementById('evListSingle').innerHTML =
-    '<div class="no-events"><div class="no-events-icon">📭</div>Vista limpiada.</div>';
+  ['evListMulti', 'evListSingleYolo', 'evListSingleClip'].forEach(id => {
+    document.getElementById(id).innerHTML =
+      '<div class="no-events"><div class="no-events-icon">📭</div>Vista limpiada.</div>';
+  });
 
-  ['evCount', 'singleEvCount'].forEach(id => {
+  ['evCount', 'singleEvCountYolo', 'singleEvCountClip'].forEach(id => {
     const el = document.getElementById(id);
     el.textContent = '0';
     el.classList.remove('has-events');
   });
-}
-
-// ── Logs ──────────────────────────────────────────────────────────────────────
-function classifyLog(text) {
-  if (/ERROR/i.test(text))        return 'error';
-  if (/WARNING|WARN/i.test(text)) return 'warning';
-  if (/^[▶■●✕]/.test(text.trimStart())) return 'system';
-  return 'info';
-}
-
-function addLog(cls, text) {
-  const scroll  = document.getElementById('logsScroll');
-  const atBottom = scroll.scrollHeight - scroll.scrollTop <= scroll.clientHeight + 40;
-  const line = document.createElement('div');
-  line.className   = `log-line ${cls}`;
-  line.textContent = text;
-  scroll.appendChild(line);
-  if (atBottom) scroll.scrollTop = scroll.scrollHeight;
-  while (scroll.children.length > 600) scroll.removeChild(scroll.firstChild);
-}
-
-function clearLogs() {
-  document.getElementById('logsScroll').innerHTML = '';
 }
 
 // ── Toast ─────────────────────────────────────────────────────────────────────

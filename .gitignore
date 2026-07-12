@@ -6,6 +6,7 @@ venv/
 *.pt
 .env
 .DS_Store
+runner_state/
 
 # Dataset de video: no versionar los archivos, solo la estructura, el README
 # y el ground truth derivado (Fall.csv, kaggle_data.csv, etc.)

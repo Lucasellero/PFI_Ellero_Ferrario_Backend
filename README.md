@@ -55,13 +55,14 @@ orquesta (arranca el subproceso) y visualiza lo que hay en `events/`.
 
 ## Dataset de video
 
-Los archivos van en `videos/` (no versionados en git, ver `.gitignore`). No
-hay estructura de subcarpetas ni etiquetas de ground truth todavía: cualquier
-`.mp4`/`.avi`/`.mov` copiado ahí es candidato a ser procesado. El nombre de
-archivo (sin extensión) se usa como `video_id` en el esquema de eventos.
-Como no hay etiquetas, la validación de esta primera etapa es cualitativa
-(ver `evaluation/`), no un cálculo de precision/recall — eso queda como
-trabajo futuro si se etiqueta el dataset.
+Los archivos van en `videos/` (no versionados en git, ver `.gitignore`):
+cualquier `.mp4`/`.avi`/`.mov` copiado ahí es candidato a ser procesado. El
+nombre de archivo (sin extensión) se usa como `video_id` en el esquema de
+eventos, y en los videos del dataset Toyota Smarthome también codifica la
+actividad real como prefijo (`Walk_...`, `Laydown_...`) — ese ground truth
+es el que usan `vision/` para calibrar caídas y `vlm/evaluate_activity.py`
+para medir la clasificación de actividades. La validación cualitativa por
+video anotado (ver `evaluation/`) sigue pendiente.
 
 ## Esquema de eventos (contrato entre módulos)
 
@@ -135,7 +136,14 @@ comandos) en su README.
 - [x] `vlm/`: clasificación de actividades vía CLIP (zero-shot, prompt
       ensembling sobre las 14 actividades del dataset), exportado a ONNX
       para correr sin PyTorch en el Pi (ver `vlm/README.md`). Modo batch
-      (`vlm/main.py`) sobre el dataset y modo en vivo (vía `runner/`).
+      (`vlm/main.py`) sobre el dataset y modo en vivo (vía `runner/`). El
+      modo en vivo, pensado para una cámara fija transmitiendo
+      continuamente, recorta cada frame a la persona detectada por pose,
+      promedia varias muestras por ventana, descarta ventanas de baja
+      confianza y deduplica actividades repetidas (heartbeat con
+      `ongoing: true` para reconstruir duraciones). Precisión medida contra
+      el ground truth de los nombres de archivo: 25% → 40% de ventanas
+      correctas (`vlm/evaluate_activity.py`).
 - [x] `events/`: store local funcionando end-to-end (SQLite).
 - [x] `runner/` + `dashboard/`: orquestación multi-cámara (archivo o stream
       en vivo) y panel web de control — primera versión de la migración a

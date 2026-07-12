@@ -2,6 +2,7 @@
 
 Expone:
   GET  /            → panel HTML
+  GET  /logs        → panel de logs del sistema
   GET  /api/status  → estado del runner
   POST /api/start   → inicia el runner como subproceso
   POST /api/stop    → detiene el runner
@@ -11,6 +12,8 @@ Expone:
   GET  /api/videos  → lista videos disponibles
   POST /api/upload-video     → sube un video
   GET  /api/events  → lee eventos de SQLite
+  GET  /api/overlay → estado del overlay de pose (bbox + keypoints)
+  POST /api/overlay → activa/desactiva el overlay en todas las cámaras
   WS   /ws          → stream de logs + estado en tiempo real
 """
 from __future__ import annotations
@@ -28,6 +31,8 @@ import aiofiles
 import yaml
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
+
+from runner.overlay_state import read_overlay_enabled, write_overlay_enabled
 
 ROOT = Path(__file__).resolve().parents[1]
 CAMERAS_YAML = ROOT / "cameras.yaml"
@@ -144,6 +149,11 @@ async def index() -> str:
     return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
 
+@app.get("/logs", response_class=HTMLResponse)
+async def logs_page() -> str:
+    return (STATIC_DIR / "logs.html").read_text(encoding="utf-8")
+
+
 @app.get("/api/status")
 async def get_status() -> dict:
     return {"running": _is_running(), "pid": runner_proc.pid if _is_running() else None}
@@ -176,6 +186,20 @@ async def stop_runner() -> dict:
     runner_proc.terminate()
     await runner_proc.wait()
     return {"status": "stopped"}
+
+
+@app.get("/api/overlay")
+async def get_overlay() -> dict:
+    return {"show_overlay": read_overlay_enabled()}
+
+
+@app.post("/api/overlay")
+async def set_overlay(body: dict) -> dict:
+    if "show_overlay" not in body:
+        raise HTTPException(400, "El campo 'show_overlay' es requerido")
+    enabled = bool(body["show_overlay"])
+    write_overlay_enabled(enabled)
+    return {"show_overlay": enabled}
 
 
 @app.get("/api/cameras")

@@ -15,8 +15,12 @@ televisión", "leyendo").
   grabado.
 - **En vivo** (vía `../runner/`): `runner/camera_worker.py` importa
   `ClipActivityClassifier` directamente y lo corre sobre cada cámara
-  configurada en `cameras.yaml`, clasificando cada `clip_interval_s`
-  segundos en paralelo con la detección de pose. Ver `../runner/README.md`.
+  configurada en `cameras.yaml`, en ventanas de muestreo cada
+  `clip_interval_s` segundos, en paralelo con la detección de pose. En este
+  modo cada frame se recorta a la persona detectada (`crop_to_person`), se
+  promedian varias muestras por ventana, y hay umbral de confianza y
+  deduplicación de actividades repetidas — ver "Clasificación de
+  actividades (CLIP)" en `../runner/README.md`.
   Requiere haber generado los modelos ONNX primero (ver Setup abajo) — si no
   están, `runner/` sigue funcionando pero sin clasificación de actividad.
 
@@ -32,6 +36,11 @@ vivo de `../runner/` (modo en vivo). Se muestrea un frame cada N segundos
 `../events/schema.py`), `video_timestamp_s` = momento del frame muestreado,
 y `metadata` con al menos `description` (texto libre del VLM) y, si se logra
 clasificar en una categoría cerrada, `activity_label`.
+
+En modo en vivo el metadata incluye además `confidence` (promedio de la
+ventana), `samples` (cuántos frames se promediaron), `ongoing` (`true` si
+es el heartbeat de una actividad que continúa, no un cambio) y `scores`
+(distribución completa sobre las 14 clases).
 
 Los eventos se persisten vía `../events/store.py`, igual que en `vision/`.
 
@@ -51,6 +60,38 @@ siguientes razones:
   `metadata` es el prompt textual que ganó la clasificación, no una descripción
   generada. Si en el futuro se necesita texto generativo, se puede cambiar el
   clasificador sin tocar `main.py`.
+
+## Precisión y evaluación (`evaluate_activity.py`)
+
+Los videos de `../videos/{acostado,parado,sentado}` llevan la actividad
+real como prefijo del nombre de archivo (`Walk_...`, `Laydown_...`), lo que
+permite medir la clasificación cuantitativamente. Desde la raíz del
+proyecto:
+
+```bash
+python -m vlm.evaluate_activity
+```
+
+Resultado (2026-07-12, 39 videos, 112 ventanas de 3 muestras):
+
+| Enfoque | Ventanas correctas |
+|---|---|
+| Frame completo, 1 muestra por ventana (enfoque original) | 25.0% |
+| Recorte a la persona + promedio de 3 muestras (runner actual) | **40.2%** |
+
+El recorte al bounding box de la persona (`crop_to_person` en
+`src/clip_classifier.py`, reutiliza la detección de pose de `vision/`)
+elimina el sesgo del fondo fijo — con el frame completo, una TV visible
+empuja todo hacia `WatchTV`. Las clases de movimiento y postura gruesa son
+las que más mejoran (Walk: 8/24 → 19/24 ventanas; Cook.Stir: 0/3 → 3/3);
+las de motricidad fina (`Drink.*`, `Takepills`, `Maketea.*`) siguen flojas
+porque desde un frame estático son casi indistinguibles entre sí.
+
+Próximos saltos posibles (en orden de esfuerzo): fusionar clases
+visualmente similares en categorías más gruesas, o entrenar un linear probe
+sobre los embeddings de CLIP usando estos mismos videos etiquetados
+(reemplaza `text_features.npy` por los pesos entrenados, mismo costo en
+runtime).
 
 ## Setup
 
