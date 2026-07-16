@@ -98,10 +98,23 @@ promedio estabiliza la predicción. Además:
   empuja todo hacia `WatchTV`); clasificar solo a la persona elimina ese
   sesgo.
 - **Sin persona, sin evento**: si YOLO no detecta a nadie en la ventana, no
-  se clasifica nada (una habitación vacía no tiene actividad).
-- **Umbral de confianza** (`clip_min_confidence`): las ventanas ambiguas se
-  descartan (quedan en el log) en vez de emitir una etiqueta dudosa.
-- **Deduplicación**: se emite evento cuando la actividad *cambia*; si sigue
+  se clasifica nada (una habitación vacía no tiene actividad). Además hay
+  una clase negativa `Background` en los prompts: si el recorte no muestra
+  una persona reconocible (bbox desfasado, persona saliendo de cuadro), esa
+  clase absorbe la probabilidad y la ventana se descarta.
+- **Categorías gruesas**: se clasifica con las 14 clases finas del dataset
+  (mejor cobertura de prompts) pero el evento se emite a nivel de categoría
+  (`COARSE_CATEGORIES` en `vlm/src/clip_classifier.py`: `Cooking`,
+  `EatingDrinking`, `Medication`, `Resting`, `ReadingScreen`, `Moving`),
+  sumando las probabilidades de las subclases. Distinguir `Drink.Fromcan`
+  de `Drink.Fromcup` en un frame estático es imposible y al familiar
+  tampoco le aporta; agregarlas elimina ese error. `activity_label` en el
+  metadata es la categoría; la clase fina ganadora queda en `fine_label`.
+- **Umbral de confianza** (`clip_min_confidence`): se aplica sobre la
+  confianza de la *categoría* (suma de sus subclases); las ventanas
+  ambiguas se descartan (quedan en el log) en vez de emitir una etiqueta
+  dudosa.
+- **Deduplicación**: se emite evento cuando la categoría *cambia*; si sigue
   igual se re-emite cada `clip_heartbeat_s` con `ongoing: true` en el
   metadata, para que el análisis posterior pueda reconstruir duraciones sin
   ahogarse en eventos repetidos.

@@ -3,8 +3,10 @@
 Uso:
     python main.py                          # procesa todos los videos de ../videos/
     python main.py --video Walk_p07_r00_v04_c07.mp4
-    python main.py --interval 5            # muestrea un frame cada 5 segundos (default: 2)
-    python main.py --model ViT-L/14        # variante más precisa de CLIP
+    python main.py --interval 5            # muestrea un frame cada 5 segundos (default: 10)
+
+La variante de CLIP se elige al exportar (export_onnx.py), no acá: este
+script usa el modelo ONNX ya generado en vlm/models/.
 """
 from __future__ import annotations
 
@@ -101,11 +103,6 @@ def main() -> None:
         default=10.0,
         help="Segundos entre frames muestreados (default: 10)",
     )
-    parser.add_argument(
-        "--model",
-        default="ViT-B/32",
-        help="Variante de CLIP: ViT-B/32, ViT-B/16, ViT-L/14 (default: ViT-B/32)",
-    )
     args = parser.parse_args()
 
     videos = find_videos(args.video, args.folder)
@@ -113,8 +110,8 @@ def main() -> None:
         logger.warning("No se encontraron videos para procesar en %s", VIDEOS_DIR)
         return
 
-    logger.info("Cargando CLIP (%s)...", args.model)
-    classifier = ClipActivityClassifier(args.model)
+    logger.info("Cargando CLIP (ONNX)...")
+    classifier = ClipActivityClassifier()
     store = EventStore()
 
     total_events = 0

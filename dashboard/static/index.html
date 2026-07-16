@@ -1456,8 +1456,17 @@ async function uploadFile(file) {
 const EVENT_ICONS  = { fall: '⚠️', immobility: '💤', activity: '🏃' };
 const EVENT_LABELS = { fall: 'Caída detectada', immobility: 'Inmovilidad', activity: 'Actividad' };
 
-// Traducción de las clases CLIP (vlm/models/labels.json) a nombre + ícono
+// Traducción de las clases CLIP (vlm/models/labels.json) a nombre + ícono.
+// El runner emite categorías gruesas (COARSE_CATEGORIES en vlm/); las clases
+// finas se mantienen para eventos históricos y el modo batch.
 const ACTIVITY_ES = {
+  'Cooking':        { icon: '🍳', name: 'Cocinando' },
+  'EatingDrinking': { icon: '🍽️', name: 'Comiendo o bebiendo' },
+  'Medication':     { icon: '💊', name: 'Tomando medicación' },
+  'Resting':        { icon: '🛋️', name: 'Descansando' },
+  'ReadingScreen':  { icon: '📖', name: 'Leyendo o usando una pantalla' },
+  'Moving':         { icon: '🚶', name: 'En movimiento' },
+
   'Cook.Cleanup':         { icon: '🧽', name: 'Limpiando la cocina' },
   'Cook.Stir':            { icon: '🍳', name: 'Cocinando' },
   'Drink.Fromcan':        { icon: '🥤', name: 'Tomando de una lata' },

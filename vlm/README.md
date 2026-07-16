@@ -37,10 +37,13 @@ vivo de `../runner/` (modo en vivo). Se muestrea un frame cada N segundos
 y `metadata` con al menos `description` (texto libre del VLM) y, si se logra
 clasificar en una categoría cerrada, `activity_label`.
 
-En modo en vivo el metadata incluye además `confidence` (promedio de la
-ventana), `samples` (cuántos frames se promediaron), `ongoing` (`true` si
-es el heartbeat de una actividad que continúa, no un cambio) y `scores`
-(distribución completa sobre las 14 clases).
+En modo en vivo `activity_label` es la **categoría gruesa** (ver "Precisión
+y evaluación" abajo) y el metadata incluye además `fine_label` (la clase
+fina ganadora), `confidence` (de la categoría, promedio de la ventana),
+`samples` (cuántos frames se promediaron), `ongoing` (`true` si es el
+heartbeat de una actividad que continúa, no un cambio), `scores`
+(distribución sobre las 15 clases finas, incluida `Background`) y
+`category_scores` (distribución agregada por categoría).
 
 Los eventos se persisten vía `../events/store.py`, igual que en `vision/`.
 
@@ -72,26 +75,45 @@ proyecto:
 python -m vlm.evaluate_activity
 ```
 
-Resultado (2026-07-12, 39 videos, 112 ventanas de 3 muestras):
+Resultado (2026-07-16, 39 videos, 112 ventanas de 3 muestras):
 
 | Enfoque | Ventanas correctas |
 |---|---|
 | Frame completo, 1 muestra por ventana (enfoque original) | 25.0% |
-| Recorte a la persona + promedio de 3 muestras (runner actual) | **40.2%** |
+| Recorte a la persona + promedio de 3 muestras | 40.2% |
+| + pad-a-cuadrado antes del resize (clase fina) | 45.5% |
+| + agregación a categorías gruesas (**lo que emite el runner**) | **65.2%** |
 
-El recorte al bounding box de la persona (`crop_to_person` en
-`src/clip_classifier.py`, reutiliza la detección de pose de `vision/`)
-elimina el sesgo del fondo fijo — con el frame completo, una TV visible
-empuja todo hacia `WatchTV`. Las clases de movimiento y postura gruesa son
-las que más mejoran (Walk: 8/24 → 19/24 ventanas; Cook.Stir: 0/3 → 3/3);
-las de motricidad fina (`Drink.*`, `Takepills`, `Maketea.*`) siguen flojas
-porque desde un frame estático son casi indistinguibles entre sí.
+Las tres mejoras acumulativas, todas con costo cero en runtime del Pi:
 
-Próximos saltos posibles (en orden de esfuerzo): fusionar clases
-visualmente similares en categorías más gruesas, o entrenar un linear probe
-sobre los embeddings de CLIP usando estos mismos videos etiquetados
-(reemplaza `text_features.npy` por los pesos entrenados, mismo costo en
-runtime).
+1. **Recorte a la persona** (`crop_to_person` en `src/clip_classifier.py`,
+   reutiliza la detección de pose de `vision/`): elimina el sesgo del fondo
+   fijo — con el frame completo, una TV visible empuja todo hacia `WatchTV`.
+2. **Pad-a-cuadrado** (+5.3 pts): el resize directo a 224×224 deformaba la
+   imagen; un recorte de persona parada (~1:3) quedaba aplastado e
+   irreconocible. Ahora se rellena a cuadrado con el color medio de CLIP
+   (neutro tras normalizar) antes del resize.
+3. **Categorías gruesas** (+19.7 pts): las clases finas del dataset
+   (`Drink.Fromcan` vs `Drink.Fromcup`, `Maketea.*` vs `Cook.*`) son
+   indistinguibles desde un frame estático, y para el caso de uso (un
+   familiar viendo cómo está la persona) tampoco aportan. Se clasifica con
+   las 14 clases finas pero se **suman las probabilidades** por categoría
+   (`COARSE_CATEGORIES`: Cooking, EatingDrinking, Medication, Resting,
+   ReadingScreen, Moving) y el evento se emite a ese nivel. `Takepills`
+   queda como categoría propia (`Medication`): es clínicamente relevante.
+
+También hay una clase negativa `Background` ("an empty room...") que absorbe
+recortes sin persona reconocible en vez de forzar una actividad con
+confianza baja; el runner descarta esas ventanas.
+
+Las clases que siguen flojas incluso a nivel categoría son las de motricidad
+fina con las manos (`Takepills` 0/6 ventanas, `Drink.*` 2/12): desde un frame
+estático a distancia de cámara de habitación son casi invisibles. Próximos
+saltos posibles (en orden de esfuerzo): CLIP ViT-B/16 (~4x cómputo, cabe en
+el presupuesto porque se muestrea cada 10s), fusionar la señal de pose de
+`vision/` como prior sobre las categorías, o entrenar un linear probe sobre
+los embeddings de CLIP usando estos mismos videos etiquetados (reemplaza
+`text_features.npy` por los pesos entrenados, mismo costo en runtime).
 
 ## Setup
 

@@ -8,19 +8,21 @@ Produce en vlm/models/:
 
 Uso:
     pip install -r requirements-export.txt
-    python export_onnx.py
+    python export_onnx.py               # exporta todo
+    python export_onnx.py --text-only   # solo regenera text_features.npy y
+                                        # labels.json (tras cambiar prompts)
 """
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
 import clip
 import numpy as np
 import torch
-from onnxruntime.quantization import QuantType, quantize_dynamic
 
-from src.clip_classifier import ACTIVITY_PROMPTS
+from src.clip_classifier import ALL_PROMPTS
 
 MODELS_DIR = Path(__file__).parent / "models"
 MODELS_DIR.mkdir(exist_ok=True)
@@ -40,6 +42,8 @@ class _ImageEncoderWrapper(torch.nn.Module):
 
 
 def export_image_encoder(model: torch.nn.Module) -> None:
+    from onnxruntime.quantization import QuantType, quantize_dynamic
+
     wrapper = _ImageEncoderWrapper(model)
     wrapper.eval()
     dummy = torch.zeros(1, 3, 224, 224)
@@ -60,10 +64,10 @@ def export_image_encoder(model: torch.nn.Module) -> None:
 
 
 def export_text_features(model: torch.nn.Module) -> None:
-    labels = list(ACTIVITY_PROMPTS.keys())
+    labels = list(ALL_PROMPTS.keys())
     class_features: list[np.ndarray] = []
     with torch.no_grad():
-        for prompts in ACTIVITY_PROMPTS.values():
+        for prompts in ALL_PROMPTS.values():
             tokens = clip.tokenize(prompts)
             feats = model.encode_text(tokens).float()
             feats /= feats.norm(dim=-1, keepdim=True)
@@ -79,12 +83,22 @@ def export_text_features(model: torch.nn.Module) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--text-only",
+        action="store_true",
+        help="Solo regenerar text_features.npy y labels.json (los prompts "
+        "cambian seguido; el image encoder no)",
+    )
+    args = parser.parse_args()
+
     print(f"Cargando {MODEL_NAME} en CPU...")
     model, _ = clip.load(MODEL_NAME, device="cpu")
     model.eval()
 
-    print("Exportando image encoder...")
-    export_image_encoder(model)
+    if not args.text_only:
+        print("Exportando image encoder...")
+        export_image_encoder(model)
 
     print("Pre-computando text features con prompt ensembling...")
     export_text_features(model)

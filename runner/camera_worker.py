@@ -35,7 +35,12 @@ _CLIP_SAMPLE_SPACING_S = 1.0
 # ClipActivityClassifier se importa como paquete desde la raíz del proyecto
 # (disponible porque python -m runner agrega el root al sys.path).
 try:
-    from vlm.src.clip_classifier import ClipActivityClassifier, ACTIVITY_PROMPTS, crop_to_person
+    from vlm.src.clip_classifier import (
+        ClipActivityClassifier,
+        CATEGORY_DESCRIPTIONS,
+        aggregate_to_categories,
+        crop_to_person,
+    )
     _CLIP_AVAILABLE = True
 except ImportError:
     _CLIP_AVAILABLE = False
@@ -189,19 +194,34 @@ class CameraWorker(threading.Thread):
         labels = self._clip_scores[0].keys()
         n = len(self._clip_scores)
         avg = {label: sum(s[label] for s in self._clip_scores) / n for label in labels}
-        top_label = max(avg, key=avg.get)
-        confidence = avg[top_label]
+        fine_label = max(avg, key=avg.get)
+
+        # Se emite a nivel categoría gruesa: las clases finas del dataset
+        # (Drink.Fromcan vs Fromcup, etc.) son indistinguibles en un frame
+        # estático y al familiar tampoco le aportan. Sumar las probabilidades
+        # de las subclases elimina ese error y sube la confianza efectiva.
+        cat_scores = aggregate_to_categories(avg)
+        top_cat = max(cat_scores, key=cat_scores.get)
+        confidence = cat_scores[top_cat]
+
+        if top_cat == "Background":
+            # El recorte no muestra una persona reconocible: no hay actividad
+            self._log.info(
+                "[%s] ventana sin persona clara @ %.2fs (%.0f%%) — descartada",
+                self._config.id, ts, confidence * 100,
+            )
+            return
 
         if confidence < self._clip_min_confidence:
             self._log.info(
                 "[%s] actividad incierta @ %.2fs (mejor: %s %.0f%%) — descartada",
-                self._config.id, ts, top_label, confidence * 100,
+                self._config.id, ts, top_cat, confidence * 100,
             )
             return
 
         # Deduplicación: emitir solo en cambio de actividad, con heartbeat
         # periódico para que el análisis registre que la actividad continúa.
-        changed = top_label != self._last_activity_label
+        changed = top_cat != self._last_activity_label
         heartbeat_due = ts - self._last_activity_emit_ts >= self._clip_heartbeat
         if not changed and not heartbeat_due:
             return
@@ -211,21 +231,23 @@ class CameraWorker(threading.Thread):
             event_type=EventType.ACTIVITY,
             video_timestamp_s=ts,
             metadata={
-                "activity_label": top_label,
-                "description": ACTIVITY_PROMPTS[top_label][0],
+                "activity_label": top_cat,
+                "fine_label": fine_label,
+                "description": CATEGORY_DESCRIPTIONS[top_cat],
                 "confidence": confidence,
                 "samples": n,
                 "ongoing": not changed,
                 "scores": {label: round(v, 4) for label, v in avg.items()},
+                "category_scores": {c: round(v, 4) for c, v in cat_scores.items()},
             },
         )
         store.add(event)
         self._log.info(
-            "[%s] actividad @ %.2fs: %s (%.0f%%, %d muestras%s)",
-            self._config.id, ts, top_label, confidence * 100, n,
+            "[%s] actividad @ %.2fs: %s [%s] (%.0f%%, %d muestras%s)",
+            self._config.id, ts, top_cat, fine_label, confidence * 100, n,
             ", continúa" if not changed else "",
         )
-        self._last_activity_label = top_label
+        self._last_activity_label = top_cat
         self._last_activity_emit_ts = ts
 
     def _save_preview(self, image) -> None:

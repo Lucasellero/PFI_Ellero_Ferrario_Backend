@@ -21,6 +21,10 @@ MODELS_DIR = Path(__file__).resolve().parents[1] / "models"
 _MEAN = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
 _STD = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)
 
+# Color de relleno para el pad-a-cuadrado: el color medio de entrenamiento
+# de CLIP (en BGR uint8), que tras normalizar queda en ~0 (neutro).
+_PAD_COLOR_BGR = (_MEAN[::-1] * 255).astype(np.uint8)
+
 # Múltiples prompts por clase — usados por export_onnx.py para generar text_features.npy.
 # En el Pi se usan solo para el campo "description" del evento.
 ACTIVITY_PROMPTS: dict[str, list[str]] = {
@@ -99,6 +103,59 @@ ACTIVITY_PROMPTS: dict[str, list[str]] = {
     ],
 }
 
+# Clases negativas: absorben recortes sin persona visible (bbox desfasado,
+# persona saliendo de cuadro) en vez de forzar una de las 14 actividades
+# con confianza baja. El runner las descarta sin emitir evento.
+BACKGROUND_PROMPTS: dict[str, list[str]] = {
+    "Background": [
+        "a photo of an empty room with furniture and no people",
+        "a blurry indoor photo with no person visible",
+        "a photo of a wall, floor, or household objects",
+        "an empty hallway or doorway with nobody in it",
+    ],
+}
+
+ALL_PROMPTS: dict[str, list[str]] = {**ACTIVITY_PROMPTS, **BACKGROUND_PROMPTS}
+BACKGROUND_LABELS = frozenset(BACKGROUND_PROMPTS)
+
+# Categorías gruesas para el producto: al familiar no le sirve distinguir
+# Drink.Fromcan de Drink.Fromcup, y desde un frame estático CLIP tampoco
+# puede. Se clasifica con las clases finas (mejor cobertura de prompts) y se
+# SUMAN las probabilidades de las subclases — el error entre subclases de la
+# misma categoría desaparece. Takepills queda sola: es clínicamente
+# relevante y no debe diluirse en "comiendo/bebiendo".
+COARSE_CATEGORIES: dict[str, list[str]] = {
+    "Cooking": ["Cook.Cleanup", "Cook.Stir", "Maketea.Insertteabag"],
+    "EatingDrinking": ["Drink.Fromcan", "Drink.Fromcup"],
+    "Medication": ["Takepills"],
+    "Resting": ["Laydown", "WatchTV"],
+    "ReadingScreen": ["Readbook", "Uselaptop", "Usetablet"],
+    "Moving": ["Walk", "Enter", "Sitdown"],
+    "Background": list(BACKGROUND_PROMPTS),
+}
+
+LABEL_TO_CATEGORY: dict[str, str] = {
+    label: cat for cat, labels in COARSE_CATEGORIES.items() for label in labels
+}
+
+CATEGORY_DESCRIPTIONS: dict[str, str] = {
+    "Cooking": "a person cooking or working in the kitchen",
+    "EatingDrinking": "a person eating or drinking",
+    "Medication": "a person taking pills or medicine",
+    "Resting": "a person resting, lying down or watching TV",
+    "ReadingScreen": "a person reading or using a screen device",
+    "Moving": "a person walking or moving around the room",
+    "Background": "no clear person visible in the frame",
+}
+
+
+def aggregate_to_categories(scores: dict[str, float]) -> dict[str, float]:
+    """Suma las probabilidades de las clases finas por categoría gruesa."""
+    cats: dict[str, float] = {cat: 0.0 for cat in COARSE_CATEGORIES}
+    for label, p in scores.items():
+        cats[LABEL_TO_CATEGORY[label]] += p
+    return cats
+
 
 def _softmax(x: np.ndarray) -> np.ndarray:
     x = x - x.max()
@@ -130,7 +187,8 @@ def crop_to_person(image_bgr: np.ndarray, box, margin: float = 0.25) -> np.ndarr
 class ClipActivityClassifier:
     """Clasifica un frame BGR. Sin dependencia de PyTorch en runtime."""
 
-    def __init__(self, quantized: bool = True) -> None:
+    def __init__(self, quantized: bool = True, pad_square: bool = True) -> None:
+        self.pad_square = pad_square
         model_file = "clip_image_encoder_int8.onnx" if quantized else "clip_image_encoder.onnx"
         model_path = MODELS_DIR / model_file
         if not model_path.exists():
@@ -152,6 +210,19 @@ class ClipActivityClassifier:
         self._labels: list[str] = json.loads((MODELS_DIR / "labels.json").read_text())
 
     def _preprocess(self, image_bgr: np.ndarray) -> np.ndarray:
+        # Pad a cuadrado antes del resize: un resize directo a 224x224
+        # deforma la imagen, y los recortes de persona parada (~1:3) quedan
+        # irreconocibles al aplastarse. El relleno con el color medio de
+        # CLIP se normaliza a ~0, así que no aporta señal.
+        if self.pad_square:
+            h, w = image_bgr.shape[:2]
+            if h != w:
+                side = max(h, w)
+                canvas = np.empty((side, side, 3), dtype=image_bgr.dtype)
+                canvas[:] = _PAD_COLOR_BGR
+                y0, x0 = (side - h) // 2, (side - w) // 2
+                canvas[y0 : y0 + h, x0 : x0 + w] = image_bgr
+                image_bgr = canvas
         pil = Image.fromarray(image_bgr[..., ::-1]).resize((224, 224), Image.BICUBIC)
         img = np.array(pil, dtype=np.float32) / 255.0
         img = (img - _MEAN) / _STD
@@ -169,9 +240,15 @@ class ClipActivityClassifier:
 
         top_idx = int(probs.argmax())
         top_label = self._labels[top_idx]
+        scores = {label: float(s) for label, s in zip(self._labels, probs)}
+        category_scores = aggregate_to_categories(scores)
+        top_category = max(category_scores, key=category_scores.get)
         return {
             "activity_label": top_label,
-            "description": ACTIVITY_PROMPTS[top_label][0],
+            "description": ALL_PROMPTS[top_label][0],
             "confidence": float(probs[top_idx]),
-            "scores": {label: float(s) for label, s in zip(self._labels, probs)},
+            "scores": scores,
+            "category": top_category,
+            "category_confidence": category_scores[top_category],
+            "category_scores": category_scores,
         }
