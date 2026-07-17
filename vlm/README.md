@@ -66,25 +66,26 @@ siguientes razones:
 
 ## Precisión y evaluación (`evaluate_activity.py`)
 
-Los videos de `../videos/{acostado,parado,sentado}` llevan la actividad
-real como prefijo del nombre de archivo (`Walk_...`, `Laydown_...`), lo que
-permite medir la clasificación cuantitativamente. Desde la raíz del
-proyecto:
+Los videos llevan la actividad real como prefijo del nombre de archivo
+(`Walk_...`, `Laydown_...`), lo que permite medir la clasificación
+cuantitativamente. Desde la raíz del proyecto:
 
 ```bash
-python -m vlm.evaluate_activity
+python -m vlm.evaluate_activity                 # usa ../videos/ (39 videos, dataset chico)
+python -m vlm.evaluate_activity <carpeta>        # dataset externo más grande
 ```
 
-Resultado (2026-07-16, 39 videos, 112 ventanas de 3 muestras):
+Resultado inicial (2026-07-16, 39 videos, 112 ventanas de 3 muestras), antes
+de las mejoras descriptas más abajo:
 
 | Enfoque | Ventanas correctas |
 |---|---|
 | Frame completo, 1 muestra por ventana (enfoque original) | 25.0% |
 | Recorte a la persona + promedio de 3 muestras | 40.2% |
 | + pad-a-cuadrado antes del resize (clase fina) | 45.5% |
-| + agregación a categorías gruesas (**lo que emite el runner**) | **65.2%** |
+| + agregación a categorías gruesas (zero-shot) | 65.2% |
 
-Las tres mejoras acumulativas, todas con costo cero en runtime del Pi:
+Las dos primeras mejoras, con costo cero en runtime del Pi:
 
 1. **Recorte a la persona** (`crop_to_person` en `src/clip_classifier.py`,
    reutiliza la detección de pose de `vision/`): elimina el sesgo del fondo
@@ -93,27 +94,107 @@ Las tres mejoras acumulativas, todas con costo cero en runtime del Pi:
    imagen; un recorte de persona parada (~1:3) quedaba aplastado e
    irreconocible. Ahora se rellena a cuadrado con el color medio de CLIP
    (neutro tras normalizar) antes del resize.
-3. **Categorías gruesas** (+19.7 pts): las clases finas del dataset
-   (`Drink.Fromcan` vs `Drink.Fromcup`, `Maketea.*` vs `Cook.*`) son
-   indistinguibles desde un frame estático, y para el caso de uso (un
-   familiar viendo cómo está la persona) tampoco aportan. Se clasifica con
-   las 14 clases finas pero se **suman las probabilidades** por categoría
-   (`COARSE_CATEGORIES`: Cooking, EatingDrinking, Medication, Resting,
-   ReadingScreen, Moving) y el evento se emite a ese nivel. `Takepills`
-   queda como categoría propia (`Medication`): es clínicamente relevante.
 
 También hay una clase negativa `Background` ("an empty room...") que absorbe
 recortes sin persona reconocible en vez de forzar una actividad con
 confianza baja; el runner descarta esas ventanas.
 
-Las clases que siguen flojas incluso a nivel categoría son las de motricidad
-fina con las manos (`Takepills` 0/6 ventanas, `Drink.*` 2/12): desde un frame
-estático a distancia de cámara de habitación son casi invisibles. Próximos
-saltos posibles (en orden de esfuerzo): CLIP ViT-B/16 (~4x cómputo, cabe en
-el presupuesto porque se muestrea cada 10s), fusionar la señal de pose de
-`vision/` como prior sobre las categorías, o entrenar un linear probe sobre
-los embeddings de CLIP usando estos mismos videos etiquetados (reemplaza
-`text_features.npy` por los pesos entrenados, mismo costo en runtime).
+### El 65.2% no generalizaba: evaluación contra el dataset completo
+
+El 65.2% se midió sobre 39 videos curados a mano, todos de pocos
+participantes. Al evaluar la misma agregación zero-shot contra una muestra
+grande y disjunta del dataset Toyota Smarthome completo (no versionado en
+git, ver "Escalar la evaluación" abajo), separando por participante para que
+train/val no compartan sujeto, la precisión cayó a **39.6-48.3%** según
+cuántos videos se usaran — el número original estaba sobreajustado a un
+dataset chico, no reflejaba generalización real.
+
+El diagnóstico por clase mostró un patrón consistente, no ruido aleatorio:
+`Takepills`, `Drink.Fromcan`/`Drink.Fromcup` y `Maketea.Insertteabag` fallan
+casi al 0% (CLIP las confunde con `Walk`, `WatchTV` o entre sí), mientras que
+`Walk`, `Uselaptop`, `WatchTV`, `Usetablet` y `Laydown` sostienen bien. La
+causa: son gestos de mano breves, indistinguibles desde un frame estático a
+distancia de cámara de habitación — la misma limitación que señala la
+literatura citada en el informe (Sec. 2.2.4: Reilly; Chakraborty et al. 2025,
+LLAVIDAL — los VLMs generalistas sin especialización de dominio fallan en
+actividades de baja movilidad). Se probó **CLIP ViT-B/16** (~4x cómputo) para
+ver si un encoder más grande alcanzaba: dio 52.6% vs 51.6% de ViT-B/32 en el
+mismo fold — mejora nula, confirmando que el problema es estructural
+(falta de información en el frame), no de capacidad del modelo.
+
+### Categorías fusionadas y linear probe
+
+Dos cambios en conjunto, ambos con costo de inferencia idéntico al zero-shot
+(mismo encoder ONNX, solo cambia qué se hace con el embedding):
+
+1. **`Takepills`, `Drink.Fromcan`, `Drink.Fromcup` y `Maketea.Insertteabag`
+   se fusionaron en una sola categoría** (`EatingDrinkingMedication` en
+   `COARSE_CATEGORIES`, `src/clip_classifier.py`). `Takepills` tenía
+   categoría propia por relevancia clínica, pero si nunca se predice bien no
+   aporta esa señal igual — reportar una distinción que en la práctica es
+   ruido es peor que no reportarla.
+2. **Linear probe entrenado sobre los embeddings de CLIP** (congelados, sin
+   fine-tuning del encoder) para clasificar directamente a nivel de
+   categoría gruesa, en vez de zero-shot + agregación. Scripts:
+   `extract_clip_features.py` (corre YOLO+CLIP sobre una carpeta externa y
+   cachea embeddings a `.npz`) y `train_category_probe.py` (entrena
+   logistic regression con split por participante, evalúa por video, y
+   exporta `models/category_probe.npz`). `ClipActivityClassifier` lo carga
+   automáticamente si el archivo existe — si no, cae al comportamiento
+   zero-shot de siempre. El probe no tiene clase `Background` (no hay datos
+   de "sin persona" para entrenarla), así que solo se usa cuando el
+   zero-shot no cree que el recorte esté vacío.
+
+Resultado, evaluado por video (participantes de validación nunca vistos en
+entrenamiento, promedio de 5 splits distintos):
+
+| Cobertura del dataset | Videos usados | Zero-shot | Linear probe |
+|---|---|---|---|
+| ~15% (`--max-per-class 40`) | 477 | 45.7% (±5.1) | 61.0% (±2.4) |
+| ~50% (`--max-per-class 120`) | 1099 | 48.3% (±3.3) | **63.3%** (±2.2) |
+
+Escalar de 15% a 50% del dataset dio solo +2.3 puntos — rendimientos
+decrecientes, se frenó el escalado ahí en vez de seguir a costo creciente
+por una ganancia cada vez más chica.
+
+Por categoría (con el 50% del dataset, promedio 5 seeds):
+
+| Categoría | n | Zero-shot | Linear probe |
+|---|---|---|---|
+| Cooking | 246 | 28.5% | **88.6%** |
+| EatingDrinkingMedication | 359 | 15.0% | 39.3% |
+| Moving | 480 | 68.8% | 67.5% |
+| ReadingScreen | 266 | 77.1% | 68.8% |
+| Resting | 204 | 45.1% | 56.9% |
+
+`EatingDrinkingMedication` sigue siendo la más débil incluso fusionada y con
+el probe (39.3%): el límite no era solo "demasiadas clases finas parecidas",
+es que el embedding de CLIP es holístico (describe la escena completa, no
+hace zoom a las manos) y esta categoría depende enteramente de qué hace la
+persona con las manos. `Moving`/`ReadingScreen` bajaron un poco con el probe
+respecto al zero-shot — dentro de margen, no una regresión real (confirmado
+por el std bajo entre seeds).
+
+**Trabajo futuro, no implementado:** la vía más prometedora para
+`EatingDrinkingMedication` es sumar un crop de manos (usando los keypoints de
+muñeca que `vision/pose_pipeline.py` ya calcula) como feature adicional al
+embedding de cuerpo completo, en vez de seguir escalando datos o probando
+modelos CLIP más grandes — ninguna de esas dos vías movió la aguja en esta
+categoría específica.
+
+### Escalar la evaluación a un dataset externo
+
+`evaluate_activity.py`, `extract_clip_features.py` y `train_category_probe.py`
+aceptan apuntar a cualquier carpeta con archivos `<Actividad>_pXX_...mp4`
+(mismo patrón que Toyota Smarthome) fuera de `../videos/` — útil porque el
+dataset curado del repo (39 videos) es demasiado chico para medir
+generalización o entrenar nada. `evaluate_activity.py` además soporta
+`--per-class N --seed S` para iterar tipo cross-validation sobre muestras
+distintas de una carpeta grande. Estas carpetas externas no se versionan en
+git (son de cada desarrollador), así que los resultados de esta sección no
+son reproducibles solo con lo que hay en el repo — sí lo son los scripts y
+los pesos entrenados (`models/category_probe.npz`, aunque tampoco se
+versiona por ser un artefacto derivado, igual que el resto de `models/`).
 
 ## Setup
 
@@ -130,7 +211,11 @@ Genera `vlm/models/` con:
 - `text_features.npy` (embeddings pre-computados, ~28 KB)
 - `labels.json`
 
-Copiar `vlm/models/` al Pi antes de correr.
+Si además se corrió `extract_clip_features.py` + `train_category_probe.py`
+(ver "Precisión y evaluación" arriba), `vlm/models/` también tiene
+`category_probe.npz` (pesos del linear probe, unos pocos KB) — se usa
+automáticamente si está presente, si no `ClipActivityClassifier` cae al
+zero-shot. Copiar `vlm/models/` completo al Pi antes de correr.
 
 ### En el Pi 5
 

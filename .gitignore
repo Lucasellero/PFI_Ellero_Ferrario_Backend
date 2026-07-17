@@ -25,6 +25,8 @@ videos/CAUCAFall/*.jpeg
 vision/posture_features.csv
 vision/fall_calibration.csv
 vision/fall_descriptors_cache.pkl
+vlm/clip_features.npz
 vlm/models/
+vlm/models_*/
 *.onnx
 *.onnx.data

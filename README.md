@@ -133,19 +133,22 @@ comandos) en su README.
       `vision/README.md`).
 - [ ] `vision/` — inmovilidad prolongada como evento: implementada pero sin
       calibrar (umbrales de la literatura, sin dataset de validación).
-- [x] `vlm/`: clasificación de actividades vía CLIP (zero-shot, prompt
-      ensembling sobre las 14 actividades del dataset), exportado a ONNX
-      para correr sin PyTorch en el Pi (ver `vlm/README.md`). Modo batch
+- [x] `vlm/`: clasificación de actividades vía CLIP, exportado a ONNX para
+      correr sin PyTorch en el Pi (ver `vlm/README.md`). Modo batch
       (`vlm/main.py`) sobre el dataset y modo en vivo (vía `runner/`). El
       modo en vivo, pensado para una cámara fija transmitiendo
       continuamente, recorta cada frame a la persona detectada por pose,
       promedia varias muestras por ventana, descarta ventanas de baja
       confianza y deduplica actividades repetidas (heartbeat con
-      `ongoing: true` para reconstruir duraciones). Precisión medida contra
-      el ground truth de los nombres de archivo: 25% → 65.2% de ventanas
-      correctas, vía recorte a la persona, pad-a-cuadrado y agregación a
-      categorías gruesas (`vlm/evaluate_activity.py`, detalle en
-      `vlm/README.md`).
+      `ongoing: true` para reconstruir duraciones). El 65.2% medido
+      originalmente sobre 39 videos curados no generalizaba: evaluado con
+      participantes disjuntos train/val sobre una muestra grande del dataset
+      completo, el zero-shot cae a ~48%. Se entrenó en cambio un **linear
+      probe sobre los embeddings de CLIP** (categorías fusionadas donde el
+      zero-shot no distinguía, ver `vlm/README.md`), que da **63.3%**
+      consistente (±2.2 pts entre folds) — mejor que zero-shot pero todavía
+      con una categoría floja (`EatingDrinkingMedication`, gestos de mano
+      finos invisibles en un frame estático).
 - [x] `events/`: store local funcionando end-to-end (SQLite).
 - [x] `runner/` + `dashboard/`: orquestación multi-cámara (archivo o stream
       en vivo) y panel web de control — primera versión de la migración a

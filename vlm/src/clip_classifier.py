@@ -122,12 +122,19 @@ BACKGROUND_LABELS = frozenset(BACKGROUND_PROMPTS)
 # Drink.Fromcan de Drink.Fromcup, y desde un frame estático CLIP tampoco
 # puede. Se clasifica con las clases finas (mejor cobertura de prompts) y se
 # SUMAN las probabilidades de las subclases — el error entre subclases de la
-# misma categoría desaparece. Takepills queda sola: es clínicamente
-# relevante y no debe diluirse en "comiendo/bebiendo".
+# misma categoría desaparece.
+#
+# Takepills se probó como categoría propia ("Medication") por ser clínicamente
+# relevante, pero la evaluación contra el dataset grande (2026-07-17, ver
+# vlm/README.md) mostró que ni el zero-shot ni un linear probe entrenado
+# logran distinguirla de forma consistente: son gestos de mano breves,
+# indistinguibles de un frame estático a distancia de cámara de habitación —
+# la misma limitación estructural que Drink.* y Maketea.Insertteabag. Se
+# fusionan las cuatro en una sola categoría para dejar de reportar una
+# distinción que en la práctica es ruido, no señal.
 COARSE_CATEGORIES: dict[str, list[str]] = {
-    "Cooking": ["Cook.Cleanup", "Cook.Stir", "Maketea.Insertteabag"],
-    "EatingDrinking": ["Drink.Fromcan", "Drink.Fromcup"],
-    "Medication": ["Takepills"],
+    "Cooking": ["Cook.Cleanup", "Cook.Stir"],
+    "EatingDrinkingMedication": ["Drink.Fromcan", "Drink.Fromcup", "Maketea.Insertteabag", "Takepills"],
     "Resting": ["Laydown", "WatchTV"],
     "ReadingScreen": ["Readbook", "Uselaptop", "Usetablet"],
     "Moving": ["Walk", "Enter", "Sitdown"],
@@ -140,8 +147,7 @@ LABEL_TO_CATEGORY: dict[str, str] = {
 
 CATEGORY_DESCRIPTIONS: dict[str, str] = {
     "Cooking": "a person cooking or working in the kitchen",
-    "EatingDrinking": "a person eating or drinking",
-    "Medication": "a person taking pills or medicine",
+    "EatingDrinkingMedication": "a person eating, drinking, or taking medication",
     "Resting": "a person resting, lying down or watching TV",
     "ReadingScreen": "a person reading or using a screen device",
     "Moving": "a person walking or moving around the room",
@@ -187,10 +193,16 @@ def crop_to_person(image_bgr: np.ndarray, box, margin: float = 0.25) -> np.ndarr
 class ClipActivityClassifier:
     """Clasifica un frame BGR. Sin dependencia de PyTorch en runtime."""
 
-    def __init__(self, quantized: bool = True, pad_square: bool = True) -> None:
+    def __init__(
+        self,
+        quantized: bool = True,
+        pad_square: bool = True,
+        models_dir: Path | None = None,
+    ) -> None:
         self.pad_square = pad_square
+        models_dir = models_dir or MODELS_DIR
         model_file = "clip_image_encoder_int8.onnx" if quantized else "clip_image_encoder.onnx"
-        model_path = MODELS_DIR / model_file
+        model_path = models_dir / model_file
         if not model_path.exists():
             raise FileNotFoundError(
                 f"No se encontró {model_path}. "
@@ -206,8 +218,24 @@ class ClipActivityClassifier:
         )
         self._input_name: str = self._session.get_inputs()[0].name
 
-        self._text_features: np.ndarray = np.load(MODELS_DIR / "text_features.npy")
-        self._labels: list[str] = json.loads((MODELS_DIR / "labels.json").read_text())
+        self._text_features: np.ndarray = np.load(models_dir / "text_features.npy")
+        self._labels: list[str] = json.loads((models_dir / "labels.json").read_text())
+
+        # Linear probe entrenado sobre categorías gruesas (ver
+        # train_category_probe.py) — reemplaza la agregación zero-shot para
+        # 'category' cuando está disponible, porque generaliza mejor sobre
+        # datos nunca vistos (61-65% vs ~46% zero-shot en la misma evaluación,
+        # ver vlm/README.md). Las clases finas ('scores', 'activity_label')
+        # siguen siendo zero-shot: el probe solo predice a nivel de categoría.
+        probe_path = models_dir / "category_probe.npz"
+        self._probe: dict | None = None
+        if probe_path.exists():
+            probe_data = np.load(probe_path, allow_pickle=True)
+            self._probe = {
+                "W": probe_data["W"],
+                "b": probe_data["b"],
+                "classes": [str(c) for c in probe_data["classes"]],
+            }
 
     def _preprocess(self, image_bgr: np.ndarray) -> np.ndarray:
         # Pad a cuadrado antes del resize: un resize directo a 224x224
@@ -241,8 +269,22 @@ class ClipActivityClassifier:
         top_idx = int(probs.argmax())
         top_label = self._labels[top_idx]
         scores = {label: float(s) for label, s in zip(self._labels, probs)}
-        category_scores = aggregate_to_categories(scores)
+
+        zeroshot_category_scores = aggregate_to_categories(scores)
+        is_background = max(zeroshot_category_scores, key=zeroshot_category_scores.get) == "Background"
+
+        # El probe no tiene clase Background (no hay datos de entrenamiento
+        # para "sin persona visible"): solo se usa cuando el zero-shot no cree
+        # que el recorte esté vacío. Si no, se mantiene la agregación
+        # zero-shot para no perder la detección de ventanas sin persona.
+        if self._probe is not None and not is_background:
+            probe_logits = image_features @ self._probe["W"].T + self._probe["b"]
+            probe_probs = _softmax(probe_logits)
+            category_scores = dict(zip(self._probe["classes"], (float(p) for p in probe_probs)))
+        else:
+            category_scores = zeroshot_category_scores
         top_category = max(category_scores, key=category_scores.get)
+
         return {
             "activity_label": top_label,
             "description": ALL_PROMPTS[top_label][0],

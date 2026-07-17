@@ -38,7 +38,6 @@ try:
     from vlm.src.clip_classifier import (
         ClipActivityClassifier,
         CATEGORY_DESCRIPTIONS,
-        aggregate_to_categories,
         crop_to_person,
     )
     _CLIP_AVAILABLE = True
@@ -77,6 +76,7 @@ class CameraWorker(threading.Thread):
         # Estado del muestreo CLIP (ver _clip_tick)
         self._clip_sampling = False
         self._clip_scores: list[dict] = []
+        self._clip_cat_scores: list[dict] = []
         self._clip_skipped = 0
         self._clip_next_window_ts = 0.0
         self._clip_last_sample_ts = float("-inf")
@@ -166,6 +166,7 @@ class CameraWorker(threading.Thread):
                 return
             self._clip_sampling = True
             self._clip_scores = []
+            self._clip_cat_scores = []
             self._clip_skipped = 0
             self._clip_last_sample_ts = float("-inf")
             self._clip_next_window_ts = ts + self._clip_interval
@@ -180,6 +181,7 @@ class CameraWorker(threading.Thread):
             _, box = detector.last_detection
             result = self._clip.classify(crop_to_person(frame.image, box))
             self._clip_scores.append(result["scores"])
+            self._clip_cat_scores.append(result["category_scores"])
 
         if len(self._clip_scores) + self._clip_skipped >= _CLIP_SAMPLES_PER_WINDOW:
             self._clip_sampling = False
@@ -196,11 +198,12 @@ class CameraWorker(threading.Thread):
         avg = {label: sum(s[label] for s in self._clip_scores) / n for label in labels}
         fine_label = max(avg, key=avg.get)
 
-        # Se emite a nivel categoría gruesa: las clases finas del dataset
-        # (Drink.Fromcan vs Fromcup, etc.) son indistinguibles en un frame
-        # estático y al familiar tampoco le aportan. Sumar las probabilidades
-        # de las subclases elimina ese error y sube la confianza efectiva.
-        cat_scores = aggregate_to_categories(avg)
+        # Categoría gruesa: promedio de category_scores por frame. Cada
+        # frame usa el linear probe entrenado (ver train_category_probe.py)
+        # cuando no es Background, o la agregación zero-shot cuando sí lo es
+        # (el probe no tiene clase Background, ver ClipActivityClassifier.classify).
+        all_cats = {c for s in self._clip_cat_scores for c in s}
+        cat_scores = {c: sum(s.get(c, 0.0) for s in self._clip_cat_scores) / n for c in all_cats}
         top_cat = max(cat_scores, key=cat_scores.get)
         confidence = cat_scores[top_cat]
 
