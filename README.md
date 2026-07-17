@@ -142,8 +142,10 @@ comandos) en su README.
       promedia varias muestras por ventana, descarta ventanas de baja
       confianza y deduplica actividades repetidas (heartbeat con
       `ongoing: true` para reconstruir duraciones). Precisión medida contra
-      el ground truth de los nombres de archivo: 25% → 40% de ventanas
-      correctas (`vlm/evaluate_activity.py`).
+      el ground truth de los nombres de archivo: 25% → 65.2% de ventanas
+      correctas, vía recorte a la persona, pad-a-cuadrado y agregación a
+      categorías gruesas (`vlm/evaluate_activity.py`, detalle en
+      `vlm/README.md`).
 - [x] `events/`: store local funcionando end-to-end (SQLite).
 - [x] `runner/` + `dashboard/`: orquestación multi-cámara (archivo o stream
       en vivo) y panel web de control — primera versión de la migración a

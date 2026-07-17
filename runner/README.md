@@ -19,7 +19,8 @@ runner/
 ├── main.py           # entry point: carga config, arranca un CameraWorker por cámara
 ├── config.py          # lee cameras.yaml → RunnerConfig / CameraConfig
 ├── camera_source.py    # VideoFileLoop (archivo con loop) / LiveStream (RTSP/HTTP/webcam)
-└── camera_worker.py    # thread por cámara: pose pipeline + CLIP periódico + frame preview
+├── camera_worker.py    # thread por cámara: pose pipeline + CLIP periódico + frame preview
+└── overlay_state.py     # lee/escribe runner_state/overlay.json (toggle de overlay compartido con dashboard/)
 ```
 
 Un `CameraWorker` (thread) por cámara. Cada worker corre su propia instancia
@@ -135,6 +136,14 @@ el panel. Si YOLO detectó a alguien en ese frame, el preview incluye el
 overlay del esqueleto (bounding box + keypoints + huesos, vía
 `vision/src/pose_pipeline.draw_pose()`) — así se puede ver en el dashboard
 qué está detectando el pipeline, no solo la imagen cruda de la cámara.
+
+Dibujar ese overlay es opcional: cada worker consulta
+`overlay_state.read_overlay_enabled()` antes de generar el preview, que lee
+`../runner_state/overlay.json`. El dashboard escribe ese mismo archivo desde
+`POST /api/overlay` (ver `dashboard/README.md`) — como `dashboard/` y
+`runner/` corren en procesos separados, el archivo es la forma más simple de
+que el toggle de la UI afecte a todas las cámaras ya en ejecución sin que un
+proceso importe código del otro.
 
 ## Setup
 

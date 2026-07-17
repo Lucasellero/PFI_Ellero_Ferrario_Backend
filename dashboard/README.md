@@ -16,7 +16,9 @@ detección, solo la orquesta y la visualiza.
 dashboard/
 ├── __main__.py        # entry point: uvicorn sirviendo api.py
 ├── api.py              # rutas FastAPI + WebSocket
-└── static/index.html   # panel (HTML/CSS/JS, sin build step ni framework)
+└── static/
+    ├── index.html      # panel principal (HTML/CSS/JS, sin build step ni framework)
+    └── logs.html        # panel de logs del sistema, servido en GET /logs
 ```
 
 ## Cómo arranca `runner/`
@@ -33,6 +35,7 @@ para logs) y del store de eventos (SQLite) para los datos, igual que
 | Ruta | Qué hace |
 |---|---|
 | `GET /` | sirve el panel (`static/index.html`) |
+| `GET /logs` | sirve el panel de logs del sistema (`static/logs.html`) |
 | `GET /api/status` | si el runner está corriendo, y su PID |
 | `POST /api/start` | arranca `runner/` como subproceso |
 | `POST /api/stop` | lo detiene (`terminate()` + espera) |
@@ -42,10 +45,18 @@ para logs) y del store de eventos (SQLite) para los datos, igual que
 | `GET /api/videos` | lista videos disponibles en `videos/` |
 | `POST /api/upload-video` | sube un archivo a `videos/uploads/` |
 | `GET /api/video-file/{path}` | sirve un video para reproducirlo en el browser |
-| `GET /api/frame/{cam_id}` | último frame preview de esa cámara (`frames/{id}.jpg`, con esqueleto de YOLO dibujado encima si hay detección) |
+| `GET /api/frame/{cam_id}` | último frame preview de esa cámara (`frames/{id}.jpg`, con esqueleto de YOLO dibujado encima si hay detección y el overlay está activado) |
 | `GET /api/frames/list` | qué cámaras tienen preview disponible |
 | `GET /api/events` | eventos del store, paginado por `since_id` |
+| `GET /api/overlay` | estado actual del toggle de overlay de pose (bbox + keypoints) |
+| `POST /api/overlay` | activa/desactiva el overlay en el preview de todas las cámaras |
 | `WS /ws` | push de logs del runner + eventos nuevos + estado, cada ~1s |
+
+`GET`/`POST /api/overlay` leen y escriben `runner_state/overlay.json` vía
+`runner/overlay_state.py` — el mismo archivo que usa `camera_worker.py` para
+decidir si dibuja el esqueleto en el preview (ver "Frame preview" en
+`runner/README.md`). Es la forma en que el dashboard y el runner, procesos
+separados, comparten ese estado sin acoplar código.
 
 El WebSocket manda el estado (`running`) cada segundo y consulta eventos
 nuevos cada 2 segundos (`_background_broadcaster`), solo si hay clientes
