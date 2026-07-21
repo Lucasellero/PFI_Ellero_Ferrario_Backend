@@ -24,6 +24,7 @@ videos/CAUCAFall/*.jpeg
 # Cache de features derivado del dataset (se regenera con evaluate_posture.py)
 vision/posture_features.csv
 vision/fall_calibration.csv
+vision/immobility_calibration.csv
 vision/fall_descriptors_cache.pkl
 vlm/clip_features.npz
 vlm/models/

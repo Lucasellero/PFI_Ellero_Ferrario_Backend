@@ -27,7 +27,7 @@ clips evaluados.
 from __future__ import annotations
 
 import math
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass
 
 import numpy as np
@@ -50,8 +50,10 @@ FALL_ASPECT_RATIO = 1.4               # width/height por encima de esto => postu
 FALL_CONFIRM_WINDOW_S = 1.5           # tiempo máx. entre el pico de velocidad y la postura final
 FALL_COOLDOWN_S = 3.0                 # tras confirmar una caída, no reportar otra hasta pasado esto
 MIN_KEYPOINT_CONFIDENCE = 0.2         # confianza promedio mínima de keypoints para no descartar el frame
-IMMOBILITY_WINDOW_S = 30.0            # segundos de movimiento casi nulo => evento de inmovilidad
-IMMOBILITY_MOVEMENT_THRESHOLD = 0.02  # desplazamiento normalizado de keypoints entre frames
+IMMOBILITY_WINDOW_S = 180.0            # segundos de movimiento casi nulo => evento de inmovilidad (sedentarismo sostenido, no un instante)
+IMMOBILITY_MOVEMENT_THRESHOLD = 0.02   # desplazamiento normalizado de keypoints POR SEGUNDO (no por frame, ver _smoothed_displacement_rate) => "se está moviendo"
+IMMOBILITY_SAMPLE_WINDOW_S = 2.0       # ventana para promediar el desplazamiento: un solo frame ruidoso (dar vuelta una hoja) no debe resetear la cuenta
+IMMOBILITY_POSTURE_VOTE_N = 5          # cuántas clasificaciones de postura recientes se usan (mayoría) para decidir sentado/acostado al reportar
 
 
 @dataclass
@@ -149,16 +151,20 @@ class FallImmobilityDetector:
 
     Umbrales de caída recalibrados sobre 179 clips de dos datasets con
     cámaras distintas, ver docstring del módulo y
-    `recalibrate_fall_thresholds.py`. Los de inmovilidad siguen siendo un
-    punto de partida de la literatura, sin calibrar todavía.
+    `recalibrate_fall_thresholds.py`. Umbral de inmovilidad calibrado sobre
+    datos reales de sedentarismo (Toyota Smarthome untrimmed, ver
+    `calibrate_immobility.py` y `../README.md`, sección "Inmovilidad
+    prolongada"); la rama de severidad "alta" (persona acostada) sigue sin
+    dataset propio de validación.
     """
 
-    def __init__(self, model_path: str = "yolo11n-pose.pt", history_seconds: float = 1.5):
+    def __init__(self, model_path: str = "yolo11n-pose.pt", history_seconds: float = 2.5):
         self._model = YOLO(model_path)
         self._history: deque[PoseSample] = deque()
         self._history_seconds = history_seconds
         self._immobile_since: float | None = None
         self._immobility_reported = False
+        self._posture_history: deque[str] = deque(maxlen=IMMOBILITY_POSTURE_VOTE_N)
         self._last_velocity_spike_t: float | None = None
         self._fall_cooldown_until: float = float("-inf")
         self.last_detection: tuple[np.ndarray, np.ndarray] | None = None
@@ -243,13 +249,26 @@ class FallImmobilityDetector:
         return (sample.hip_y - ref.hip_y) / scale / dt
 
     def _track_immobility(self, sample: PoseSample) -> list[dict]:
+        """Calibrado empíricamente sobre 1990 muestras "sentado quieto" (huecos
+        Sit_down->Get_up sin eventos etiquetados, dataset untrimmed de Toyota
+        Smarthome) vs. 168 muestras "caminando", ver docstring del módulo.
+        Mediana de desplazamiento por segundo: 0.0056 (quieto) vs. 0.0606
+        (caminando) — separación clara, umbral 0.02 da ~8% de error en cada
+        distribución tomado frame a frame.
+
+        Ese ~8% de frames "quieto" que superan el umbral por ruido puntual
+        (acomodarse, dar vuelta una hoja) es justamente por lo que la cuenta
+        de inmovilidad no se resetea con un solo frame por encima del umbral:
+        se usa el desplazamiento *promediado* sobre IMMOBILITY_SAMPLE_WINDOW_S
+        (`_smoothed_displacement_rate`), no frame a frame, igual criterio de
+        "no exigir un instante perfecto" que ya se usa para caídas.
+        """
+        from .posture import classify_posture  # import local: posture.py importa PoseSample de este módulo
+
         events: list[dict] = []
-        if len(self._history) >= 2:
-            prev = self._history[-2]
-            displacement = float(np.nanmean(np.abs(sample.keypoints - prev.keypoints)))
-            moving = displacement > IMMOBILITY_MOVEMENT_THRESHOLD
-        else:
-            moving = True
+        rate = self._smoothed_displacement_rate(sample)
+        moving = rate is None or rate > IMMOBILITY_MOVEMENT_THRESHOLD
+        self._posture_history.append(classify_posture(sample))
 
         if moving:
             self._immobile_since = None
@@ -259,10 +278,45 @@ class FallImmobilityDetector:
                 self._immobile_since = sample.timestamp_s
             elapsed = sample.timestamp_s - self._immobile_since
             if elapsed > IMMOBILITY_WINDOW_S and not self._immobility_reported:
-                self._immobility_reported = True
-                events.append({
-                    "event_type": "immobility",
-                    "video_timestamp_s": sample.timestamp_s,
-                    "metadata": {"duration_s": elapsed},
-                })
+                posture = self._majority_posture()
+                # "parado" inmóvil no es un patrón contemplado (ni sedentarismo ni
+                # post-caída, ver README) — no se reporta. No se marca
+                # _immobility_reported=True: si la postura pasa a sentado/acostado
+                # más adelante sin que se haya movido, ahí sí se reporta (elapsed
+                # sigue corriendo, no se resetea por esto).
+                if posture != "parado":
+                    self._immobility_reported = True
+                    events.append({
+                        "event_type": "immobility",
+                        "video_timestamp_s": sample.timestamp_s,
+                        "metadata": {
+                            "duration_s": elapsed,
+                            "posture": posture,
+                            # "alta": posible caída no detectada, persona inmóvil en el piso (sin
+                            # validar con ground truth real, ver README). "baja": sedentarismo
+                            # prolongado sentado (sí calibrado con datos reales, ver README).
+                            "severity": "alta" if posture == "acostado" else "baja",
+                        },
+                    })
         return events
+
+    def _smoothed_displacement_rate(self, sample: PoseSample) -> float | None:
+        """Desplazamiento de keypoints entre `sample` y la muestra más cercana
+        a IMMOBILITY_SAMPLE_WINDOW_S segundos atrás, normalizado por el tiempo
+        real transcurrido (mismo criterio que _vertical_velocity: sin esto, el
+        frame dropping en tiempo real de `runner/` — ver runner/README.md —
+        cambiaría el desplazamiento medido según cuántos frames se saltean,
+        no según cuánto se mueve la persona)."""
+        if not self._history:
+            return None
+        target_t = sample.timestamp_s - IMMOBILITY_SAMPLE_WINDOW_S
+        ref = min(self._history, key=lambda s: abs(s.timestamp_s - target_t))
+        dt = sample.timestamp_s - ref.timestamp_s
+        if dt < IMMOBILITY_SAMPLE_WINDOW_S / 2:
+            return None
+        return float(np.nanmean(np.abs(sample.keypoints - ref.keypoints))) / dt
+
+    def _majority_posture(self) -> str:
+        if not self._posture_history:
+            return "sentado"
+        return Counter(self._posture_history).most_common(1)[0][0]

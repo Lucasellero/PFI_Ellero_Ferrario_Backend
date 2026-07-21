@@ -236,13 +236,126 @@ incorporadas a `detect_person()`. Un enfoque tipo Transformer entrenado
 queda fuera de alcance por ahora (necesita miles de videos etiquetados que
 no tenemos).
 
-### 3. Inmovilidad prolongada — sin calibrar
+### 3. Inmovilidad prolongada — calibrada para el caso sedentario, sin validar para el caso post-caída
 
-Desplazamiento de keypoints por debajo de un umbral durante una ventana
-larga (default 30s). Los umbrales (`IMMOBILITY_WINDOW_S`,
-`IMMOBILITY_MOVEMENT_THRESHOLD`) siguen siendo un punto de partida de la
-literatura, sin el mismo proceso de calibración que caídas/postura — falta
-un dataset de clips largos con inmovilidad real para validar.
+El informe (Sec. 2.1.2) enmarca la inmovilidad prolongada como la secuela
+clínica de una caída no detectada — el "síndrome post-caída": la persona
+cae, no logra levantarse, queda inmóvil en el piso. Ninguno de los datasets
+de caída disponibles (`videos/GMDCSA-24/`, `videos/CAUCAFall/`) tiene ese
+escenario grabado — los clips terminan pocos segundos después del impacto,
+no minutos después. Por eso se separó el evento en dos ramas según la
+postura al momento de reportarlo (`posture.classify_posture()` sobre las
+últimas `IMMOBILITY_POSTURE_VOTE_N` muestras, por mayoría — evita que una
+clasificación de postura ruidosa de un solo frame decida la severidad):
+
+- **`posture: "sentado"` → `severity: "baja"`** (sedentarismo prolongado,
+  ej. quedarse leyendo o mirando TV mucho rato sin moverse): **calibrado con
+  datos reales**, ver abajo.
+- **`posture: "acostado"` → `severity: "alta"`** (posible caída no
+  detectada, persona inmóvil en el piso): la lógica de detección es la
+  misma, pero **sin dataset propio para validar la duración real** de este
+  escenario — extrapolación razonable del umbral calibrado para el caso
+  sedentario, no una medición. Mismo tipo de gap que `videos/Kaggle/` para
+  caídas (ver arriba): documentado en vez de forzar una calibración sin
+  evidencia.
+- **`posture: "parado"`**: no se reporta ningún evento — quedarse parado e
+  inmóvil por minutos no es un patrón contemplado (ni sedentarismo ni
+  post-caída), fuera de alcance por ahora.
+
+**Calibración del caso sedentario** (`calibrate_immobility.py`): usa el
+dataset **untrimmed** de Toyota Smarthome (grabación continua sin recortar,
+con anotación `event,start_frame,end_frame` por clip — distinto del dataset
+trimmed en `videos/`, ver `../videos/README.md`). A diferencia de los clips
+trimmed (~1-2s), estos duran varios minutos, así que contienen huecos reales
+sin ningún evento etiquetado mientras la persona sigue en cuadro —
+concretamente, tramos acotados por `Sit_down` al principio y `Get_up` al
+final, sin otro evento en el medio: la persona se sienta, no hace nada
+catalogado por un rato, se levanta. Eso es sedentarismo real medido, no un
+artefacto de anotación (los huecos entre `Leave` y el siguiente `Enter`, en
+cambio, son la persona fuera de cuadro, y se excluyen).
+
+Se procesaron 10 de estos tramos (64s a 281s, de 7 participantes distintos)
+más 9 tramos `Walk` (≥2.5s) de los mismos clips como contraste, muestreando
+a ~2fps (cada 12 frames de los 25fps nativos) por costo de cómputo. Resultado
+(1990 muestras "quieto", 168 "caminando"), desplazamiento de keypoints
+normalizado por segundo transcurrido entre muestras (no por frame — ver
+abajo):
+
+| | mediana | p90 | p95 |
+|---|---|---|---|
+| Quieto (sentado) | 0.0056 | 0.0172 | 0.0299 |
+| Caminando | 0.0606 | 0.1343 | 0.1658 |
+
+Separación clara (10x en la mediana). Con umbral **0.02**: 8.1% de frames
+"quieto" lo superan por ruido puntual (acomodarse, dar vuelta una hoja) y
+8.9% de frames "caminando" quedan por debajo (frames de transición) —
+tomado frame a frame, no es un umbral perfecto, pero el valor coincide con
+el que ya estaba puesto (tomado de la literatura sin validar antes de
+esto).
+
+**Dos correcciones a la lógica, no solo al valor del umbral:**
+
+1. **Normalización por tiempo** (`_smoothed_displacement_rate`): la versión
+   anterior comparaba desplazamiento crudo entre frames consecutivos sin
+   dividir por `dt` — mismo bug ya encontrado y corregido en la velocidad de
+   caída (`_vertical_velocity`, ver arriba). Con frame dropping en tiempo
+   real (`runner/`, ver `runner/README.md`), el intervalo entre muestras
+   procesadas varía, así que el desplazamiento necesita normalizarse por
+   segundo para no depender de cuántos frames se saltean.
+2. **Tolerancia a blips puntuales**: con ~8% de frames "quieto" superando el
+   umbral por ruido, resetear la cuenta completa de inmovilidad ante *un
+   solo* frame por encima del umbral (como hacía la versión anterior) casi
+   nunca dejaría acumular la ventana completa. Ahora el desplazamiento se
+   promedia sobre `IMMOBILITY_SAMPLE_WINDOW_S` (2s, usando la muestra más
+   cercana a ese tiempo atrás en el historial, igual criterio que
+   `_vertical_velocity`) en vez de comparar frame a frame.
+
+**Ventana** (`IMMOBILITY_WINDOW_S`): se subió de 30s a **180s (3 min)**. El
+umbral de 30s original no tenía respaldo — con eso, cualquiera que se quede
+sentado leyendo un párrafo dispara el evento. 180s surge de la conversación
+de diseño (evento de baja severidad, no una emergencia instantánea) y de
+que los tramos "quieto" medidos llegan hasta 281s reales sin interrupción,
+así que 180s es alcanzable sin depender de tramos al límite de lo
+disponible.
+
+**Validación end-to-end** (`FallImmobilityDetector` completo, frame a frame,
+no subsampleado): sobre 4 tramos "sentado quieto" reales, el evento disparó
+correctamente en el único que supera los 180s (`P15T06C05`, 262s → dispara
+a los 180.04s) y **no disparó antes de tiempo** en los 3 que quedan por
+debajo de la ventana (152s, 138s, 64s) — cero falsos positivos prematuros.
+Detección de persona 99.6-100% en los 4, así que el resultado no está
+maquillado por pérdida de tracking.
+
+Sumar un quinto tramo (`P15T12C01`, 484s) encontró un bug real: la versión
+inicial de esta calibración emitía el evento igual con `posture: "parado"`
+(contradiciendo lo de arriba, que dice que no debería reportarse) porque la
+exclusión nunca se había implementado, solo documentado. Al revisar el
+frame real en el momento del disparo, la persona estaba **sentada** en una
+mesa — error del clasificador de postura (`posture.py`, recall de sentado
+documentado en 82.1%, no 100%): con este ángulo de cámara y las piernas
+tapadas por la mesa, el aspect ratio cae del lado de "parado". Se corrigió
+`_track_immobility` para no emitir mientras la postura por mayoría sea
+"parado" (sin resetear el conteo — si la postura pasa a sentado/acostado
+más tarde sin que la persona se haya movido, ahí sí se reporta). Con el fix,
+este mismo tramo dispara correctamente a los 413.6s con `posture: "sentado"`
+en vez de a los 376.8s con `"parado"`.
+
+**Hallazgo aparte, no de este módulo pero encontrado validando acá:** dos de
+los tramos "quieto" probados (`P07T10C02`, `P09T05C05`) no dispararon
+inmovilidad porque **el detector de caídas disparó primero** — 1 vez en el
+primero, 20 veces en 212s en el segundo, ambos falsos positivos (verificado
+visualmente: la persona está sentada mirando TV, no cayendo). Causa
+identificada: en `P09T05C05` la persona está sentada **en el piso/una
+otomana baja**, lo que da un bounding box ancho y bajo — geométricamente
+parecido a estar acostado — y dispara `FALL_ASPECT_RATIO`. Los umbrales de
+caída (recall 85.2%/96.2%, ver arriba) están calibrados y validados contra
+`GMDCSA-24`/`CAUCAFall`, no contra este setup de cámara ni contra la postura
+"sentado en el piso". **No se tocaron los umbrales de caída para arreglar
+esto** — hacerlo sin el mismo proceso de calibración con datos reales
+(`recalibrate_fall_thresholds.py` con casos de "sentado bajo" como
+contraste) arriesgaría la calibración ya validada. Queda documentado como
+gap de generalización pendiente, prioritario si en algún momento se usa
+Toyota Smarthome como fuente de datos más allá de calibrar inmovilidad.
 
 Solo se trackea la primera persona detectada por frame — el informe excluye
 explícitamente el caso multi-residente (Sec. 1.2.2).
