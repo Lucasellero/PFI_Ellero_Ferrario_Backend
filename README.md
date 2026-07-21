@@ -122,17 +122,28 @@ comandos) en su README.
       matriz de confusión sobre casos verificados a mano, no una
       categorización previa sin validar.
 - [x] `vision/` — detección de caídas como evento (heurística basada en
-      YOLOv11n-pose, siguiendo Giri et al. 2025, calibrada y evaluada con
-      ground truth real sobre 78 clips en 4 datasets — proceso completo en
-      `vision/README.md`). **91% recall, 1 falso positivo, 1.2s de latencia
-      promedio.** Casos perdidos: mayormente caídas hacia una cama (la
-      premisa de velocidad vertical no aplica igual que cayendo al piso).
-      *Futuro:* combinar con `vlm/` (CLIP) como filtro de confirmación
-      semántica para el modo de falla dominante en la literatura —
-      confundir acostarse/sentarse voluntario con una caída (ver
-      `vision/README.md`).
-- [ ] `vision/` — inmovilidad prolongada como evento: implementada pero sin
-      calibrar (umbrales de la literatura, sin dataset de validación).
+      YOLOv11n-pose, siguiendo Giri et al. 2025, recalibrada por grid search
+      sobre 179 clips de `GMDCSA-24`+`CAUCAFall` — proceso completo en
+      `vision/README.md`). **Recall 96.2% (GMDCSA-24) / 68.0% (CAUCAFall),
+      18/179 falsos positivos combinado.** *Riesgo abierto (encontrado
+      2026-07-20 calibrando inmovilidad, ver abajo):* con el setup de cámara
+      de Toyota Smarthome, el detector da falsos positivos frecuentes (4 de
+      12 clips probados, hasta 20 en un solo clip de 212s) cuando la persona
+      está sentada en el piso o muy abajo — no generaliza a ese ángulo de
+      cámara ni a esa postura. **Prioridad #1 pendiente en `vision/`** antes
+      de seguir sumando datasets nuevos: recalibrar con esos casos como
+      contraste, mismo proceso que ya se usó para el bug de distancia de
+      cámara.
+- [x] `vision/` — inmovilidad prolongada como evento, separada en dos ramas
+      por postura: **sedentarismo** (`sentado` inmóvil 180s+, severidad
+      baja) calibrado y validado end-to-end con datos reales de Toyota
+      Smarthome untrimmed (8/8 tramos de validación correctos); **posible
+      post-caída** (`acostado` inmóvil, severidad alta) con detección y
+      clasificación de postura verificadas contra clips de caída reales,
+      pero **sin validar la duración real** (no existe dataset con alguien
+      inmóvil en el piso durante minutos) — extrapolación documentada, no
+      medida. Proceso completo en `vision/README.md`, sección "Inmovilidad
+      prolongada".
 - [x] `vlm/`: clasificación de actividades vía CLIP, exportado a ONNX para
       correr sin PyTorch en el Pi (ver `vlm/README.md`). Modo batch
       (`vlm/main.py`) sobre el dataset y modo en vivo (vía `runner/`). El

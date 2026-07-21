@@ -319,15 +319,21 @@ así que 180s es alcanzable sin depender de tramos al límite de lo
 disponible.
 
 **Validación end-to-end** (`FallImmobilityDetector` completo, frame a frame,
-no subsampleado): sobre 4 tramos "sentado quieto" reales, el evento disparó
-correctamente en el único que supera los 180s (`P15T06C05`, 262s → dispara
-a los 180.04s) y **no disparó antes de tiempo** en los 3 que quedan por
-debajo de la ventana (152s, 138s, 64s) — cero falsos positivos prematuros.
-Detección de persona 99.6-100% en los 4, así que el resultado no está
-maquillado por pérdida de tracking.
+no subsampleado, sobre 12 tramos reales de Toyota Smarthome untrimmed):
 
-Sumar un quinto tramo (`P15T12C01`, 484s) encontró un bug real: la versión
-inicial de esta calibración emitía el evento igual con `posture: "parado"`
+| Resultado | Tramos | Detalle |
+|---|---|---|
+| Disparó correctamente (>180s) | 4/4 | `P15T06C05` (262s→180.04s), `P15T12C01` (484s→413.6s, ver bug abajo), `P07T10C01` (459s→180.04s), `P06T14C01` (267s→180.00s) — todos `posture: "sentado"`, `severity: "baja"` |
+| No disparó antes de tiempo (<180s) | 4/4 | `P07T01C05` (152s), `P11T12C03` (138s), `P10T01C05` (64s), `P10T07C05` (129s) — cero falsos positivos prematuros |
+| Derivó en falso positivo de **caída** en vez de probar inmovilidad | 4/12 | `P07T10C02`, `P09T05C05`, `P07T05C05`, `P09T06C05` — ver hallazgo aparte abajo |
+
+**8 de 8 tramos que sí llegaron a probar la lógica de inmovilidad se
+comportaron exactamente como se esperaba** (4 disparos correctos, 4
+correctamente contenidos). Detección de persona 99.6-100% en todos, así que
+el resultado no está maquillado por pérdida de tracking.
+
+`P15T12C01` (484s) encontró un bug real en el camino: la versión inicial de
+esta calibración emitía el evento igual con `posture: "parado"`
 (contradiciendo lo de arriba, que dice que no debería reportarse) porque la
 exclusión nunca se había implementado, solo documentado. Al revisar el
 frame real en el momento del disparo, la persona estaba **sentada** en una
@@ -340,22 +346,51 @@ más tarde sin que la persona se haya movido, ahí sí se reporta). Con el fix,
 este mismo tramo dispara correctamente a los 413.6s con `posture: "sentado"`
 en vez de a los 376.8s con `"parado"`.
 
-**Hallazgo aparte, no de este módulo pero encontrado validando acá:** dos de
-los tramos "quieto" probados (`P07T10C02`, `P09T05C05`) no dispararon
-inmovilidad porque **el detector de caídas disparó primero** — 1 vez en el
-primero, 20 veces en 212s en el segundo, ambos falsos positivos (verificado
-visualmente: la persona está sentada mirando TV, no cayendo). Causa
-identificada: en `P09T05C05` la persona está sentada **en el piso/una
-otomana baja**, lo que da un bounding box ancho y bajo — geométricamente
-parecido a estar acostado — y dispara `FALL_ASPECT_RATIO`. Los umbrales de
-caída (recall 85.2%/96.2%, ver arriba) están calibrados y validados contra
-`GMDCSA-24`/`CAUCAFall`, no contra este setup de cámara ni contra la postura
-"sentado en el piso". **No se tocaron los umbrales de caída para arreglar
-esto** — hacerlo sin el mismo proceso de calibración con datos reales
-(`recalibrate_fall_thresholds.py` con casos de "sentado bajo" como
-contraste) arriesgaría la calibración ya validada. Queda documentado como
-gap de generalización pendiente, prioritario si en algún momento se usa
-Toyota Smarthome como fuente de datos más allá de calibrar inmovilidad.
+**Sanity-check de la rama `acostado`** (cola de los últimos 2s de 7 clips de
+`GMDCSA-24/fall3` y `fall4`, caídas al piso con cuerpo visible, no en
+silla): 6/7 con detección de persona ~100% y `classify_posture()` leyendo
+`acostado` de forma consistente en esos frames finales. Un clip
+(`fall3/04.mp4`) con detección más floja (41/59, 69%) y postura mezclada
+`parado`/`acostado`, sin investigar todavía — candidato a revisar antes de
+confiar del todo en la rama de severidad alta. Esto valida que la detección
+y clasificación de postura funcionan bien cuando el cuerpo está visible en
+el piso (a diferencia de estar tapado con una manta, ver más abajo el
+intento fallido con `videos` `Lay_down` de Toyota Smarthome) — pero **no
+valida la duración real**: los clips de caída duran 3-10s, muy lejos de los
+180s de la ventana, así que si el contador de inmovilidad se sostiene
+180s seguidos en un escenario post-caída real sigue sin comprobarse.
+
+**Hallazgo aparte, no de este módulo pero encontrado validando acá — y no
+es un caso aislado:** de los 12 tramos "quieto" probados, **4 (un tercio)**
+no llegaron a disparar inmovilidad porque **el detector de caídas disparó
+primero**, siempre falso positivo (verificado visualmente en varios: la
+persona está sentada, no cayendo):
+
+| Clip | Falsos positivos de caída | Nota |
+|---|---|---|
+| `P07T10C02` | 1 en 460s | — |
+| `P09T05C05` | 20 en 212s | persona sentada en el piso/otomana baja (bbox ancho y bajo, parecido a "acostado") |
+| `P07T05C05` | 4 en 220s | `torso_angle_deg` inusualmente alto (82-86°) en los disparos, distinto patrón al de `P09T05C05` |
+| `P09T06C05` | 8 en 211s | `aspect_ratio` muy pegado al umbral (1.40-1.46 vs. `FALL_ASPECT_RATIO=1.4`) |
+
+Los umbrales de caída (recall 85.2%/96.2%, ver arriba) están calibrados y
+validados contra `GMDCSA-24`/`CAUCAFall`, no contra este setup de cámara.
+**No se tocaron los umbrales de caída para arreglar esto** — hacerlo sin el
+mismo proceso de calibración con datos reales (`recalibrate_fall_thresholds.py`
+con casos de "sentado bajo"/estos 4 clips como contraste) arriesgaría la
+calibración ya validada sin el mismo rigor. **Este es el gap más urgente a
+resolver de los que quedan abiertos en `vision/`** — más que sumar más
+muestras de inmovilidad (que ya tiene 8/8 de validación) — porque compromete
+una funcionalidad que ya se daba por calibrada y evaluada.
+
+**Intento descartado, documentado para no repetirlo:** se probó usar clips
+`Lay_down` de Toyota Smarthome (persona tapada con manta en un sillón, no
+en el piso) como sustituto de "acostado post-caída". La detección de
+persona fue prácticamente nula (1-22% según el clip) — pero al revisar los
+frames a ojo, es oclusión por manta (solo se ve la cabeza), no una
+limitación del modelo con posturas acostadas en general. No sirve como
+proxy del escenario post-caída (cuerpo visible) y no se debe reintentar sin
+buscar clips `Lay_down` donde el cuerpo quede visible.
 
 Solo se trackea la primera persona detectada por frame — el informe excluye
 explícitamente el caso multi-residente (Sec. 1.2.2).
