@@ -8,16 +8,17 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --bg:       #0d1117;
-      --surface:  #161b22;
-      --surface2: #1c2128;
-      --border:   #30363d;
-      --primary:  #4d8bf8;
-      --success:  #3fb950;
-      --danger:   #f85149;
-      --warning:  #d29922;
-      --text:     #c9d1d9;
-      --muted:    #6e7681;
+      --bg:       #0a0a0b;
+      --surface:  #141416;
+      --surface2: #1c1c1f;
+      --border:   #2c2c30;
+      --primary:  #e4e4e7;
+      --primary-ink: #0a0a0b;
+      --activity: #8c7ae6;
+      --danger:   #ff4d4d;
+      --warning:  #e0b23e;
+      --text:     #eaeaec;
+      --muted:    #87878c;
       --mono:     'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
     }
 
@@ -32,27 +33,66 @@
       overflow: hidden;
     }
 
+    .icon { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+    .icon-spin { animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    :focus-visible {
+      outline: 2px solid var(--primary);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+    }
+
     /* ── Header ─────────────────────────────────────────────────────────── */
     header {
       background: var(--surface);
       border-bottom: 1px solid var(--border);
+      box-shadow: 0 2px 12px rgba(0,0,0,.3);
       padding: 10px 18px;
       display: flex;
       align-items: center;
       gap: 14px;
       flex-shrink: 0;
       user-select: none;
+      position: relative;
+      z-index: 1;
     }
     .logo {
       display: flex;
       align-items: center;
-      gap: 8px;
-      font-weight: 700;
-      font-size: 14px;
+      gap: 10px;
+      font-family: var(--mono);
+      font-weight: 600;
+      font-size: 13px;
+      letter-spacing: .06em;
+      text-transform: uppercase;
       color: var(--text);
     }
-    .logo-icon { font-size: 18px; }
-    .logo-sub { font-size: 11px; font-weight: 400; color: var(--muted); margin-top: 1px; }
+    .logo-icon {
+      width: 30px; height: 30px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 50%;
+      font-size: 15px;
+      position: relative;
+      color: var(--primary);
+    }
+    .logo-icon::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      border: 1px solid rgba(255,255,255,.35);
+      animation: radar 2.4s ease-out infinite;
+    }
+    @keyframes radar {
+      0%   { transform: scale(.55); opacity: .9; }
+      100% { transform: scale(1.35); opacity: 0; }
+    }
+    .logo-icon .icon { width: 16px; height: 16px; }
+    .logo-sub { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; font-size: 11px; font-weight: 400; letter-spacing: normal; text-transform: none; color: var(--muted); margin-top: 1px; }
 
     .status-pill {
       display: flex;
@@ -72,9 +112,9 @@
       border: 1px solid rgba(110,118,129,.25);
     }
     .status-pill.running {
-      background: rgba(63,185,80,.12);
-      color: var(--success);
-      border: 1px solid rgba(63,185,80,.3);
+      background: rgba(255,255,255,.12);
+      color: var(--primary);
+      border: 1px solid rgba(255,255,255,.3);
     }
     .status-dot {
       width: 7px; height: 7px;
@@ -104,18 +144,21 @@
     .btn:disabled { opacity: .4; cursor: not-allowed; pointer-events: none; }
 
     .btn-start {
-      background: var(--success);
-      color: #0d1117;
-      border-color: var(--success);
+      background: var(--primary);
+      color: var(--primary-ink);
+      border-color: var(--primary);
+      border-radius: 20px;
+      font-weight: 700;
     }
-    .btn-start:hover { background: #45c55a; }
+    .btn-start:hover { background: #fff; }
 
     .btn-stop {
       background: transparent;
       color: var(--danger);
-      border-color: rgba(248,81,73,.4);
+      border-color: rgba(255,77,77,.4);
+      border-radius: 20px;
     }
-    .btn-stop:hover { background: rgba(248,81,73,.1); }
+    .btn-stop:hover { background: rgba(255,77,77,.1); }
 
     .btn-ghost {
       background: transparent;
@@ -126,10 +169,10 @@
 
     .btn-primary {
       background: var(--primary);
-      color: #fff;
+      color: var(--primary-ink);
       border-color: var(--primary);
     }
-    .btn-primary:hover { background: #3a7ae0; }
+    .btn-primary:hover { background: #fff; }
 
     .btn-sm { padding: 4px 10px; font-size: 11px; }
 
@@ -165,7 +208,11 @@
       letter-spacing: .1em;
       text-transform: uppercase;
       color: var(--muted);
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
     }
+    .section-label .icon { width: 1.3em; height: 1.3em; }
 
     /* Camera cards */
     .camera-list {
@@ -190,12 +237,13 @@
       align-items: center;
       gap: 9px;
       cursor: pointer;
-      transition: border-color .15s, background .15s;
+      transition: border-color .15s, background .15s, transform .15s;
     }
-    .cam-card:hover { border-color: var(--muted); }
+    .cam-card:hover { border-color: var(--muted); transform: translateY(-1px); }
     .cam-card.selected {
       border-color: var(--primary);
-      background: rgba(77,139,248,.08);
+      background: rgba(255,255,255,.08);
+      box-shadow: 0 2px 10px rgba(0,0,0,.35);
     }
 
     .cam-icon {
@@ -205,8 +253,8 @@
       font-size: 15px;
       flex-shrink: 0;
     }
-    .cam-icon.ip     { background: rgba(77,139,248,.15); }
-    .cam-icon.video  { background: rgba(63,185,80,.15); }
+    .cam-icon.ip     { background: rgba(255,255,255,.08); }
+    .cam-icon.video  { background: rgba(255,255,255,.04); }
     .cam-info { flex: 1; min-width: 0; }
     .cam-id { font-weight: 600; font-size: 12px; }
     .cam-src {
@@ -217,15 +265,15 @@
       font-size: 10px; font-weight: 700; padding: 2px 6px;
       border-radius: 4px; flex-shrink: 0;
     }
-    .cam-badge.ip    { background: rgba(77,139,248,.15); color: var(--primary); }
-    .cam-badge.video { background: rgba(63,185,80,.15); color: var(--success); }
+    .cam-badge.ip    { background: rgba(255,255,255,.08); color: var(--text); }
+    .cam-badge.video { background: transparent; color: var(--muted); border: 1px solid var(--border); }
 
     .btn-icon {
       background: none; border: none; cursor: pointer; padding: 4px;
       border-radius: 4px; color: var(--muted); font-size: 14px; line-height: 1;
       flex-shrink: 0;
     }
-    .btn-icon:hover { color: var(--danger); background: rgba(248,81,73,.1); }
+    .btn-icon:hover { color: var(--danger); background: rgba(255,77,77,.1); }
 
     .empty-state { color: var(--muted); font-size: 12px; padding: 6px 0; }
 
@@ -295,10 +343,17 @@
     }
     .drop-zone:hover, .drop-zone.drag-over {
       border-color: var(--primary);
-      background: rgba(77,139,248,.05);
+      background: rgba(255,255,255,.05);
       color: var(--text);
     }
-    .drop-icon { font-size: 22px; margin-bottom: 6px; }
+    .drop-icon {
+      font-size: 18px;
+      width: 40px; height: 40px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border-radius: 50%;
+      background: rgba(255,255,255,.05);
+      margin: 0 auto 8px;
+    }
     .drop-hint { font-size: 11px; line-height: 1.5; }
 
     .upload-row {
@@ -312,7 +367,7 @@
     .prog-bar { flex: 1; height: 3px; background: var(--border); border-radius: 3px; overflow: hidden; }
     .prog-fill { height: 100%; background: var(--primary); border-radius: 3px; transition: width .3s; }
 
-    .upload-done { font-size: 11px; color: var(--success); display: flex; align-items: center; gap: 5px; }
+    .upload-done { font-size: 11px; color: var(--primary); display: flex; align-items: center; gap: 5px; }
 
     /* ── Right panel ─────────────────────────────────────────────────────── */
     .right-panel {
@@ -352,7 +407,7 @@
       transition: all .15s;
       white-space: nowrap;
     }
-    .view-btn.active { background: var(--primary); color: #fff; }
+    .view-btn.active { background: var(--primary); color: var(--primary-ink); }
     .view-btn:not(.active):hover { color: var(--text); }
 
     .selected-cam-info {
@@ -365,8 +420,8 @@
       font-size: 11px;
       font-weight: 700;
       color: var(--primary);
-      background: rgba(77,139,248,.12);
-      border: 1px solid rgba(77,139,248,.3);
+      background: rgba(255,255,255,.12);
+      border: 1px solid rgba(255,255,255,.3);
       padding: 2px 8px;
       border-radius: 4px;
     }
@@ -379,7 +434,7 @@
       color: var(--muted);
       font-weight: 600;
     }
-    .counter.has-events { background: rgba(77,139,248,.2); color: var(--primary); }
+    .counter.has-events { background: rgba(255,255,255,.2); color: var(--primary); }
 
     /* ── Content area ────────────────────────────────────────────────────── */
     .content-area {
@@ -430,18 +485,18 @@
       border-radius: 8px;
       overflow: hidden;
       cursor: pointer;
-      transition: border-color .15s, box-shadow .15s;
+      transition: border-color .15s, box-shadow .15s, transform .15s;
       display: flex;
       flex-direction: column;
     }
-    .cam-cell:hover { border-color: var(--muted); }
+    .cam-cell:hover { border-color: var(--muted); transform: translateY(-2px); box-shadow: 0 4px 14px rgba(0,0,0,.4); }
     .cam-cell.selected {
       border-color: var(--primary);
-      box-shadow: 0 0 0 2px rgba(77,139,248,.25);
+      box-shadow: 0 0 0 2px rgba(255,255,255,.25);
     }
 
     @keyframes cellFlash {
-      0%   { border-color: var(--primary); box-shadow: 0 0 8px rgba(77,139,248,.5); }
+      0%   { border-color: var(--primary); box-shadow: 0 0 8px rgba(255,255,255,.5); }
       100% { border-color: var(--border);  box-shadow: none; }
     }
     .cam-cell.event-flash { animation: cellFlash .7s ease-out forwards; }
@@ -449,8 +504,22 @@
     .cam-cell-video {
       position: relative;
       aspect-ratio: 16/9;
-      background: #080c12;
+      background: #060a0d;
       overflow: hidden;
+    }
+    .cam-cell-video::after, .single-feed-area::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: repeating-linear-gradient(
+        to bottom,
+        rgba(255,255,255,.05) 0px,
+        rgba(255,255,255,.05) 1px,
+        transparent 1px,
+        transparent 3px
+      );
+      mix-blend-mode: screen;
     }
 
     .cam-feed-img {
@@ -509,7 +578,7 @@
       transition: background .3s;
     }
     .live-dot.active {
-      background: var(--success);
+      background: var(--primary);
       animation: blink 2s ease-in-out infinite;
     }
 
@@ -558,16 +627,21 @@
     }
     @keyframes fadeIn { from{opacity:0;transform:translateY(-3px)} to{opacity:1;transform:none} }
 
-    .event-card.fall       { border-left: 3px solid var(--danger); }
+    .event-card.fall       { border-left: 3px solid var(--danger); animation: fallPulse 2.2s ease-out 1; }
     .event-card.immobility { border-left: 3px solid var(--warning); }
-    .event-card.activity   { border-left: 3px solid var(--primary); }
+    .event-card.activity   { border-left: 3px solid var(--activity); }
+    @keyframes fallPulse {
+      0%   { box-shadow: 0 0 0 rgba(255,77,77,0); }
+      15%  { box-shadow: 0 0 14px rgba(255,77,77,.45); }
+      100% { box-shadow: 0 0 0 rgba(255,77,77,0); }
+    }
 
     .ev-icon { font-size: 17px; flex-shrink: 0; }
     .ev-body { flex: 1; min-width: 0; }
     .ev-type { font-weight: 700; font-size: 12px; }
     .ev-type.fall       { color: var(--danger); }
     .ev-type.immobility { color: var(--warning); }
-    .ev-type.activity   { color: var(--primary); }
+    .ev-type.activity   { color: var(--activity); }
     .ev-meta { font-size: 10px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .ev-ts { font-size: 10px; color: var(--muted); font-family: var(--mono); flex-shrink: 0; }
 
@@ -578,7 +652,14 @@
       font-size: 12px;
       line-height: 1.8;
     }
-    .no-events-icon { font-size: 26px; margin-bottom: 8px; }
+    .no-events-icon {
+      font-size: 18px;
+      width: 40px; height: 40px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border-radius: 50%;
+      background: rgba(255,255,255,.04);
+      margin: 0 auto 8px;
+    }
 
     /* ── Single view ─────────────────────────────────────────────────────── */
     #singleView {
@@ -633,7 +714,15 @@
       line-height: 1.7;
       padding: 20px;
     }
-    .feed-no-cam-icon { font-size: 38px; opacity: .3; }
+    .feed-no-cam-icon {
+      font-size: 26px;
+      width: 64px; height: 64px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border-radius: 50%;
+      background: rgba(255,255,255,.04);
+      border: 1px solid var(--border);
+      opacity: .6;
+    }
 
     .single-feed-info {
       position: absolute;
@@ -689,14 +778,14 @@
       white-space: nowrap;
     }
     .detector-badge.yolo {
-      background: rgba(248,81,73,.12);
+      background: rgba(255,77,77,.12);
       color: var(--danger);
-      border: 1px solid rgba(248,81,73,.3);
+      border: 1px solid rgba(255,77,77,.3);
     }
     .detector-badge.clip {
-      background: rgba(77,139,248,.12);
-      color: var(--primary);
-      border: 1px solid rgba(77,139,248,.3);
+      background: rgba(140,122,230,.12);
+      color: var(--activity);
+      border: 1px solid rgba(140,122,230,.3);
     }
 
     /* ── Toast ───────────────────────────────────────────────────────────── */
@@ -707,22 +796,23 @@
       z-index: 999;
     }
     .toast {
-      background: var(--surface);
+      background: var(--surface2);
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 9px 14px;
       font-size: 12px;
       animation: fadeIn .2s ease;
       max-width: 300px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.45);
     }
-    .toast.ok  { border-left: 3px solid var(--success); }
+    .toast.ok  { border-left: 3px solid var(--primary); }
     .toast.err { border-left: 3px solid var(--danger); }
 
     /* ── Warning banner ──────────────────────────────────────────────────── */
     #restartWarning {
       display: none;
-      background: rgba(210,153,34,.1);
-      border-bottom: 1px solid rgba(210,153,34,.3);
+      background: rgba(224,178,62,.1);
+      border-bottom: 1px solid rgba(224,178,62,.3);
       padding: 6px 18px;
       font-size: 11px;
       color: var(--warning);
@@ -738,10 +828,32 @@
 </head>
 <body>
 
+<!-- Icon sprite: consistent line-icon set for chrome/UI (activity emoji are kept elsewhere as content, not decoration) -->
+<svg style="display:none" aria-hidden="true">
+  <symbol id="icon-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="icon-play" viewBox="0 0 24 24"><path d="M6 4.5v15l13-7.5-13-7.5Z"/></symbol>
+  <symbol id="icon-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5"/></symbol>
+  <symbol id="icon-doc" viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6V3Z"/><path d="M15 3v4h4"/><path d="M9 12h7M9 16h7M9 8h3"/></symbol>
+  <symbol id="icon-wifi" viewBox="0 0 24 24"><path d="M3 8.5a15 15 0 0 1 18 0"/><path d="M6.3 12.2a10.5 10.5 0 0 1 11.4 0"/><path d="M9.5 15.8a6 6 0 0 1 5 0"/><circle cx="12" cy="19" r="1.2" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="icon-film" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="1.5"/><path d="M8 4.5v15M16 4.5v15M3 9h5M16 9h5M3 15h5M16 15h5"/></symbol>
+  <symbol id="icon-upload" viewBox="0 0 24 24"><path d="M12 15V4M8 8l4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></symbol>
+  <symbol id="icon-alert" viewBox="0 0 24 24"><path d="M12 3 2 20h20L12 3Z"/><path d="M12 10v4"/><circle cx="12" cy="17" r="0.8" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="icon-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5Z"/></symbol>
+  <symbol id="icon-bone" viewBox="0 0 24 24"><path d="M5 12c-1.4 0-2.5 1.1-2.5 2.5S3.6 17 5 17c.9 0 1.7-.5 2.1-1.2h9.8c.4.7 1.2 1.2 2.1 1.2 1.4 0 2.5-1.1 2.5-2.5S20.4 12 19 12c-.9 0-1.7.5-2.1 1.2H7.1C6.7 12.5 5.9 12 5 12Z"/><path d="M7 12v3M17 12v3"/></symbol>
+  <symbol id="icon-brain" viewBox="0 0 24 24"><path d="M9 4a3 3 0 0 0-3 3 2.5 2.5 0 0 0-1 4.7A2.8 2.8 0 0 0 6 16a3 3 0 0 0 3 3M9 4a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3M9 4v16M15 4a3 3 0 0 1 3 3 2.5 2.5 0 0 1 1 4.7A2.8 2.8 0 0 1 18 16a3 3 0 0 1-3 3M15 4a3 3 0 0 0-3 3M15 20a3 3 0 0 0-3-3"/></symbol>
+  <symbol id="icon-grid" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1"/><rect x="13.5" y="3.5" width="7" height="7" rx="1"/><rect x="3.5" y="13.5" width="7" height="7" rx="1"/><rect x="13.5" y="13.5" width="7" height="7" rx="1"/></symbol>
+  <symbol id="icon-frame" viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="13" rx="1.5"/></symbol>
+  <symbol id="icon-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="icon-inbox" viewBox="0 0 24 24"><path d="M4 12h4l2 3h4l2-3h4"/><path d="M4 12 6 5h12l2 7v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-6Z"/></symbol>
+  <symbol id="icon-pause" viewBox="0 0 24 24"><rect x="7" y="5" width="3.5" height="14" rx="1"/><rect x="13.5" y="5" width="3.5" height="14" rx="1"/></symbol>
+  <symbol id="icon-loader" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 1-6.4 2.6"/></symbol>
+  <symbol id="icon-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.2A11 11 0 0 1 12 5c6.5 0 10 7 10 7a15.6 15.6 0 0 1-4 4.6M6.6 6.6C4 8.3 2 12 2 12s3.5 7 10 7a9.9 9.9 0 0 0 3.4-.6"/><path d="M9.5 10a3 3 0 0 0 4.2 4.2"/></symbol>
+</svg>
+
 <!-- Header -->
 <header>
   <div class="logo">
-    <span class="logo-icon">👁</span>
+    <span class="logo-icon"><svg class="icon"><use href="#icon-eye"/></svg></span>
     <div>
       <div>Monitor de Actividad</div>
       <div class="logo-sub">Sistema local de detección de caídas</div>
@@ -755,14 +867,14 @@
 
   <div class="spacer"></div>
 
-  <a class="btn btn-ghost" href="/logs">📄 Ver logs</a>
-  <button class="btn btn-start" id="btnStart" onclick="startRunner()">▶ Iniciar</button>
-  <button class="btn btn-stop"  id="btnStop"  onclick="stopRunner()" disabled>■ Detener</button>
+  <a class="btn btn-ghost" href="/logs"><svg class="icon"><use href="#icon-doc"/></svg> Ver logs</a>
+  <button class="btn btn-start" id="btnStart" onclick="startRunner()"><svg class="icon"><use href="#icon-play"/></svg> Iniciar</button>
+  <button class="btn btn-stop"  id="btnStop"  onclick="stopRunner()" disabled><svg class="icon"><use href="#icon-stop"/></svg> Detener</button>
 </header>
 
 <!-- Restart warning -->
 <div id="restartWarning">
-  ⚠ Los cambios en las cámaras se aplicarán la próxima vez que inicies el sistema.
+  <svg class="icon"><use href="#icon-alert"/></svg> Los cambios en las cámaras se aplicarán la próxima vez que inicies el sistema.
 </div>
 
 <!-- Main -->
@@ -780,15 +892,15 @@
       </div>
 
       <div class="add-btns">
-        <button class="btn btn-ghost btn-sm" onclick="openAddForm('ip')">📡 + IP / RTSP</button>
-        <button class="btn btn-ghost btn-sm" onclick="openAddForm('video')">🎞 + Video</button>
+        <button class="btn btn-ghost btn-sm" onclick="openAddForm('ip')"><svg class="icon"><use href="#icon-wifi"/></svg> + IP / RTSP</button>
+        <button class="btn btn-ghost btn-sm" onclick="openAddForm('video')"><svg class="icon"><use href="#icon-film"/></svg> + Video</button>
       </div>
 
       <!-- Add-camera form -->
       <div class="add-form" id="addForm">
         <div class="tab-row">
-          <button class="tab-btn active" id="tabIp"    onclick="switchTab('ip')">📡 Cámara IP</button>
-          <button class="tab-btn"        id="tabVideo" onclick="switchTab('video')">🎞 Archivo</button>
+          <button class="tab-btn active" id="tabIp"    onclick="switchTab('ip')"><svg class="icon"><use href="#icon-wifi"/></svg> Cámara IP</button>
+          <button class="tab-btn"        id="tabVideo" onclick="switchTab('video')"><svg class="icon"><use href="#icon-film"/></svg> Archivo</button>
         </div>
 
         <div class="field">
@@ -834,7 +946,7 @@
            ondragover="event.preventDefault(); this.classList.add('drag-over')"
            ondragleave="this.classList.remove('drag-over')"
            ondrop="onDrop(event)">
-        <div class="drop-icon">📂</div>
+        <div class="drop-icon"><svg class="icon"><use href="#icon-upload"/></svg></div>
         <div class="drop-hint">Arrastrá un video aquí<br>o hacé clic para seleccionar<br><span style="opacity:.5">MP4 · AVI</span></div>
       </div>
 
@@ -856,8 +968,8 @@
     <!-- View mode header -->
     <div class="view-header">
       <div class="view-toggle">
-        <button id="btnMulti"  class="view-btn active" onclick="setViewMode('multi')">⊞ Todas las fuentes</button>
-        <button id="btnSingle" class="view-btn"        onclick="setViewMode('single')">⊡ Vista única</button>
+        <button id="btnMulti"  class="view-btn active" onclick="setViewMode('multi')"><svg class="icon"><use href="#icon-grid"/></svg> Todas las fuentes</button>
+        <button id="btnSingle" class="view-btn"        onclick="setViewMode('single')"><svg class="icon"><use href="#icon-frame"/></svg> Vista única</button>
       </div>
 
       <div class="selected-cam-info" id="selectedCamInfo">
@@ -866,7 +978,7 @@
       </div>
 
       <div class="spacer"></div>
-      <button class="btn btn-ghost btn-sm" id="btnToggleOverlay" onclick="toggleOverlay()">👁 Ocultar overlay YOLO</button>
+      <button class="btn btn-ghost btn-sm" id="btnToggleOverlay" onclick="toggleOverlay()"><svg class="icon"><use href="#icon-eye"/></svg> Ocultar overlay YOLO</button>
       <span class="counter" id="evCount">0</span>
       <button class="btn btn-ghost btn-sm" onclick="clearEventView()">Limpiar vista</button>
     </div>
@@ -891,7 +1003,7 @@
           </div>
           <div class="events-scroll" id="evListMulti">
             <div class="no-events">
-              <div class="no-events-icon">📭</div>
+              <div class="no-events-icon"><svg class="icon"><use href="#icon-inbox"/></svg></div>
               Iniciá el sistema para ver eventos en tiempo real.
             </div>
           </div>
@@ -906,7 +1018,7 @@
           <!-- Video feed -->
           <div class="single-feed-area">
             <div class="feed-no-cam" id="feedNoCam">
-              <div class="feed-no-cam-icon">⏸</div>
+              <div class="feed-no-cam-icon"><svg class="icon"><use href="#icon-pause"/></svg></div>
               <div>Seleccioná una fuente desde el panel<br>izquierdo o desde la vista de todas.</div>
             </div>
             <img id="singleFeedImg" class="single-feed-img" alt=""
@@ -926,14 +1038,14 @@
             <!-- Eventos de postura (YOLO) -->
             <div class="single-events-group">
               <div class="single-events-hdr">
-                <span class="section-label">🦴 Postura · YOLO</span>
+                <span class="section-label"><svg class="icon"><use href="#icon-bone"/></svg> Postura · YOLO</span>
                 <span class="detector-badge yolo">caídas · inmovilidad</span>
                 <div class="spacer"></div>
                 <span class="counter" id="singleEvCountYolo">0</span>
               </div>
               <div class="events-scroll" id="evListSingleYolo">
                 <div class="no-events">
-                  <div class="no-events-icon">📭</div>
+                  <div class="no-events-icon"><svg class="icon"><use href="#icon-inbox"/></svg></div>
                   Seleccioná una fuente para ver<br>sus eventos de postura aquí.
                 </div>
               </div>
@@ -942,14 +1054,14 @@
             <!-- Eventos de actividad (CLIP) -->
             <div class="single-events-group">
               <div class="single-events-hdr">
-                <span class="section-label">🧠 Actividad · CLIP</span>
+                <span class="section-label"><svg class="icon"><use href="#icon-brain"/></svg> Actividad · CLIP</span>
                 <span class="detector-badge clip">clasificación de escena</span>
                 <div class="spacer"></div>
                 <span class="counter" id="singleEvCountClip">0</span>
               </div>
               <div class="events-scroll" id="evListSingleClip">
                 <div class="no-events">
-                  <div class="no-events-icon">📭</div>
+                  <div class="no-events-icon"><svg class="icon"><use href="#icon-inbox"/></svg></div>
                   Seleccioná una fuente para ver<br>sus actividades aquí.
                 </div>
               </div>
@@ -1021,7 +1133,7 @@ function applyStatus(running) {
 
   // actualizar íconos y textos de placeholder en celdas
   document.querySelectorAll('.ph-icon').forEach(el => {
-    el.textContent = running ? '⏳' : '⏸';
+    el.innerHTML = phIconHtml(running);
   });
   document.querySelectorAll('.ph-text').forEach(el => {
     el.textContent = running ? 'Conectando…' : 'Sistema detenido';
@@ -1030,7 +1142,7 @@ function applyStatus(running) {
   // actualizar el placeholder de la vista única
   const feedIcon = document.querySelector('#feedNoCam .feed-no-cam-icon');
   const feedText = document.querySelector('#feedNoCam div:last-child');
-  if (feedIcon) feedIcon.textContent = running ? '⏳' : '⏸';
+  if (feedIcon) feedIcon.innerHTML = phIconHtml(running);
   if (feedText && selectedCam) {
     feedText.textContent = running
       ? 'Conectando con ' + selectedCam + '…'
@@ -1044,17 +1156,23 @@ async function startRunner() {
   if (res.ok) {
     camerasDirty = false;
     document.getElementById('restartWarning').classList.remove('visible');
-    toast('ok', '▶ Sistema iniciado');
+    toast('ok', 'Sistema iniciado');
   } else {
     const err = await res.json().catch(() => ({}));
     toast('err', err.detail || 'No se pudo iniciar');
   }
 }
 
+function phIconHtml(running) {
+  return running
+    ? '<svg class="icon icon-spin"><use href="#icon-loader"/></svg>'
+    : '<svg class="icon"><use href="#icon-pause"/></svg>';
+}
+
 async function stopRunner() {
   const res = await apiFetch('POST', '/api/stop');
   if (res.ok) {
-    toast('ok', '■ Sistema detenido');
+    toast('ok', 'Sistema detenido');
   } else {
     const err = await res.json().catch(() => ({}));
     toast('err', err.detail || 'No se pudo detener');
@@ -1084,7 +1202,9 @@ async function toggleOverlay() {
 
 function updateOverlayButton() {
   const btn = document.getElementById('btnToggleOverlay');
-  btn.textContent = showOverlay ? '👁 Ocultar overlay YOLO' : '👁‍🗨 Mostrar overlay YOLO';
+  btn.innerHTML = showOverlay
+    ? '<svg class="icon"><use href="#icon-eye-off"/></svg> Ocultar overlay YOLO'
+    : '<svg class="icon"><use href="#icon-eye"/></svg> Mostrar overlay YOLO';
 }
 
 // ── Frame poller ─────────────────────────────────────────────────────────────
@@ -1135,7 +1255,7 @@ function renderCameras(cams) {
   list.innerHTML = cams.map(cam => {
     const isIp = /^(rtsp|rtsps|http|https):\/\//.test(cam.source) || /^\d+$/.test(cam.source);
     const cls   = isIp ? 'ip' : 'video';
-    const icon  = isIp ? '📡' : '🎞';
+    const icon  = `<svg class="icon"><use href="#${isIp ? 'icon-wifi' : 'icon-film'}"/></svg>`;
     const badge = isIp ? 'IP' : 'VIDEO';
     const src   = cam.source.length > 34 ? '…' + cam.source.slice(-31) : cam.source;
     const sel   = cam.id === selectedCam ? 'selected' : '';
@@ -1165,14 +1285,14 @@ function renderVideoGrid(cams) {
   }
   grid.innerHTML = cams.map(cam => {
     const live  = isLiveSource(cam.source);
-    const icon  = live ? '📡' : '🎞';
+    const icon  = `<svg class="icon"><use href="#${live ? 'icon-wifi' : 'icon-film'}"/></svg>`;
     const sel   = cam.id === selectedCam ? 'selected' : '';
 
     const videoContent =
       `<img class="cam-feed-img" alt="${escHtml(cam.id)}"
               onload="onCellLoad(this)" onerror="onCellError(this)">
          <div class="cam-cell-placeholder">
-           <span class="ph-icon">${isRunning ? '⏳' : '⏸'}</span>
+           <span class="ph-icon">${phIconHtml(isRunning)}</span>
            <span class="ph-text">${isRunning ? 'Conectando…' : 'Sistema detenido'}</span>
          </div>`;
 
@@ -1303,7 +1423,7 @@ function rebuildSingleEvents(camId) {
   const fill = (listId, events, emptyMsg) => {
     const list = document.getElementById(listId);
     if (!events.length) {
-      list.innerHTML = `<div class="no-events"><div class="no-events-icon">📭</div>${emptyMsg}</div>`;
+      list.innerHTML = `<div class="no-events"><div class="no-events-icon"><svg class="icon"><use href="#icon-inbox"/></svg></div>${emptyMsg}</div>`;
     } else {
       list.innerHTML = '';
       events.forEach(ev => list.appendChild(buildEventCard(ev)));
@@ -1453,7 +1573,11 @@ async function uploadFile(file) {
 }
 
 // ── Events ────────────────────────────────────────────────────────────────────
-const EVENT_ICONS  = { fall: '⚠️', immobility: '💤', activity: '🏃' };
+const EVENT_ICONS  = {
+  fall: '<svg class="icon"><use href="#icon-alert"/></svg>',
+  immobility: '<svg class="icon"><use href="#icon-moon"/></svg>',
+  activity: '🏃'
+};
 const EVENT_LABELS = { fall: 'Caída detectada', immobility: 'Inmovilidad', activity: 'Actividad' };
 
 // Traducción de las clases CLIP (vlm/models/labels.json) a nombre + ícono.
@@ -1542,7 +1666,7 @@ function buildEventCard(ev) {
     <span class="ev-icon">${icon}</span>
     <div class="ev-body">
       <div class="ev-type ${ev.event_type}">${label}</div>
-      <div class="ev-meta">📷 ${escHtml(ev.video_id)}${meta ? ' · ' + escHtml(meta) : ''}</div>
+      <div class="ev-meta"><svg class="icon" style="vertical-align:-2px"><use href="#icon-frame"/></svg> ${escHtml(ev.video_id)}${meta ? ' · ' + escHtml(meta) : ''}</div>
     </div>
     <span class="ev-ts">${ts}</span>`;
   return card;
@@ -1571,7 +1695,7 @@ function clearEventView() {
 
   ['evListMulti', 'evListSingleYolo', 'evListSingleClip'].forEach(id => {
     document.getElementById(id).innerHTML =
-      '<div class="no-events"><div class="no-events-icon">📭</div>Vista limpiada.</div>';
+      '<div class="no-events"><div class="no-events-icon"><svg class="icon"><use href="#icon-inbox"/></svg></div>Vista limpiada.</div>';
   });
 
   ['evCount', 'singleEvCountYolo', 'singleEvCountClip'].forEach(id => {
