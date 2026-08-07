@@ -28,6 +28,7 @@ vision/immobility_calibration.csv
 vision/fall_descriptors_cache.pkl
 vision/fall_confirmation_scores.csv
 vision/fall_confirmation_onnx_check.csv
+vision/fall_confirmation_embeddings.npz
 vision/*.log
 vlm/clip_features.npz
 vlm/models/

@@ -14,6 +14,8 @@ vision/
 ├── recalibrate_fall_thresholds.py       # grid search de umbrales con cache de descriptores
 ├── extend_descriptor_cache.py           # suma clips nuevos a fall_descriptors_cache.pkl sin recomputar todo
 ├── calibrate_fall_confirmation.py       # prototipo/calibración del filtro CLIP de confirmación (dev, ver vlm/src/fall_confirmation.py)
+├── extract_fall_confirmation_embeddings.py  # cachea embeddings ONNX por evento geométrico, para entrenar un linear probe (experimento en curso, ver abajo)
+├── train_fall_confirmation_probe.py     # entrena el linear probe sobre ese cache, con GroupKFold por video (experimento en curso, ver abajo)
 ├── build_caucafall_groundtruth.py       # genera videos/CAUCAFall/Fall.csv desde sus etiquetas por frame
 └── build_kaggle_multicam_groundtruth.py # genera videos/Kaggle/Fall.csv desde kaggle_data.csv
 ```
@@ -476,6 +478,44 @@ frames a ojo, es oclusión por manta (solo se ve la cabeza), no una
 limitación del modelo con posturas acostadas en general. No sirve como
 proxy del escenario post-caída (cuerpo visible) y no se debe reintentar sin
 buscar clips `Lay_down` donde el cuerpo quede visible.
+
+**Experimento en curso, sin terminar (2026-08-07): linear probe entrenado
+en vez de zero-shot para el filtro de confirmación.** Inspirado en Raza et
+al. (2022, ICPRS) — YOLO como clasificador *entrenado* fall/no-fall en vez
+de heurística — y en que `vlm/` ya mejoró la clasificación de actividades
+reemplazando zero-shot por un linear probe entrenado sobre los mismos
+embeddings de CLIP (ver `vlm/README.md`). La idea: en vez de comparar el
+embedding de la persona contra el margen de `FALL_PROMPTS`/`NOTFALL_PROMPTS`
+(zero-shot), entrenar una regresión logística sobre esos mismos embeddings
+— sin sumar ningún modelo nuevo al Pi, reusa el encoder ONNX que `vlm/` ya
+carga.
+
+Scripts nuevos en `vision/`: `extract_fall_confirmation_embeddings.py`
+(corre el detector geométrico + encoder ONNX sobre `videos/**/Fall.csv` y
+cachea embeddings + etiqueta en `fall_confirmation_embeddings.npz`, análogo
+a `vlm/extract_clip_features.py`) y `train_fall_confirmation_probe.py`
+(entrena con `GroupKFold` por video para medir recall/FP *out-of-fold*, sin
+leakage, análogo a `vlm/train_category_probe.py`).
+
+Corrida parcial sobre 179/183 clips (GMDCSA-24 + CAUCAFall, sin los 4 clips
+largos de `ToyotaSmarthome_FP`, cortada por tiempo — cada uno tarda mucho en
+CPU frame a frame): **71.1% recall (91/128), 4 FP** out-of-fold, contra el
+82.0% recall / ~15 FP estimado del filtro zero-shot en el mismo subset (el
+96 FP documentado arriba es sobre los 183 clips completos, la mayoría de
+Toyota Smarthome). **No es un resultado confiable todavía:** el subset
+usado para entrenar el probe tiene 150 eventos de caída real contra solo 16
+de no-caída, porque los negativos informativos (los falsos positivos tipo
+"sentado en sillón bajo") son justamente los que vienen de los 4 clips de
+Toyota Smarthome excluidos — el probe casi no vio el caso que tiene que
+aprender a rechazar. El recall bajo probablemente es artefacto de ese
+desbalance, no una limitación real del método. **Pendiente:** volver a
+correr `extract_fall_confirmation_embeddings.py` (sin `--skip-toyota`) hasta
+completar los 183 clips, reentrenar con `train_fall_confirmation_probe.py`,
+y recién ahí comparar en serio contra el filtro zero-shot antes de decidir
+si reemplazarlo. `vlm/models/fall_confirmation_probe.npz` ya se generó con
+el subset parcial pero **no está integrado en `FallConfirmationClassifier`**
+— `vlm/src/fall_confirmation.py` sigue sin cambios, el filtro en producción
+sigue siendo el zero-shot ya validado (82.0% recall, -67% FP).
 
 Solo se trackea la primera persona detectada por frame — el informe excluye
 explícitamente el caso multi-residente (Sec. 1.2.2).
