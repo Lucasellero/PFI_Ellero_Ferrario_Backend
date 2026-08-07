@@ -44,6 +44,16 @@ try:
 except ImportError:
     _CLIP_AVAILABLE = False
 
+# Filtro de confirmación de caídas (ver vlm/src/fall_confirmation.py y
+# vision/README.md, sección "Detección de caída como evento"): opcional,
+# solo se activa si además de ClipActivityClassifier existe
+# fall_confirmation_features.npy (generado por export_onnx.py).
+try:
+    from vlm.src.fall_confirmation import FallConfirmationClassifier
+    _FALL_CONFIRMATION_AVAILABLE = True
+except ImportError:
+    _FALL_CONFIRMATION_AVAILABLE = False
+
 
 class CameraWorker(threading.Thread):
     """Un thread por cámara: lee frames y emite eventos al store compartido."""
@@ -65,6 +75,12 @@ class CameraWorker(threading.Thread):
         self._pose_model = pose_model
         self._stop = stop_event
         self._clip = clip_classifier
+        self._fall_confirm = None
+        if self._clip is not None and _FALL_CONFIRMATION_AVAILABLE:
+            try:
+                self._fall_confirm = FallConfirmationClassifier(self._clip)
+            except FileNotFoundError:
+                pass  # fall_confirmation_features.npy no generado — solo geometría, ver README
         self._clip_interval = clip_interval_s
         self._clip_min_confidence = clip_min_confidence
         self._clip_heartbeat = clip_heartbeat_s
@@ -98,6 +114,10 @@ class CameraWorker(threading.Thread):
             )
         else:
             self._log.info("[%s] CLIP no disponible, solo pose estimation", self._config.id)
+        self._log.info(
+            "[%s] confirmación de caídas con CLIP: %s",
+            self._config.id, "activa" if self._fall_confirm else "inactiva (solo heurística geométrica)",
+        )
 
         try:
             for frame in source.frames():
@@ -116,6 +136,16 @@ class CameraWorker(threading.Thread):
                         preview = draw_pose(frame.image, kpts, box)
                     self._save_preview(preview)
                 for raw in raw_events:
+                    if raw["event_type"] == "fall" and self._fall_confirm is not None:
+                        confirmed, margin = self._confirm_fall(frame, detector)
+                        raw["metadata"]["clip_confirmation_margin"] = round(margin, 4)
+                        if not confirmed:
+                            self._log.info(
+                                "[%s] caída descartada por CLIP @ %.2fs (margin=%.4f)",
+                                self._config.id, raw["video_timestamp_s"], margin,
+                            )
+                            continue
+
                     event = MonitoringEvent(
                         video_id=self._config.id,
                         event_type=EventType(raw["event_type"]),
@@ -143,6 +173,19 @@ class CameraWorker(threading.Thread):
         finally:
             store.close()
             self._log.info("[%s] detenida.", self._config.id)
+
+    def _confirm_fall(self, frame, detector) -> tuple[bool, float]:
+        """Segunda etapa del evento 'fall': confirma con CLIP zero-shot antes
+        de reportarlo (ver vlm/src/fall_confirmation.py). Si no hay detección
+        de persona en este frame exacto (no debería pasar, el evento se
+        generó a partir de una detección), se confirma por defecto — mejor un
+        falso positivo ocasional que perder una caída real por una falla de
+        este chequeo adicional."""
+        if detector.last_detection is None:
+            return True, 0.0
+        _, box = detector.last_detection
+        crop = crop_to_person(frame.image, box)
+        return self._fall_confirm.confirm(crop)
 
     def _clip_tick(self, frame, detector, store: EventStore) -> None:
         """Muestreo CLIP por ventanas.

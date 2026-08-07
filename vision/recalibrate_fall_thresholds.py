@@ -58,6 +58,7 @@ def extract_descriptors(video_path: str, model: YOLO) -> list[tuple[float, float
 
 def build_cache(cases: list[dict]) -> dict[str, list]:
     model = YOLO("yolo11n-pose.pt")
+    model.to("cuda")
     cache = {}
     for i, case in enumerate(cases):
         cache[case["video"]] = extract_descriptors(case["video"], model)
@@ -138,7 +139,7 @@ def main() -> None:
     print(f"{'vel_thr':>8} {'asp_thr':>8} {'recall':>8} {'FP':>6}")
 
     velocity_candidates = [round(0.02 + 0.01 * i, 3) for i in range(14)]  # 0.02 .. 0.15
-    aspect_candidates = [1.0, 1.05, 1.1, 1.15, 1.2]
+    aspect_candidates = [round(1.0 + 0.05 * i, 2) for i in range(13)]  # 1.0 .. 1.6 (cubre el umbral desplegado, 1.4)
 
     results = []
     for vt in velocity_candidates:
@@ -148,7 +149,7 @@ def main() -> None:
             results.append((vt, at, recall, fp, tp, fn))
 
     results.sort(key=lambda r: (-r[2], r[3]))  # más recall primero, después menos FP
-    for vt, at, recall, fp, tp, fn in results[:20]:
+    for vt, at, recall, fp, tp, fn in results[:30]:
         print(f"{vt:>8} {at:>8} {recall * 100:>7.1f}% {fp:>6}")
 
     best = results[0]

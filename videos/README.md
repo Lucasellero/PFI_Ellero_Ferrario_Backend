@@ -34,6 +34,15 @@ disponible en producción:
   se resuelva; por ahora el archivo generado se llama
   `Fall.csv.pending` para que no se mezcle solo en las métricas.
 
+- **`ToyotaSmarthome_FP/`** (4 clips completos, ~1100-1600s cada uno,
+  `P07T10C02`/`P09T05C05`/`P07T05C05`/`P09T06C05` del dataset untrimmed de
+  Toyota Smarthome): no son un dataset de caídas — son clips de actividades
+  cotidianas (sentado mirando TV, leyendo) sin ninguna caída real, usados
+  como **contraste** porque el detector de caídas disparaba falsos
+  positivos repetidos en ellos (persona sentada en el piso/sillón bajo,
+  bbox parecido a "acostado" — encontrado validando inmovilidad, ver
+  `vision/README.md`). `Fall.csv` marca el clip entero como `NoFall`.
+
 Se mantienen separados del resto porque son datasets distintos, no parte
 del dataset de actividades de Toyota Smarthome descripto abajo.
 

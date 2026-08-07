@@ -1,0 +1,5 @@
+# Dependencias extra solo para calibrate_fall_confirmation.py (prototipo del
+# filtro de confirmación de caídas, ver README.md). No hace falta para el
+# resto de vision/ (main.py, evaluate_falls.py, recalibrate_fall_thresholds.py).
+git+https://github.com/openai/CLIP.git
+torch>=2.0.0

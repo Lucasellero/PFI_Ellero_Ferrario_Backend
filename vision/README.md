@@ -13,6 +13,7 @@ vision/
 ├── calibrate_falls.py                   # calibración original (GMDCSA-24), ver historia abajo
 ├── recalibrate_fall_thresholds.py       # grid search de umbrales con cache de descriptores
 ├── extend_descriptor_cache.py           # suma clips nuevos a fall_descriptors_cache.pkl sin recomputar todo
+├── calibrate_fall_confirmation.py       # prototipo/calibración del filtro CLIP de confirmación (dev, ver vlm/src/fall_confirmation.py)
 ├── build_caucafall_groundtruth.py       # genera videos/CAUCAFall/Fall.csv desde sus etiquetas por frame
 └── build_kaggle_multicam_groundtruth.py # genera videos/Kaggle/Fall.csv desde kaggle_data.csv
 ```
@@ -375,13 +376,97 @@ persona está sentada, no cayendo):
 
 Los umbrales de caída (recall 85.2%/96.2%, ver arriba) están calibrados y
 validados contra `GMDCSA-24`/`CAUCAFall`, no contra este setup de cámara.
-**No se tocaron los umbrales de caída para arreglar esto** — hacerlo sin el
-mismo proceso de calibración con datos reales (`recalibrate_fall_thresholds.py`
-con casos de "sentado bajo"/estos 4 clips como contraste) arriesgaría la
-calibración ya validada sin el mismo rigor. **Este es el gap más urgente a
-resolver de los que quedan abiertos en `vision/`** — más que sumar más
-muestras de inmovilidad (que ya tiene 8/8 de validación) — porque compromete
-una funcionalidad que ya se daba por calibrada y evaluada.
+Esto quedó documentado como el gap más urgente a resolver en `vision/` — ver
+la sección siguiente, "Recalibración con el setup de Toyota Smarthome como
+contraste", para el proceso completo que lo cerró.
+
+### Recalibración con el setup de Toyota Smarthome como contraste (resuelto con un filtro de CLIP, no con umbrales)
+
+**Paso 1 — sumar los 4 clips como contraste y re-correr el grid search.** Se
+armó `videos/ToyotaSmarthome_FP/Fall.csv` con los 4 clips completos de la
+tabla de arriba (P07T10C02, P09T05C05, P07T05C05, P09T06C05, ~1100-1600s
+cada uno, anotados como `NoFall` de punta a punta — no tienen ninguna caída
+real, son actividades cotidianas) y se extendió
+`fall_descriptors_cache.pkl` con `extend_descriptor_cache.py` (183 clips en
+total). Al correr `recalibrate_fall_thresholds.py` con estos clips sumados,
+apareció un bug de calibración aparte: el rango de `aspect_candidates` del
+grid search (`[1.0, 1.05, ..., 1.2]`) **no cubría el umbral realmente
+desplegado en producción (`FALL_ASPECT_RATIO=1.4`)** — se corrigió el rango
+a `[1.0, ..., 1.6]` antes de confiar en cualquier resultado nuevo.
+
+**Paso 2 — el grid search por sí solo no alcanzaba a mostrar el problema
+real.** Con el rango corregido, `(0.12, 1.4)` seguía siendo la mejor
+combinación del barrido — pero el score del grid search topea a 1 falso
+positivo por clip (para rankear rápido), lo que esconde la frecuencia real.
+Corriendo el detector completo (con cooldown real, sin ese tope) sobre los 4
+clips enteros: **3, 82, 124 y 61 falsos positivos** respectivamente — mucho
+peor que la tabla de arriba, que solo medía un tramo corto de cada clip, no
+el clip completo.
+
+**Paso 3 — barrido exhaustivo sin el tope de 1 FP/clip, para confirmar que
+no es un problema de calibración fina.** Repitiendo el grid search sobre las
+mismas 182 combinaciones de umbrales pero contando falsos positivos reales
+(no topeados), **ninguna combinación resuelve el problema**: `(0.12, 1.4)`
+sigue siendo la mejor (85.2% recall, 91 FP en los 4 clips de 109 FP
+totales — el 83% de todos los falsos positivos del sistema vienen de estos 4
+clips), y cualquier otra combinación o mantiene ~90-108 FP en estos clips, o
+empieza a perder recall real sin arreglar el problema. **Conclusión
+cuantitativa:** la heurística geométrica (velocidad vertical + aspect ratio)
+tiene un límite estructural con este ángulo de cámara — sentarse en un
+sillón bajo/piso mientras se mira TV genera la misma firma geométrica que
+una caída (bbox ancho y bajo + movimientos de brazo/torso que cruzan el
+umbral de velocidad). No es una cuestión de calibración fina de umbrales.
+
+**Paso 4 — filtro de confirmación con CLIP zero-shot (la vía que ya estaba
+anotada como trabajo futuro más arriba).** Cuando el detector geométrico
+dispara un evento de caída, se le pregunta a CLIP zero-shot si el recorte de
+la persona en ese frame se parece más a "una caída accidental" o a "una
+postura voluntaria" (prompts en `vlm/src/fall_confirmation.py`), y solo se
+confirma el evento si CLIP coincide. Prototipado y calibrado en
+`calibrate_fall_confirmation.py`: corre el detector completo sobre los 183
+clips y, en cada evento geométrico, recorta la persona y consulta CLIP
+(ViT-B/32 fp32 vía el paquete `clip`/PyTorch, no el ONNX de producción —
+ver el hallazgo del paso 5 sobre por qué esto importa), guardando los
+scores en `fall_confirmation_scores.csv` (445 eventos evaluados). El margen
+`clip_fall_score - clip_notfall_score` separa claramente los eventos reales
+(mediana ≈0) de los falsos positivos (mediana ≈-0.024).
+
+**Paso 5 — la cuantización INT8 desplaza el umbral: hay que calibrar contra
+el modelo real, no el prototipo.** El umbral elegido con el prototipo fp32
+(-0.02) se probó también contra el encoder ONNX INT8 real (el que corre en
+producción, `clip_image_encoder_int8.onnx`) reclasificando los mismos 445
+eventos con `ClipActivityClassifier`/`FallConfirmationClassifier`
+(`fall_confirmation_onnx_check.csv`). El resultado fue distinto al
+esperado: con -0.02 sobre márgenes ONNX el recall real caía a 71.1% (vs. el
+82.8% calibrado en el prototipo) — la cuantización corre los embeddings lo
+suficiente como para invalidar un umbral calibrado en fp32. Se recalibró el
+umbral directamente contra los márgenes ONNX reales, encontrando
+`CONFIRMATION_MARGIN_THRESHOLD = -0.028` en
+`vlm/src/fall_confirmation.py`:
+
+| | Recall combinado (128 casos) | FP totales (183 clips) | FP en los 4 clips de Toyota Smarthome |
+|---|---|---|---|
+| Solo heurística geométrica | 85.2% (109/128) | 288 | 270 |
+| + filtro CLIP (ONNX, umbral final) | 82.0% (105/128, -3.2pp) | 96 (-67%) | 81 (-70%) |
+
+Los 3-4 casos de recall perdidos son mayormente de `GMDCSA-24` (el dataset
+mejor calibrado, 96.2% de partida); `CAUCAFall` no pierde recall con este
+umbral. **Trade-off aceptado:** en un producto de monitoreo doméstico, la
+fatiga de alertas por falsos positivos repetidos (hasta 124 en un solo clip
+antes del filtro) es un riesgo de adopción tan real como perder una caída
+puntual, y el detector geométrico solo ya tenía blind spots conocidos
+(caídas hacia la cama, oclusión) que este filtro no toca ni empeora.
+
+**Dónde vive el filtro:** `vision/` queda con el detector puramente
+geométrico (`FallImmobilityDetector`, sin cambios de umbral — `(0.12, 1.4)`
+se mantiene, confirmado como el mejor punto del grid search) para poder
+seguir calibrándolo/evaluándolo de forma independiente vía
+`evaluate_falls.py`, sin depender de `vlm/`. El filtro de confirmación
+(`FallConfirmationClassifier`) vive en `vlm/` y se integra en
+`runner/camera_worker.py` — la única pieza que ya tenía permiso de importar
+`vision/` y `vlm/` juntos (ver "Cómo trabajar en paralelo" en el README
+raíz). `vision/main.py` (modo batch) y los scripts de calibración de este
+README siguen midiendo solo la heurística geométrica, a propósito.
 
 **Intento descartado, documentado para no repetirlo:** se probó usar clips
 `Lay_down` de Toyota Smarthome (persona tapada con manta en un sillón, no

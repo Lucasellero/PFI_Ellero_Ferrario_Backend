@@ -23,6 +23,7 @@ import numpy as np
 import torch
 
 from src.clip_classifier import ALL_PROMPTS
+from src.fall_confirmation import FALL_PROMPTS, NOTFALL_PROMPTS
 
 
 def models_dir_for(model_name: str) -> Path:
@@ -87,6 +88,23 @@ def export_text_features(model: torch.nn.Module, models_dir: Path) -> None:
     print(f"  Labels        → {models_dir / 'labels.json'}")
 
 
+def export_fall_confirmation_features(model: torch.nn.Module, models_dir: Path) -> None:
+    """Text features para FallConfirmationClassifier (ver src/fall_confirmation.py):
+    fila 0 = FALL_PROMPTS promediados, fila 1 = NOTFALL_PROMPTS promediados."""
+    with torch.no_grad():
+        feats = []
+        for prompts in (FALL_PROMPTS, NOTFALL_PROMPTS):
+            tokens = clip.tokenize(prompts)
+            f = model.encode_text(tokens).float()
+            f /= f.norm(dim=-1, keepdim=True)
+            mean_feat = f.mean(dim=0)
+            mean_feat /= mean_feat.norm()
+            feats.append(mean_feat.numpy())
+    out = np.stack(feats).astype(np.float32)
+    np.save(models_dir / "fall_confirmation_features.npy", out)
+    print(f"  Fall confirmation features → {models_dir / 'fall_confirmation_features.npy'} {out.shape}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -115,6 +133,10 @@ def main() -> None:
 
     print("Pre-computando text features con prompt ensembling...")
     export_text_features(model, models_dir)
+
+    if args.model == "ViT-B/32":
+        print("Pre-computando text features de confirmación de caída...")
+        export_fall_confirmation_features(model, models_dir)
 
     print(f"Listo. Copiá {models_dir} al Pi antes de correr main.py (si es el modelo de producción).")
 

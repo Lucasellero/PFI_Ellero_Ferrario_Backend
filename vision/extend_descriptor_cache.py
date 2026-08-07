@@ -25,6 +25,7 @@ def main() -> None:
         return
 
     model = YOLO("yolo11n-pose.pt")
+    model.to("cuda")
     for i, case in enumerate(missing):
         cache[case["video"]] = extract_descriptors(case["video"], model)
         print(f"  [{i + 1}/{len(missing)}] {case['video']}: {len(cache[case['video']])} frames con detección", flush=True)

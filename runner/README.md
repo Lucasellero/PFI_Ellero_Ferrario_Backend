@@ -120,12 +120,36 @@ promedio estabiliza la predicción. Además:
   metadata, para que el análisis posterior pueda reconstruir duraciones sin
   ahogarse en eventos repetidos.
 
+## Confirmación de caídas con CLIP
+
+El detector geométrico de `vision/` (velocidad vertical + aspect ratio) no
+distingue una caída real de sentarse/acostarse a propósito en algunos setups
+de cámara (bbox ancho y bajo genera la misma firma geométrica que una caída
+— ver "Detección de caída como evento" en `vision/README.md` para el
+detalle y por qué recalibrar los umbrales geométricos no alcanza). Como
+segunda etapa, cuando `FallImmobilityDetector` dispara un evento `fall`, el
+worker le pregunta a CLIP zero-shot (`vlm/src/fall_confirmation.py`,
+reusando el mismo encoder ONNX que la clasificación de actividad, sin cargar
+un segundo modelo) si el recorte de la persona en ese frame se parece más a
+una caída accidental o a una postura voluntaria — si no se confirma, el
+evento se descarta y solo queda logueado, no se guarda en `events/`.
+Calibrado sobre 445 eventos geométricos de 183 clips
+(`vision/calibrate_fall_confirmation.py`): retiene 82.0% del recall
+geométrico y elimina 67% de los falsos positivos totales (70% en el setup de
+cámara más afectado). El margen de confirmación queda en el `metadata` del
+evento (`clip_confirmation_margin`) cuando se confirma.
+
 ## CLIP es opcional
 
 Si `vlm/` no está disponible (no se pudo importar) o no se generaron los
 modelos ONNX (`vlm/export_onnx.py`), el runner sigue funcionando solo con
-pose estimation — loggea una advertencia y no clasifica actividad. Ver
-`../vlm/README.md` para generar los modelos.
+pose estimation — loggea una advertencia y no clasifica actividad ni
+confirma caídas (quedan solo con la heurística geométrica). La confirmación
+de caídas además necesita `fall_confirmation_features.npy` específicamente
+(mismo `export_onnx.py`); si CLIP está disponible pero ese archivo no, el
+runner clasifica actividad normalmente y cae al comportamiento puramente
+geométrico solo para caídas. Ver `../vlm/README.md` para generar los
+modelos.
 
 ## Frame preview
 

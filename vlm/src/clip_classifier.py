@@ -256,12 +256,20 @@ class ClipActivityClassifier:
         img = (img - _MEAN) / _STD
         return img.transpose(2, 0, 1)[np.newaxis]  # (1, 3, 224, 224)
 
-    def classify(self, image_bgr: np.ndarray) -> dict:
+    def encode_image(self, image_bgr: np.ndarray) -> np.ndarray:
+        """Devuelve el embedding normalizado (512,) de un frame BGR — expuesto
+        para reusar el mismo encoder ONNX ya cargado desde otros clasificadores
+        zero-shot con su propio set de prompts (ver
+        `fall_confirmation.py:FallConfirmationClassifier`), sin cargar un
+        segundo modelo en memoria."""
         tensor = self._preprocess(image_bgr)
         image_features: np.ndarray = self._session.run(
             None, {self._input_name: tensor}
         )[0][0]
-        image_features = image_features / np.linalg.norm(image_features)
+        return image_features / np.linalg.norm(image_features)
+
+    def classify(self, image_bgr: np.ndarray) -> dict:
+        image_features = self.encode_image(image_bgr)
 
         logits = 100.0 * image_features @ self._text_features.T
         probs = _softmax(logits)

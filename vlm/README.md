@@ -196,6 +196,23 @@ son reproducibles solo con lo que hay en el repo — sí lo son los scripts y
 los pesos entrenados (`models/category_probe.npz`, aunque tampoco se
 versiona por ser un artefacto derivado, igual que el resto de `models/`).
 
+## Confirmación de caídas (`src/fall_confirmation.py`)
+
+Además de clasificar actividades, `vlm/` expone un segundo uso de CLIP:
+confirmar (o descartar) los eventos de caída que dispara el detector
+geométrico de `vision/`. Ese detector (velocidad vertical + aspect ratio) no
+distingue una caída real de sentarse/acostarse a propósito en algunos setups
+de cámara — ver "Detección de caída como evento" en `vision/README.md` para
+el detalle completo (por qué recalibrar los umbrales geométricos no alcanza,
+y cómo se calibró este filtro). `FallConfirmationClassifier` reusa el mismo
+encoder ONNX que `ClipActivityClassifier` (vía `encode_image()`, no carga un
+segundo modelo) con un set de prompts distinto ("caída accidental" vs.
+"postura voluntaria"). Lo integra `runner/camera_worker.py` — ver
+"Confirmación de caídas con CLIP" en `runner/README.md`. `vision/main.py`
+(modo batch) no lo usa: el detector geométrico ahí queda puro, para que
+`vision/` se pueda calibrar/evaluar de forma independiente (ver límites de
+módulo en el README raíz).
+
 ## Setup
 
 ### En la máquina de desarrollo (una sola vez)
@@ -210,6 +227,8 @@ Genera `vlm/models/` con:
 - `clip_image_encoder_int8.onnx` (~85 MB, INT8 cuantizado para ARM)
 - `text_features.npy` (embeddings pre-computados, ~28 KB)
 - `labels.json`
+- `fall_confirmation_features.npy` (embeddings de texto para confirmación de
+  caídas, ~4 KB — ver sección de arriba)
 
 Si además se corrió `extract_clip_features.py` + `train_category_probe.py`
 (ver "Precisión y evaluación" arriba), `vlm/models/` también tiene

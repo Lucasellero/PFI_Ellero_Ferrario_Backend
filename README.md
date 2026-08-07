@@ -125,15 +125,18 @@ comandos) en su README.
       YOLOv11n-pose, siguiendo Giri et al. 2025, recalibrada por grid search
       sobre 179 clips de `GMDCSA-24`+`CAUCAFall` — proceso completo en
       `vision/README.md`). **Recall 96.2% (GMDCSA-24) / 68.0% (CAUCAFall),
-      18/179 falsos positivos combinado.** *Riesgo abierto (encontrado
-      2026-07-20 calibrando inmovilidad, ver abajo):* con el setup de cámara
-      de Toyota Smarthome, el detector da falsos positivos frecuentes (4 de
-      12 clips probados, hasta 20 en un solo clip de 212s) cuando la persona
-      está sentada en el piso o muy abajo — no generaliza a ese ángulo de
-      cámara ni a esa postura. **Prioridad #1 pendiente en `vision/`** antes
-      de seguir sumando datasets nuevos: recalibrar con esos casos como
-      contraste, mismo proceso que ya se usó para el bug de distancia de
-      cámara.
+      18/179 falsos positivos combinado.** *Riesgo encontrado 2026-07-20
+      calibrando inmovilidad, cerrado 2026-08-06:* con el setup de cámara de
+      Toyota Smarthome, el detector daba falsos positivos frecuentes (hasta
+      124 en un solo clip) cuando la persona está sentada en el piso o muy
+      abajo. Se confirmó cuantitativamente que **no es un problema de
+      calibración de umbrales** (ningún punto del grid search lo resuelve,
+      ver `vision/README.md`) — se resolvió con un **filtro de confirmación
+      con CLIP zero-shot** como segunda etapa (`vlm/src/fall_confirmation.py`,
+      integrado en `runner/`): 82.0% de recall (-3.2pp) y -67% de falsos
+      positivos totales (-70% en el setup problemático). `vision/` en sí
+      queda sin cambios de umbral, puramente geométrico, para seguir
+      calibrándose de forma independiente.
 - [x] `vision/` — inmovilidad prolongada como evento, separada en dos ramas
       por postura: **sedentarismo** (`sentado` inmóvil 180s+, severidad
       baja) calibrado y validado end-to-end con datos reales de Toyota
