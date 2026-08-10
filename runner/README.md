@@ -103,18 +103,31 @@ promedio estabiliza la predicción. Además:
   una clase negativa `Background` en los prompts: si el recorte no muestra
   una persona reconocible (bbox desfasado, persona saliendo de cuadro), esa
   clase absorbe la probabilidad y la ventana se descarta.
-- **Categorías gruesas**: se clasifica con las 14 clases finas del dataset
-  (mejor cobertura de prompts) pero el evento se emite a nivel de categoría
-  (`COARSE_CATEGORIES` en `vlm/src/clip_classifier.py`: `Cooking`,
-  `EatingDrinking`, `Medication`, `Resting`, `ReadingScreen`, `Moving`),
-  sumando las probabilidades de las subclases. Distinguir `Drink.Fromcan`
-  de `Drink.Fromcup` en un frame estático es imposible y al familiar
-  tampoco le aporta; agregarlas elimina ese error. `activity_label` en el
-  metadata es la categoría; la clase fina ganadora queda en `fine_label`.
+- **Categorías gruesas**: se clasifica con las clases finas del dataset
+  (31, todo el catálogo de Toyota Smarthome + `Standing` vía OmniFall —
+  mejor cobertura de prompts, ver `vlm/README.md`) pero el evento se emite a
+  nivel de categoría (`COARSE_CATEGORIES` en `vlm/src/clip_classifier.py`:
+  `Cooking`, `EatingDrinkingMedication`, `Resting`, `ReadingScreen`,
+  `Moving`, `Phone`, `Standing`), sumando las probabilidades de las
+  subclases (zero-shot) o vía el linear probe entrenado. Distinguir
+  `Drink.Fromcan` de `Drink.Fromcup` en un frame estático es imposible y al
+  familiar tampoco le aporta; agregarlas elimina ese error. `activity_label`
+  en el metadata es la categoría; la clase fina ganadora queda en
+  `fine_label`.
 - **Umbral de confianza** (`clip_min_confidence`): se aplica sobre la
   confianza de la *categoría* (suma de sus subclases); las ventanas
   ambiguas se descartan (quedan en el log) en vez de emitir una etiqueta
   dudosa.
+- **Umbral extra para `EatingDrinkingMedication`**: es la categoría más
+  floja del probe (46%, ver "Precisión y evaluación" en `vlm/README.md`) y
+  la más sensible de reportar mal (medicación) — `_EATING_CONFIRM_THRESHOLD`
+  en `camera_worker.py` le exige más confianza que `clip_min_confidence`
+  antes de afirmarla. Si no llega: se reporta la segunda categoría más
+  probable si esa sí supera `clip_min_confidence` (aprovecha la señal ya
+  calculada en vez de descartarla), o se emite igual pero con
+  `confirmed: false` en el metadata — el dashboard lo usa para mostrar un
+  texto genérico ("posiblemente comiendo, bebiendo o con medicación, sin
+  confirmar") en vez de afirmar la categoría con seguridad.
 - **Deduplicación**: se emite evento cuando la categoría *cambia*; si sigue
   igual se re-emite cada `clip_heartbeat_s` con `ongoing: true` en el
   metadata, para que el análisis posterior pueda reconstruir duraciones sin

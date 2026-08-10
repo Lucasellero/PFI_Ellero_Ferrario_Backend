@@ -1591,6 +1591,16 @@ const ACTIVITY_ES = {
   'Resting':        { icon: '🛋️', name: 'Descansando' },
   'ReadingScreen':  { icon: '📖', name: 'Leyendo o usando una pantalla' },
   'Moving':         { icon: '🚶', name: 'En movimiento' },
+  'Phone':          { icon: '📞', name: 'Hablando por teléfono' },
+  'Standing':       { icon: '🧍', name: 'De pie' },
+  // EatingDrinkingMedication sin confirmar (metadata.confirmed === false,
+  // ver runner/camera_worker.py::_finish_clip_window): la confianza no
+  // alcanzó el umbral más exigente que se le pide a esta categoría (es la
+  // más floja y la más sensible, ver vlm/README.md) — se muestra un texto
+  // más genérico en vez de afirmarla.
+  'EatingDrinkingMedication_unconfirmed': {
+    icon: '🤲', name: 'Posiblemente comiendo, bebiendo o con medicación (sin confirmar)',
+  },
 
   'Cook.Cleanup':         { icon: '🧽', name: 'Limpiando la cocina' },
   'Cook.Stir':            { icon: '🍳', name: 'Cocinando' },
@@ -1651,7 +1661,9 @@ function buildEventCard(ev) {
 
   // Para eventos CLIP, el título es la actividad predicha
   if (ev.event_type === 'activity' && ev.metadata && ev.metadata.activity_label) {
-    const act = ACTIVITY_ES[ev.metadata.activity_label];
+    const unconfirmedEating = ev.metadata.activity_label === 'EatingDrinkingMedication'
+      && ev.metadata.confirmed === false;
+    const act = ACTIVITY_ES[unconfirmedEating ? 'EatingDrinkingMedication_unconfirmed' : ev.metadata.activity_label];
     icon  = act ? act.icon : icon;
     label = act ? act.name : ev.metadata.activity_label;
   }

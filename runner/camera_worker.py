@@ -32,12 +32,21 @@ _FRAME_PREVIEW_EVERY_N = 5   # guarda 1 de cada 5 frames (~5fps preview para vid
 _CLIP_SAMPLES_PER_WINDOW = 3
 _CLIP_SAMPLE_SPACING_S = 1.0
 
+# EatingDrinkingMedication es la categoría más floja del probe (46%, ver
+# vlm/README.md) y la más sensible de reportar mal (medicación) — exige más
+# confianza que clip_min_confidence antes de afirmarla. Por debajo de este
+# umbral se degrada a la segunda categoría más probable (si esa sí supera
+# clip_min_confidence) o se reporta igual pero con confirmed=False, para que
+# el consumidor (dashboard) suavice el mensaje en vez de sonar seguro.
+_EATING_CONFIRM_THRESHOLD = 0.55
+
 # ClipActivityClassifier se importa como paquete desde la raíz del proyecto
 # (disponible porque python -m runner agrega el root al sys.path).
 try:
     from vlm.src.clip_classifier import (
         ClipActivityClassifier,
         CATEGORY_DESCRIPTIONS,
+        crop_to_hands,
         crop_to_person,
     )
     _CLIP_AVAILABLE = True
@@ -73,7 +82,9 @@ class CameraWorker(threading.Thread):
         self._config = config
         self._db_path = db_path
         self._pose_model = pose_model
-        self._stop = stop_event
+        # OJO: no llamar self._stop — threading.Thread ya usa ese nombre
+        # internamente (método privado), pisarlo rompe Thread.join().
+        self._stop_event = stop_event
         self._clip = clip_classifier
         self._fall_confirm = None
         if self._clip is not None and _FALL_CONFIRMATION_AVAILABLE:
@@ -121,7 +132,7 @@ class CameraWorker(threading.Thread):
 
         try:
             for frame in source.frames():
-                if self._stop.is_set():
+                if self._stop_event.is_set():
                     break
 
                 # ── Pose pipeline (todos los frames) ──────────────────────
@@ -221,8 +232,9 @@ class CameraWorker(threading.Thread):
         if detector.last_detection is None:
             self._clip_skipped += 1
         else:
-            _, box = detector.last_detection
-            result = self._clip.classify(crop_to_person(frame.image, box))
+            kpts, box = detector.last_detection
+            hand_crop = crop_to_hands(frame.image, kpts, box)
+            result = self._clip.classify(crop_to_person(frame.image, box), hand_crop)
             self._clip_scores.append(result["scores"])
             self._clip_cat_scores.append(result["category_scores"])
 
@@ -265,6 +277,23 @@ class CameraWorker(threading.Thread):
             )
             return
 
+        confirmed = True
+        if top_cat == "EatingDrinkingMedication" and confidence < _EATING_CONFIRM_THRESHOLD:
+            runner_up_cat = max(
+                (c for c in cat_scores if c not in ("Background", top_cat)),
+                key=cat_scores.get, default=None,
+            )
+            if runner_up_cat is not None and cat_scores[runner_up_cat] >= self._clip_min_confidence:
+                self._log.info(
+                    "[%s] EatingDrinkingMedication sin confirmar @ %.2fs (%.0f%% < %.0f%%) — "
+                    "se reporta %s (%.0f%%) en su lugar",
+                    self._config.id, ts, confidence * 100, _EATING_CONFIRM_THRESHOLD * 100,
+                    runner_up_cat, cat_scores[runner_up_cat] * 100,
+                )
+                top_cat, confidence = runner_up_cat, cat_scores[runner_up_cat]
+            else:
+                confirmed = False
+
         # Deduplicación: emitir solo en cambio de actividad, con heartbeat
         # periódico para que el análisis registre que la actividad continúa.
         changed = top_cat != self._last_activity_label
@@ -281,6 +310,7 @@ class CameraWorker(threading.Thread):
                 "fine_label": fine_label,
                 "description": CATEGORY_DESCRIPTIONS[top_cat],
                 "confidence": confidence,
+                "confirmed": confirmed,
                 "samples": n,
                 "ongoing": not changed,
                 "scores": {label: round(v, 4) for label, v in avg.items()},
@@ -289,9 +319,10 @@ class CameraWorker(threading.Thread):
         )
         store.add(event)
         self._log.info(
-            "[%s] actividad @ %.2fs: %s [%s] (%.0f%%, %d muestras%s)",
+            "[%s] actividad @ %.2fs: %s [%s] (%.0f%%, %d muestras%s%s)",
             self._config.id, ts, top_cat, fine_label, confidence * 100, n,
             ", continúa" if not changed else "",
+            ", sin confirmar" if not confirmed else "",
         )
         self._last_activity_label = top_cat
         self._last_activity_emit_ts = ts

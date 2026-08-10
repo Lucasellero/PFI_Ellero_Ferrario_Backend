@@ -31,6 +31,8 @@ vision/fall_confirmation_onnx_check.csv
 vision/fall_confirmation_embeddings.npz
 vision/*.log
 vlm/clip_features.npz
+vlm/omnifall_features.npz
+vlm/caucafall_omnifall.csv
 vlm/models/
 vlm/models_*/
 *.onnx

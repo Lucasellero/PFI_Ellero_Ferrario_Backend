@@ -11,6 +11,7 @@ src/clip_classifier.py).
 
 Uso:
     python train_category_probe.py [--C 10.0] [--seeds 5] [--features clip_features.npz]
+                                    [--extra-features omnifall_features.npz,...]
 """
 import argparse
 import json
@@ -30,11 +31,30 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--C', type=float, default=10.0, help='Inverso de regularización L2')
 parser.add_argument('--seeds', type=int, default=5, help='Splits por participante a promediar')
 parser.add_argument('--features', default=None, help='Default: vlm/clip_features.npz')
+parser.add_argument(
+    '--extra-features', default=None,
+    help='Lista separada por comas de .npz adicionales (mismo esquema: '
+         'features, hand_features, labels, participants, videos) a sumar '
+         'al cache principal antes de entrenar — ej. omnifall_features.npz '
+         '(ver extract_omnifall_features.py) para clases que Toyota '
+         'Smarthome no cubre.',
+)
 args = parser.parse_args()
 
 features_path = Path(args.features) if args.features else Path(__file__).parent / "clip_features.npz"
-data = np.load(features_path, allow_pickle=True)
-X, y_fine, groups, videos = data['features'], data['labels'], data['participants'], data['videos']
+datasets = [np.load(features_path, allow_pickle=True)]
+if args.extra_features:
+    datasets += [np.load(Path(p.strip()), allow_pickle=True) for p in args.extra_features.split(',')]
+
+y_fine = np.concatenate([d['labels'] for d in datasets])
+groups = np.concatenate([d['participants'] for d in datasets])
+videos = np.concatenate([d['videos'] for d in datasets])
+body_X = np.concatenate([d['features'] for d in datasets])
+hand_X = np.concatenate([d['hand_features'] for d in datasets])
+# El probe usa cuerpo + manos concatenado (ver crop_to_hands en
+# src/clip_classifier.py); el zero-shot (comparativo de abajo) solo cuerpo,
+# porque text_features.npy es 512-dim.
+X = np.concatenate([body_X, hand_X], axis=1)
 y_cat = np.array([LABEL_TO_CATEGORY[label] for label in y_fine])
 
 text_features = np.load(ROOT / 'vlm' / 'models' / 'text_features.npy')
@@ -61,7 +81,7 @@ for seed in range(args.seeds):
         feats = X[mask]
         true_cat = y_cat[mask][0]
 
-        logits = 100.0 * feats @ text_features.T
+        logits = 100.0 * body_X[mask] @ text_features.T
         probs = np.exp(logits - logits.max(axis=1, keepdims=True))
         probs /= probs.sum(axis=1, keepdims=True)
         cat_scores = {c: 0.0 for c in COARSE_CATEGORIES}

@@ -23,7 +23,12 @@ sys.path.insert(0, str(ROOT / 'vision'))
 
 import cv2
 import numpy as np
-from vlm.src.clip_classifier import ClipActivityClassifier, crop_to_person, LABEL_TO_CATEGORY
+from vlm.src.clip_classifier import (
+    ClipActivityClassifier,
+    crop_to_hands,
+    crop_to_person,
+    LABEL_TO_CATEGORY,
+)
 from src.pose_pipeline import detect_person
 from ultralytics import YOLO
 
@@ -60,7 +65,7 @@ for f in sorted(DATASET_DIR.glob('*.mp4')):
         by_label.setdefault(label, []).append(f)
 
 rng = random.Random(args.seed)
-rows_feat, rows_label, rows_participant, rows_video = [], [], [], []
+rows_feat, rows_hand_feat, rows_label, rows_participant, rows_video = [], [], [], [], []
 
 for label, files in sorted(by_label.items()):
     chosen = rng.sample(files, args.max_per_class) if len(files) > args.max_per_class else files
@@ -77,19 +82,29 @@ for label, files in sorted(by_label.items()):
             det = detect_person(yolo, frame)
             if not det:
                 continue
-            crop = crop_to_person(frame, det[1])
+            kpts, box = det
+            crop = crop_to_person(frame, box)
             feat = image_features(crop)
+            # Mismo fallback que ClipActivityClassifier.classify(): sin crop
+            # de manos válido, se duplica el body embedding.
+            hand_crop = crop_to_hands(frame, kpts, box)
+            hand_feat = image_features(hand_crop) if hand_crop is not None else feat
             rows_feat.append(feat)
+            rows_hand_feat.append(hand_feat)
             rows_label.append(label)
             rows_participant.append(participant_of(f.stem))
             rows_video.append(f.stem)
         cap.release()
 
 features = np.stack(rows_feat).astype(np.float32)
+hand_features = np.stack(rows_hand_feat).astype(np.float32)
 labels = np.array(rows_label)
 participants = np.array(rows_participant)
 videos = np.array(rows_video)
 
-np.savez(OUT_PATH, features=features, labels=labels, participants=participants, videos=videos)
-print(f'\nGuardado {OUT_PATH}: {features.shape[0]} muestras, {features.shape[1]}-dim')
+np.savez(
+    OUT_PATH, features=features, hand_features=hand_features,
+    labels=labels, participants=participants, videos=videos,
+)
+print(f'\nGuardado {OUT_PATH}: {features.shape[0]} muestras, {features.shape[1]}-dim (+ hand_features)')
 print('Por clase:', {l: int((labels == l).sum()) for l in sorted(set(labels))})

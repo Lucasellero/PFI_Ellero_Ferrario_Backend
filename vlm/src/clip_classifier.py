@@ -101,6 +101,96 @@ ACTIVITY_PROMPTS: dict[str, list[str]] = {
         "someone resting in a lying-down position",
         "a person with their body horizontal on a surface",
     ],
+    "Getup": [
+        "a photo of a person getting up from a chair or bed",
+        "a person rising to a standing position",
+        "someone standing up after sitting or lying down",
+    ],
+    "Leave": [
+        "a photo of a person leaving a room through a doorway",
+        "a person walking out through a door",
+        "someone exiting a room, walking away from the camera through an exit",
+    ],
+    "Usetelephone": [
+        "a photo of a person talking on the phone",
+        "a person holding a phone to their ear",
+        "someone having a phone conversation",
+    ],
+    "Cook.Cleandishes": [
+        "a photo of a person washing dishes in the kitchen sink",
+        "a person cleaning plates and cutlery at a sink",
+        "someone scrubbing dishes with water running",
+    ],
+    "Cook.Cut": [
+        "a photo of a person cutting food on a kitchen counter",
+        "a person chopping vegetables with a knife",
+        "someone slicing food on a cutting board",
+    ],
+    "Cook.Usestove": [
+        "a photo of a person cooking food on a stove",
+        "a person standing at a stove with a pot or pan",
+        "someone operating stove burners while cooking",
+    ],
+    "Cutbread": [
+        "a photo of a person cutting a loaf of bread",
+        "a person slicing bread on a cutting board",
+        "someone cutting bread with a knife in the kitchen",
+    ],
+    "Drink.Frombottle": [
+        "a photo of a person drinking from a bottle",
+        "a person raising a bottle to their mouth to drink",
+        "someone drinking water or a beverage from a bottle",
+    ],
+    "Drink.Fromglass": [
+        "a photo of a person drinking from a glass",
+        "a person raising a drinking glass to their lips",
+        "someone drinking a beverage from a clear glass",
+    ],
+    "Eat.Attable": [
+        "a photo of a person eating a meal seated at a table",
+        "a person having a meal at a dining table",
+        "someone eating food with utensils at a table",
+    ],
+    "Eat.Snack": [
+        "a photo of a person eating a snack by hand",
+        "a person eating a small snack while sitting",
+        "someone snacking, eating food held in their hand",
+    ],
+    "Makecoffee.Pourgrains": [
+        "a photo of a person pouring coffee grounds into a coffee maker",
+        "a person scooping and pouring ground coffee",
+        "someone preparing coffee by adding coffee grounds",
+    ],
+    "Makecoffee.Pourwater": [
+        "a photo of a person pouring water into a coffee machine",
+        "a person filling a coffee maker with water",
+        "someone pouring water while making coffee",
+    ],
+    "Maketea.Boilwater": [
+        "a photo of a person boiling water for tea",
+        "a person filling and starting a kettle to boil water",
+        "someone standing by a kettle waiting for water to boil",
+    ],
+    "Pour.Frombottle": [
+        "a photo of a person pouring liquid from a bottle into a cup",
+        "a person tilting a bottle to pour a drink",
+        "someone pouring a beverage from a bottle",
+    ],
+    "Pour.Fromcan": [
+        "a photo of a person pouring liquid from a can into a cup",
+        "a person tilting a can to pour a drink",
+        "someone pouring a beverage from a can",
+    ],
+    "Pour.Fromkettle": [
+        "a photo of a person pouring hot water from a kettle",
+        "a person tilting a kettle to pour water into a cup",
+        "someone pouring water from a kettle while making tea or coffee",
+    ],
+    "Standing": [
+        "a photo of a person standing still in a room",
+        "a person standing upright without moving",
+        "someone standing idle, not walking or sitting",
+    ],
 }
 
 # Clases negativas: absorben recortes sin persona visible (bbox desfasado,
@@ -133,11 +223,28 @@ BACKGROUND_LABELS = frozenset(BACKGROUND_PROMPTS)
 # fusionan las cuatro en una sola categoría para dejar de reportar una
 # distinción que en la práctica es ruido, no señal.
 COARSE_CATEGORIES: dict[str, list[str]] = {
-    "Cooking": ["Cook.Cleanup", "Cook.Stir"],
-    "EatingDrinkingMedication": ["Drink.Fromcan", "Drink.Fromcup", "Maketea.Insertteabag", "Takepills"],
+    "Cooking": [
+        "Cook.Cleanup", "Cook.Stir", "Cook.Cleandishes", "Cook.Cut",
+        "Cook.Usestove", "Cutbread",
+    ],
+    "EatingDrinkingMedication": [
+        "Drink.Fromcan", "Drink.Fromcup", "Drink.Frombottle", "Drink.Fromglass",
+        "Maketea.Insertteabag", "Maketea.Boilwater",
+        "Makecoffee.Pourgrains", "Makecoffee.Pourwater",
+        "Pour.Frombottle", "Pour.Fromcan", "Pour.Fromkettle",
+        "Eat.Attable", "Eat.Snack", "Takepills",
+    ],
     "Resting": ["Laydown", "WatchTV"],
     "ReadingScreen": ["Readbook", "Uselaptop", "Usetablet"],
-    "Moving": ["Walk", "Enter", "Sitdown"],
+    "Moving": ["Walk", "Enter", "Sitdown", "Getup", "Leave"],
+    # Sola por ahora: no se fusiona a priori con EatingDrinkingMedication
+    # como Takepills — hay que medir con evaluate_activity.py/
+    # train_category_probe.py si CLIP la distingue antes de decidir.
+    "Phone": ["Usetelephone"],
+    # Datos de entrenamiento vía extract_omnifall_features.py (segmentos
+    # OmniFall sobre videos/CAUCAFall/, ver vlm/README.md) — ninguna clase
+    # de Toyota Smarthome cubre "parado sin hacer nada".
+    "Standing": ["Standing"],
     "Background": list(BACKGROUND_PROMPTS),
 }
 
@@ -151,6 +258,8 @@ CATEGORY_DESCRIPTIONS: dict[str, str] = {
     "Resting": "a person resting, lying down or watching TV",
     "ReadingScreen": "a person reading or using a screen device",
     "Moving": "a person walking or moving around the room",
+    "Phone": "a person talking on the phone",
+    "Standing": "a person standing still, not doing any particular activity",
     "Background": "no clear person visible in the frame",
 }
 
@@ -188,6 +297,54 @@ def crop_to_person(image_bgr: np.ndarray, box, margin: float = 0.25) -> np.ndarr
     if x2 - x1 < 32 or y2 - y1 < 32:  # bbox degenerado: mejor el frame completo
         return image_bgr
     return image_bgr[y1:y2, x1:x2]
+
+
+# Índices COCO de keypoints de muñeca (mismo formato que vision/src/pose_pipeline.py).
+_L_WRIST, _R_WRIST = 9, 10
+
+
+def crop_to_hands(
+    image_bgr: np.ndarray, keypoints: np.ndarray, box, margin: float = 0.6
+) -> np.ndarray | None:
+    """Recorta la zona de las manos a partir de los keypoints de muñeca, sobre
+    el frame completo (no el crop de persona — las coordenadas de `keypoints`
+    están normalizadas al frame completo, igual que las devuelve
+    `detect_person`/`FallImmobilityDetector.last_detection` en `vision/`).
+
+    Categorías como comer/beber/tomar pastillas dependen de un gesto de mano
+    breve que el embedding de cuerpo completo de CLIP no resuelve bien (es
+    holístico, no hace zoom): este crop se usa como feature adicional para el
+    linear probe (ver train_category_probe.py), no para el zero-shot.
+
+    Devuelve `None` si ninguna muñeca tiene una posición válida (YOLO-pose
+    deja keypoints no predichos en (0, 0)) — el caller debe decidir el
+    fallback.
+    """
+    h, w = image_bgr.shape[:2]
+    x1, y1, x2, y2 = (float(v) for v in box)
+    box_h = y2 - y1
+    if box_h <= 0:
+        return None
+    side = box_h * margin
+
+    wrists = []
+    for idx in (_L_WRIST, _R_WRIST):
+        kx, ky = float(keypoints[idx, 0]), float(keypoints[idx, 1])
+        if kx <= 0.0 or ky <= 0.0:  # no predicho
+            continue
+        wrists.append((kx * w, ky * h))
+    if not wrists:
+        return None
+
+    xs = [p[0] for p in wrists]
+    ys = [p[1] for p in wrists]
+    cx1, cx2 = min(xs) - side / 2, max(xs) + side / 2
+    cy1, cy2 = min(ys) - side / 2, max(ys) + side / 2
+    cx1, cy1 = max(0, int(cx1)), max(0, int(cy1))
+    cx2, cy2 = min(w, int(cx2)), min(h, int(cy2))
+    if cx2 - cx1 < 16 or cy2 - cy1 < 16:
+        return None
+    return image_bgr[cy1:cy2, cx1:cx2]
 
 
 class ClipActivityClassifier:
@@ -268,7 +425,7 @@ class ClipActivityClassifier:
         )[0][0]
         return image_features / np.linalg.norm(image_features)
 
-    def classify(self, image_bgr: np.ndarray) -> dict:
+    def classify(self, image_bgr: np.ndarray, hand_crop_bgr: np.ndarray | None = None) -> dict:
         image_features = self.encode_image(image_bgr)
 
         logits = 100.0 * image_features @ self._text_features.T
@@ -286,7 +443,18 @@ class ClipActivityClassifier:
         # que el recorte esté vacío. Si no, se mantiene la agregación
         # zero-shot para no perder la detección de ventanas sin persona.
         if self._probe is not None and not is_background:
-            probe_logits = image_features @ self._probe["W"].T + self._probe["b"]
+            # El probe se entrena sobre [body_embedding, hand_embedding]
+            # (ver train_category_probe.py) — si no hay crop de manos
+            # disponible (caller sin pose, ej. vlm/main.py batch), se
+            # duplica el body embedding, igual que hace
+            # extract_clip_features.py en el mismo caso, para no alimentar
+            # al probe con una distribución de input distinta a la de
+            # entrenamiento.
+            hand_features = (
+                self.encode_image(hand_crop_bgr) if hand_crop_bgr is not None else image_features
+            )
+            probe_input = np.concatenate([image_features, hand_features])
+            probe_logits = probe_input @ self._probe["W"].T + self._probe["b"]
             probe_probs = _softmax(probe_logits)
             category_scores = dict(zip(self._probe["classes"], (float(p) for p in probe_probs)))
         else:

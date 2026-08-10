@@ -40,6 +40,7 @@ import numpy as np
 from vlm.src.clip_classifier import (
     ClipActivityClassifier,
     LABEL_TO_CATEGORY,
+    crop_to_hands,
     crop_to_person,
 )
 from src.pose_pipeline import detect_person
@@ -96,9 +97,11 @@ for path, truth in videos:
         det = detect_person(yolo, frame)
         full = clf_nopad.classify(frame)['scores']
         if det:
-            crop = crop_to_person(frame, det[1])
+            kpts, box = det
+            crop = crop_to_person(frame, box)
+            hand_crop = crop_to_hands(frame, kpts, box)
             crop_scores = clf_nopad.classify(crop)['scores']
-            pad_result = clf_pad.classify(crop)
+            pad_result = clf_pad.classify(crop, hand_crop)
             pad_scores = pad_result['scores']
             pad_cat_scores = pad_result['category_scores']
         else:
