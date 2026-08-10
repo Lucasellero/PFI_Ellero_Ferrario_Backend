@@ -520,6 +520,49 @@ sigue siendo el zero-shot ya validado (82.0% recall, -67% FP).
 Solo se trackea la primera persona detectada por frame — el informe excluye
 explícitamente el caso multi-residente (Sec. 1.2.2).
 
+**Actualización (2026-08-09): intento de completar los 183 clips, cortado por
+costo de cómputo; hallazgo de una fuente de negativos más barata.** Se
+intentó correr `extract_fall_confirmation_embeddings.py` sin `--skip-toyota`
+sobre los 4 clips largos de `ToyotaSmarthome_FP` (pendiente señalado arriba).
+Un solo clip (640×480, 25fps, ~28-40k frames) tardó más de 3 horas en CPU sin
+terminar — muy por encima de lo estimado (25-65 min) — y se abortó. La causa
+probable: YOLOv11n-pose + el encoder ONNX de CLIP, corridos frame a frame
+sin límite de threads, sobre-suscriben los cores (oversubscription) en vez
+de paralelizar de forma eficiente, un patrón confirmado también más abajo.
+**Antes de reintentar, hay que limitar threads (`OMP_NUM_THREADS`/
+`ORT_NUM_THREADS`, session options de onnxruntime) o agregar frame-skip
+(el detector usa timestamps reales, no índices de frame, así que es seguro
+saltear frames) — correrlo tal cual de nuevo va a volver a tardar horas.**
+
+Se agregó `extract_fall_confirmation_embeddings.py --max-toyota-clips=N` para
+poder cortar la corrida antes de los clips largos, y guardado incremental
+(`save()` después de cada video, no solo al final) para no perder progreso
+si se corta.
+
+Hallazgo aparte, más barato que terminar los 4 clips largos: los 39 clips
+cortos del subset Toyota Smarthome en `videos/*.mp4` (dataset de
+actividades, no de caídas — no tenían `Fall.csv`) **sí generan eventos
+geométricos falsos**, en particular los clips `Laydown_*` (acostarse en
+cama/sillón): 14 eventos de 12 clips. Se generó `videos/Fall.csv` marcando
+las 39 actividades como `NoFall` completo, para que
+`extract_fall_confirmation_embeddings.py` las levante como negativos. Con
+esto, el cache pasó de 150 caída real / 16 no-caída (≈9:1) a **110/36
+(≈3:1)** — mejora real en el desbalance, con costo de cómputo mínimo (clips
+de 1-2s en su mayoría) frente a los 4 clips largos.
+
+Se reentrenó el probe sobre este cache parcial: **56.2% recall (72/128), 6
+FP** out-of-fold — peor que el 71.1% anterior, pero **no es comparable
+todavía**: la corrida se cortó a mitad de GMDCSA-24 (positivos incompletos),
+así que varios clips de caída real quedaron sin ningún evento registrado y
+no pueden contar para el recall — la caída no es evidencia de que los
+negativos nuevos empeoren el modelo, es un artefacto de cobertura
+incompleta de positivos. **Pendiente real:** completar GMDCSA-24 (rápido,
+son clips cortos) con `videos/Fall.csv` ya en su lugar, reentrenar, y recién
+ahí comparar en serio contra el 71.1% y el zero-shot (82.0% recall / 96 FP).
+`vlm/models/fall_confirmation_probe.npz` quedó sobreescrito con este
+resultado parcial de 56.2% — **sigue sin estar integrado en
+`FallConfirmationClassifier`**, el filtro en producción no cambió.
+
 ## Entrada
 
 Un archivo de video en `../videos/<nombre>.mp4` (o `.avi`/`.mov`), o toda

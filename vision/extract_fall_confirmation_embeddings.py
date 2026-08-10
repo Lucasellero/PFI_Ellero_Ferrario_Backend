@@ -47,11 +47,38 @@ def main() -> None:
         # CAUCAFall (128 de los 128 casos de caída), dejando el chequeo de FP
         # en el setup problemático para una corrida aparte sin apuro.
         cases = [c for c in cases if "ToyotaSmarthome_FP" not in c["video"]]
+    else:
+        max_toyota = 4
+        for arg in sys.argv:
+            if arg.startswith("--max-toyota-clips="):
+                max_toyota = int(arg.split("=", 1)[1])
+        if max_toyota < 4:
+            kept_toyota = 0
+            filtered = []
+            for c in cases:
+                if "ToyotaSmarthome_FP" in c["video"]:
+                    if kept_toyota >= max_toyota:
+                        continue
+                    kept_toyota += 1
+                filtered.append(c)
+            cases = filtered
     features: list[np.ndarray] = []
     videos: list[str] = []
     ts: list[float] = []
     is_real_fall: list[bool] = []
     is_in_nonfall: list[bool] = []
+
+    out_path = Path(__file__).parent / "fall_confirmation_embeddings.npz"
+
+    def save() -> None:
+        np.savez(
+            out_path,
+            features=np.array(features, dtype=np.float32),
+            video=np.array(videos),
+            t=np.array(ts, dtype=np.float32),
+            is_real_fall=np.array(is_real_fall),
+            is_in_nonfall=np.array(is_in_nonfall),
+        )
 
     for i, case in enumerate(cases):
         det = FallImmobilityDetector()
@@ -84,16 +111,8 @@ def main() -> None:
             frame_i += 1
         cap.release()
         print(f"  [{i + 1}/{len(cases)}] {case['video']}: {n_events} eventos geométricos", flush=True)
+        save()  # checkpoint incremental: permite cortar el proceso sin perder lo ya hecho
 
-    out_path = Path(__file__).parent / "fall_confirmation_embeddings.npz"
-    np.savez(
-        out_path,
-        features=np.array(features, dtype=np.float32),
-        video=np.array(videos),
-        t=np.array(ts, dtype=np.float32),
-        is_real_fall=np.array(is_real_fall),
-        is_in_nonfall=np.array(is_in_nonfall),
-    )
     print(f"\nGuardado {out_path} ({len(features)} eventos geométricos evaluados)")
 
 

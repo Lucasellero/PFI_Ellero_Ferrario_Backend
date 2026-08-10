@@ -46,6 +46,17 @@ disponible en producción:
 Se mantienen separados del resto porque son datasets distintos, no parte
 del dataset de actividades de Toyota Smarthome descripto abajo.
 
+**`videos/Fall.csv` (2026-08-09):** cubre los 39 clips cortos del subset
+Toyota Smarthome de actividades (raíz de esta carpeta, ver abajo), marcando
+cada uno como `NoFall` completo — igual criterio que
+`ToyotaSmarthome_FP/Fall.csv`. Se generó porque, al probar si estos clips
+cortos (1-2s en su mayoría) servían como negativos baratos para el linear
+probe de confirmación de caídas (ver `vision/README.md`), los clips
+`Laydown_*` resultaron sí disparar eventos geométricos falsos — una fuente
+de negativos mucho más barata que los 4 clips largos de
+`ToyotaSmarthome_FP` (~horas en CPU). Detalle completo del experimento y su
+resultado parcial en `vision/README.md`.
+
 Sigue el patrón `Actividad_pXX_rXX_vXX_cXX.mp4` (actividad, participante,
 repetición, video, cámara) — parece un subset del dataset **Toyota
 Smarthome**.

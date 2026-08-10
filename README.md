@@ -159,10 +159,18 @@ comandos) en su README.
       participantes disjuntos train/val sobre una muestra grande del dataset
       completo, el zero-shot cae a ~48%. Se entrenó en cambio un **linear
       probe sobre los embeddings de CLIP** (categorías fusionadas donde el
-      zero-shot no distinguía, ver `vlm/README.md`), que da **63.3%**
-      consistente (±2.2 pts entre folds) — mejor que zero-shot pero todavía
-      con una categoría floja (`EatingDrinkingMedication`, gestos de mano
-      finos invisibles en un frame estático).
+      zero-shot no distinguía, ver `vlm/README.md`) — vocabulario ampliado
+      de 14 a las **31 clases completas de Toyota Smarthome** más
+      `Standing` (parado inactivo, vía anotaciones de OmniFall sobre
+      `CAUCAFall`, sin descargar nada nuevo), y el probe ahora usa un
+      **embedding de manos concatenado al de cuerpo** (recorte por
+      keypoints de muñeca) que mejoró la categoría más floja
+      (`EatingDrinkingMedication`) de 39% a 46% — sigue siendo la más débil
+      (gestos de mano finos invisibles en un frame estático), así que el
+      runner le exige más confianza que al resto antes de afirmarla, con
+      fallback a la segunda categoría más probable o a un evento marcado
+      `confirmed: false`. `Standing` dio 94.6% pero con salvedad de
+      generalización (una sola instalación de cámara, ver `vlm/README.md`).
 - [x] `events/`: store local funcionando end-to-end (SQLite).
 - [x] `runner/` + `dashboard/`: orquestación multi-cámara (archivo o stream
       en vivo) y panel web de control — primera versión de la migración a
