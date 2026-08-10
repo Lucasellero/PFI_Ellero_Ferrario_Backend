@@ -550,18 +550,28 @@ esto, el cache pasó de 150 caída real / 16 no-caída (≈9:1) a **110/36
 (≈3:1)** — mejora real en el desbalance, con costo de cómputo mínimo (clips
 de 1-2s en su mayoría) frente a los 4 clips largos.
 
-Se reentrenó el probe sobre este cache parcial: **56.2% recall (72/128), 6
-FP** out-of-fold — peor que el 71.1% anterior, pero **no es comparable
-todavía**: la corrida se cortó a mitad de GMDCSA-24 (positivos incompletos),
-así que varios clips de caída real quedaron sin ningún evento registrado y
-no pueden contar para el recall — la caída no es evidencia de que los
-negativos nuevos empeoren el modelo, es un artefacto de cobertura
-incompleta de positivos. **Pendiente real:** completar GMDCSA-24 (rápido,
-son clips cortos) con `videos/Fall.csv` ya en su lugar, reentrenar, y recién
-ahí comparar en serio contra el 71.1% y el zero-shot (82.0% recall / 96 FP).
-`vlm/models/fall_confirmation_probe.npz` quedó sobreescrito con este
-resultado parcial de 56.2% — **sigue sin estar integrado en
-`FallConfirmationClassifier`**, el filtro en producción no cambió.
+Un primer reentreno sobre un cache parcial (cortado a mitad de GMDCSA-24,
+positivos incompletos) dio 56.2% recall — número descartado, no comparable,
+porque varios clips de caída real quedaron sin ningún evento registrado y
+no pueden contar para el recall.
+
+**Resultado final (2026-08-10), con GMDCSA-24 completo:** 218 clips
+procesados (179 de antes + los 39 nuevos de Toyota, sin los 4 largos),
+195 eventos geométricos, **150 caída real / 38 no-caída** (≈4:1, vs. el
+≈9:1 original). Reentrenado con `train_fall_confirmation_probe.py`:
+**77.3% recall (99/128), 4 FP** out-of-fold — mejora real de +6.2 puntos
+sobre el 71.1% anterior, manteniendo los mismos 4 FP, agregando *solo* los
+39 clips cortos de Toyota (sin necesitar los 4 clips largos que costaron
+horas). Sigue por debajo del zero-shot en producción (82.0% recall / 96 FP
+sobre los 183 clips completos, no directamente comparable en FP porque es
+un subset distinto y más grande), pero la brecha se achicó bastante y
+confirma que el desbalance de negativos era la causa real del mal
+resultado inicial, no una limitación del método. `vlm/models/fall_confirmation_probe.npz`
+quedó sobreescrito con este resultado — **sigue sin estar integrado en
+`FallConfirmationClassifier`**, el filtro en producción sigue siendo el
+zero-shot, sin cambios. Si en el futuro se consigue correr los 4 clips
+largos (con frame-skip o límite de threads, ver arriba), vale reentrenar
+de nuevo antes de decidir si reemplazar el zero-shot.
 
 ## Entrada
 
