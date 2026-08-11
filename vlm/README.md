@@ -263,18 +263,69 @@ Cooking; `Getup`/`Leave` en Moving), así que la caída es el costo esperado
 de ampliar el vocabulario, no una regresión del hand-crop — Moving y Cooking
 seguían dominadas por zero-shot/probe con buen margen sobre el azar.
 
-`EatingDrinkingMedication` sigue siendo la categoría más floja en términos
-absolutos: el hand-crop ayuda pero no resuelve el problema estructural del
-todo (recortar alrededor de la muñeca no siempre aísla lo que la mano
-sostiene, y con cámara de habitación a media distancia el objeto en la mano
-sigue siendo pequeño). Queda como candidato para seguir iterando si esta
-categoría se vuelve prioritaria — por ejemplo con una resolución de recorte
-mayor o un crop centrado en la muñeca+objeto detectado en vez de solo la
-muñeca.
+`EatingDrinkingMedication` seguía siendo la categoría más floja en términos
+absolutos tras el hand-crop original (44.7%): recortar alrededor de la
+muñeca no siempre aísla lo que la mano sostiene, y con cámara de habitación
+a media distancia el objeto en la mano sigue siendo pequeño.
 
-**Mientras tanto, en producción**: dado que 46% sigue siendo bajo y la
-categoría es clínicamente sensible (medicación), `runner/camera_worker.py`
-no la reporta con el mismo umbral que al resto — le exige una confianza más
+### Bug de coordenadas en `crop_to_hands` y filtro de confianza por-muñeca
+
+Antes de seguir iterando sobre el 44.7% se encontró un **bug real** en
+`crop_to_hands`: `detect_person` devuelve los keypoints en coordenadas de
+**píxel** (`.xy` de ultralytics), pero la función los multiplicaba por
+`w, h` como si fueran normalizados a [0, 1] — verificado corriendo el modelo
+sobre un frame real y comparando `.xy` contra `.xyn`. El resultado: para
+casi cualquier coordenada de píxel real (>1), el cálculo del recorte daba un
+ancho negativo y la función devolvía `None` sistemáticamente. En la
+práctica, **el hand-crop nunca se activó de verdad** en toda la extracción
+anterior — siempre cayó al fallback de duplicar el embedding de cuerpo, así
+que el 44.7% medido antes no reflejaba señal de manos real. Se corrigió
+usando las coordenadas de píxel directamente, sin la multiplicación.
+
+Aprovechando que había que retocar esta función, se sumó un **filtro de
+confianza por-muñeca**: `detect_person` ahora también devuelve
+`keypoints_conf` (confianza individual por keypoint, que YOLO-pose ya
+calculaba pero se descartaba — antes solo se usaba el promedio de *todo* el
+cuerpo para aceptar/rechazar el frame entero). Con la persona lejos o de
+espaldas, la muñeca puede tener una posición predicha pero de baja
+confianza (adivinada, no observada); `crop_to_hands` ahora descarta esas
+muñecas igual que si no hubieran sido predichas, en vez de recortar sobre
+una posición poco confiable.
+
+Resultado tras re-extraer el dataset completo con ambas correcciones y
+reentrenar:
+
+| Categoría | Antes (44.7%, con el bug) | Después |
+|---|---|---|
+| **EatingDrinkingMedication** | 44.7% | **56.1%** |
+| Cooking | 79.0% | 88.9% |
+| Moving | 61.5% | 64.2% |
+| Phone | 48.8% | 63.9% |
+| ReadingScreen | 62.7% | 60.9% |
+| Resting | 53.2% | 62.9% |
+| Standing | 94.6%* | 97.3%* |
+
+*Ver salvedad de generalización de `Standing` más abajo — no cambia con
+esta ronda de cambios, sigue siendo la misma limitación.
+
+El salto de +11.4 puntos en `EatingDrinkingMedication` confirma que el bug
+era la causa principal del techo anterior: la señal de manos, cuando
+realmente se calcula, ayuda.
+
+**Se probó también centrar el recorte en muñeca+objeto sostenido** (un
+segundo YOLO general sobre COCO, buscando taza/pastillero/cubiertos cerca de
+la muñeca) — descartado antes de dejarlo en producción: el recorte de
+persona en Toyota Smarthome tiene una mediana de solo ~101×233px, así que un
+objeto sostenido ahí adentro mide 15-30px, y midiendo la tasa de activación
+real sobre 120 videos, `find_held_object_box` encontraba un objeto en apenas
+15.6% de los frames — no aportaba lo suficiente para justificar un tercer
+modelo cargado en el Pi (sin medir en hardware real) ni la carga extra de
+documentación en el informe. Se revirtió por completo: no queda código de
+esto en el repo.
+
+**En producción**: dado que 56.1% sigue siendo la categoría más floja y es
+clínicamente sensible (medicación), `runner/camera_worker.py` sigue sin
+reportarla con el mismo umbral que al resto — le exige una confianza más
 alta (`_EATING_CONFIRM_THRESHOLD`) antes de afirmarla, y si no la alcanza
 degrada a la segunda categoría más probable o a un evento con
 `confirmed: false` (el dashboard lo muestra con un texto genérico en vez de

@@ -97,9 +97,9 @@ for path, truth in videos:
         det = detect_person(yolo, frame)
         full = clf_nopad.classify(frame)['scores']
         if det:
-            kpts, box = det
+            kpts, box, kpts_conf = det
             crop = crop_to_person(frame, box)
-            hand_crop = crop_to_hands(frame, kpts, box)
+            hand_crop = crop_to_hands(frame, kpts, box, keypoints_conf=kpts_conf)
             crop_scores = clf_nopad.classify(crop)['scores']
             pad_result = clf_pad.classify(crop, hand_crop)
             pad_scores = pad_result['scores']

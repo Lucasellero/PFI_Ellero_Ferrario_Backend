@@ -233,7 +233,8 @@ class CameraWorker(threading.Thread):
             self._clip_skipped += 1
         else:
             kpts, box = detector.last_detection
-            hand_crop = crop_to_hands(frame.image, kpts, box)
+            kpts_conf = detector.last_detection_conf
+            hand_crop = crop_to_hands(frame.image, kpts, box, keypoints_conf=kpts_conf)
             result = self._clip.classify(crop_to_person(frame.image, box), hand_crop)
             self._clip_scores.append(result["scores"])
             self._clip_cat_scores.append(result["category_scores"])

@@ -39,7 +39,7 @@ def main() -> None:
             h, w = image.shape[:2]
             detection = detect_person(model, image)
             if detection is not None:
-                kpts, box = detection
+                kpts, box, _ = detection
                 sample = build_pose_sample(kpts, box, w, h, t)
 
                 # velocidad vertical vs. la muestra mas cercana a (t - VELOCITY_WINDOW_S)

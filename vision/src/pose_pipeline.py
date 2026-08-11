@@ -66,9 +66,10 @@ class PoseSample:
     keypoints: np.ndarray      # normalizados a [0, 1] por ancho/alto del frame
 
 
-def detect_person(model: YOLO, image: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
-    """Corre el modelo de pose sobre un frame y devuelve (keypoints, bbox) de la
-    persona detectada, o None si no hay ninguna detección confiable.
+def detect_person(model: YOLO, image: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray | None] | None:
+    """Corre el modelo de pose sobre un frame y devuelve (keypoints, bbox,
+    keypoints_conf) de la persona detectada, o None si no hay ninguna
+    detección confiable.
 
     Si hay más de una persona en el frame, se toma la del bounding box más
     grande (más cercana/prominente a cámara) como sujeto principal — el
@@ -77,7 +78,10 @@ def detect_person(model: YOLO, image: np.ndarray) -> tuple[np.ndarray, np.ndarra
     Se descartan detecciones con confianza promedio de keypoints por debajo
     de MIN_KEYPOINT_CONFIDENCE (oclusión, movimiento, sujeto lejos de
     cámara) siguiendo el criterio de calidad usado en Benabdennour et al.
-    (2026, IEEE Access) para este mismo problema.
+    (2026, IEEE Access) para este mismo problema. `keypoints_conf` (confianza
+    por keypoint individual, no solo el promedio) se devuelve además para que
+    los callers puedan descartar puntos puntuales poco confiables (ej. una
+    muñeca ocluida) sin descartar la detección entera.
     """
     result = model(image, verbose=False)[0]
     if result.keypoints is None or len(result.keypoints.xy) == 0:
@@ -87,14 +91,16 @@ def detect_person(model: YOLO, image: np.ndarray) -> tuple[np.ndarray, np.ndarra
     areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
     idx = int(areas.argmax())
 
+    kpts_conf = None
     if result.keypoints.conf is not None:
-        mean_confidence = float(result.keypoints.conf[idx].mean())
+        kpts_conf = result.keypoints.conf[idx].cpu().numpy()
+        mean_confidence = float(kpts_conf.mean())
         if mean_confidence < MIN_KEYPOINT_CONFIDENCE:
             return None
 
     kpts = result.keypoints.xy[idx].cpu().numpy()
     box = boxes[idx]
-    return kpts, box
+    return kpts, box, kpts_conf
 
 
 def build_pose_sample(kpts: np.ndarray, box: np.ndarray, w: int, h: int, timestamp_s: float) -> PoseSample:
@@ -158,8 +164,12 @@ class FallImmobilityDetector:
     dataset propio de validación.
     """
 
-    def __init__(self, model_path: str = "yolo11n-pose.pt", history_seconds: float = 2.5):
+    def __init__(self, model_path: str = "yolo11n-pose.pt", history_seconds: float = 2.5, device: str | None = None):
         self._model = YOLO(model_path)
+        if device is None:
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._model.to(device)
         self._history: deque[PoseSample] = deque()
         self._history_seconds = history_seconds
         self._immobile_since: float | None = None
@@ -168,15 +178,22 @@ class FallImmobilityDetector:
         self._last_velocity_spike_t: float | None = None
         self._fall_cooldown_until: float = float("-inf")
         self.last_detection: tuple[np.ndarray, np.ndarray] | None = None
+        # Confianza por keypoint de la última detección, separada de
+        # last_detection para no romper los call sites que hacen
+        # `kpts, box = det.last_detection` o `det.last_detection[1]`.
+        self.last_detection_conf: np.ndarray | None = None
 
     def process_frame(self, image: np.ndarray, timestamp_s: float) -> list[dict]:
         events: list[dict] = []
         h, w = image.shape[:2]
         detection = detect_person(self._model, image)
-        self.last_detection = detection
         if detection is None:
+            self.last_detection = None
+            self.last_detection_conf = None
             return events
-        kpts, box = detection
+        kpts, box, kpts_conf = detection
+        self.last_detection = (kpts, box)
+        self.last_detection_conf = kpts_conf
 
         sample = build_pose_sample(kpts, box, w, h, timestamp_s)
         self._history.append(sample)

@@ -76,7 +76,7 @@ def main() -> None:
                 h, w = image.shape[:2]
                 detection = detect_person(model, image)
                 if detection is not None:
-                    kpts, box = detection
+                    kpts, box, _ = detection
                     sample = build_pose_sample(kpts, box, w, h, frame_i / fps)
                     displacement = ""
                     if prev_sample is not None:

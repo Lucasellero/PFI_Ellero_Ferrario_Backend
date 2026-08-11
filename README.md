@@ -164,12 +164,15 @@ comandos) en su README.
       `Standing` (parado inactivo, vía anotaciones de OmniFall sobre
       `CAUCAFall`, sin descargar nada nuevo), y el probe ahora usa un
       **embedding de manos concatenado al de cuerpo** (recorte por
-      keypoints de muñeca) que mejoró la categoría más floja
-      (`EatingDrinkingMedication`) de 39% a 46% — sigue siendo la más débil
-      (gestos de mano finos invisibles en un frame estático), así que el
+      keypoints de muñeca, con filtro de confianza por-muñeca para descartar
+      posiciones adivinadas) que mejoró la categoría más floja
+      (`EatingDrinkingMedication`) de 39% a **56.1%** — de camino se encontró
+      y arregló un bug real que hacía que el hand-crop nunca se activara
+      antes de esta ronda (coordenadas de píxel tratadas como normalizadas,
+      ver `vlm/README.md`). Sigue siendo la categoría más débil, así que el
       runner le exige más confianza que al resto antes de afirmarla, con
       fallback a la segunda categoría más probable o a un evento marcado
-      `confirmed: false`. `Standing` dio 94.6% pero con salvedad de
+      `confirmed: false`. `Standing` dio 97.3% pero con salvedad de
       generalización (una sola instalación de cámara, ver `vlm/README.md`).
 - [x] `events/`: store local funcionando end-to-end (SQLite).
 - [x] `runner/` + `dashboard/`: orquestación multi-cámara (archivo o stream

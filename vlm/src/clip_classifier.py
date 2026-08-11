@@ -302,23 +302,39 @@ def crop_to_person(image_bgr: np.ndarray, box, margin: float = 0.25) -> np.ndarr
 # Índices COCO de keypoints de muñeca (mismo formato que vision/src/pose_pipeline.py).
 _L_WRIST, _R_WRIST = 9, 10
 
+# Confianza mínima de un keypoint de muñeca individual para confiar en su
+# posición (más estricta que el promedio de cuerpo de detect_person, que
+# puede pasar aunque una muñeca puntual esté ocluida/adivinada).
+_MIN_WRIST_CONFIDENCE = 0.3
+
 
 def crop_to_hands(
-    image_bgr: np.ndarray, keypoints: np.ndarray, box, margin: float = 0.6
+    image_bgr: np.ndarray,
+    keypoints: np.ndarray,
+    box,
+    margin: float = 0.45,
+    keypoints_conf: np.ndarray | None = None,
 ) -> np.ndarray | None:
     """Recorta la zona de las manos a partir de los keypoints de muñeca, sobre
-    el frame completo (no el crop de persona — las coordenadas de `keypoints`
-    están normalizadas al frame completo, igual que las devuelve
-    `detect_person`/`FallImmobilityDetector.last_detection` en `vision/`).
+    el frame completo (no el crop de persona — `keypoints` viene en
+    coordenadas de píxel del frame completo, igual que las devuelve
+    `detect_person`/`FallImmobilityDetector.last_detection` en `vision/`, que
+    usa `.xy` de ultralytics, no `.xyn`).
 
     Categorías como comer/beber/tomar pastillas dependen de un gesto de mano
     breve que el embedding de cuerpo completo de CLIP no resuelve bien (es
     holístico, no hace zoom): este crop se usa como feature adicional para el
     linear probe (ver train_category_probe.py), no para el zero-shot.
 
-    Devuelve `None` si ninguna muñeca tiene una posición válida (YOLO-pose
-    deja keypoints no predichos en (0, 0)) — el caller debe decidir el
-    fallback.
+    `keypoints_conf`, si se pasa, descarta muñecas cuya confianza individual
+    esté debajo de `_MIN_WRIST_CONFIDENCE` — con la persona lejos o de
+    espaldas, YOLO-pose puede "adivinar" una posición poco confiable que no
+    conviene usar como centro del recorte. Sin este argumento se mantiene el
+    comportamiento anterior (solo posición).
+
+    Devuelve `None` si ninguna muñeca tiene una posición válida/confiable
+    (YOLO-pose deja keypoints no predichos en (0, 0)) — el caller debe
+    decidir el fallback.
     """
     h, w = image_bgr.shape[:2]
     x1, y1, x2, y2 = (float(v) for v in box)
@@ -332,7 +348,9 @@ def crop_to_hands(
         kx, ky = float(keypoints[idx, 0]), float(keypoints[idx, 1])
         if kx <= 0.0 or ky <= 0.0:  # no predicho
             continue
-        wrists.append((kx * w, ky * h))
+        if keypoints_conf is not None and float(keypoints_conf[idx]) < _MIN_WRIST_CONFIDENCE:
+            continue
+        wrists.append((kx, ky))
     if not wrists:
         return None
 
@@ -340,6 +358,7 @@ def crop_to_hands(
     ys = [p[1] for p in wrists]
     cx1, cx2 = min(xs) - side / 2, max(xs) + side / 2
     cy1, cy2 = min(ys) - side / 2, max(ys) + side / 2
+
     cx1, cy1 = max(0, int(cx1)), max(0, int(cy1))
     cx2, cy2 = min(w, int(cx2)), min(h, int(cy2))
     if cx2 - cx1 < 16 or cy2 - cy1 < 16:

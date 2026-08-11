@@ -119,7 +119,7 @@ promedio estabiliza la predicción. Además:
   ambiguas se descartan (quedan en el log) en vez de emitir una etiqueta
   dudosa.
 - **Umbral extra para `EatingDrinkingMedication`**: es la categoría más
-  floja del probe (46%, ver "Precisión y evaluación" en `vlm/README.md`) y
+  floja del probe (56.1%, ver "Precisión y evaluación" en `vlm/README.md`) y
   la más sensible de reportar mal (medicación) — `_EATING_CONFIRM_THRESHOLD`
   en `camera_worker.py` le exige más confianza que `clip_min_confidence`
   antes de afirmarla. Si no llega: se reporta la segunda categoría más

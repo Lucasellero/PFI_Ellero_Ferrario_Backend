@@ -82,12 +82,12 @@ for label, files in sorted(by_label.items()):
             det = detect_person(yolo, frame)
             if not det:
                 continue
-            kpts, box = det
+            kpts, box, kpts_conf = det
             crop = crop_to_person(frame, box)
             feat = image_features(crop)
             # Mismo fallback que ClipActivityClassifier.classify(): sin crop
             # de manos válido, se duplica el body embedding.
-            hand_crop = crop_to_hands(frame, kpts, box)
+            hand_crop = crop_to_hands(frame, kpts, box, keypoints_conf=kpts_conf)
             hand_feat = image_features(hand_crop) if hand_crop is not None else feat
             rows_feat.append(feat)
             rows_hand_feat.append(hand_feat)
