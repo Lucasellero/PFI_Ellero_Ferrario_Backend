@@ -71,7 +71,7 @@ Los videos llevan la actividad real como prefijo del nombre de archivo
 cuantitativamente. Desde la raíz del proyecto:
 
 ```bash
-python -m vlm.evaluate_activity                 # usa ../videos/ (39 videos, dataset chico)
+python -m vlm.evaluate_activity                 # usa ../videos/ToyotaSmarthome/ (39 videos, dataset chico)
 python -m vlm.evaluate_activity <carpeta>        # dataset externo más grande
 ```
 

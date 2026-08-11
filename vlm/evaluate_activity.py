@@ -11,7 +11,7 @@ gruesa (COARSE_CATEGORIES), que es lo que el runner emite y el familiar ve.
 
 Corre desde la raíz del proyecto:
 
-    python -m vlm.evaluate_activity                                # usa ../videos/, todos los videos
+    python -m vlm.evaluate_activity                                # usa ../videos/ToyotaSmarthome/, todos los videos
     python -m vlm.evaluate_activity <otra_carpeta>                  # ej. dataset externo más grande
     python -m vlm.evaluate_activity <carpeta> --per-class 10 --seed 1
 
@@ -47,7 +47,7 @@ from src.pose_pipeline import detect_person
 from ultralytics import YOLO
 
 parser = argparse.ArgumentParser()
-parser.add_argument('dir', nargs='?', default=None, help='Carpeta con videos (default: ../videos/)')
+parser.add_argument('dir', nargs='?', default=None, help='Carpeta con videos (default: ../videos/ToyotaSmarthome/)')
 parser.add_argument('--per-class', type=int, default=None,
                      help='Muestrear como máximo N videos por actividad en vez de usar todos')
 parser.add_argument('--seed', type=int, default=0, help='Semilla del muestreo (--per-class)')
@@ -61,7 +61,7 @@ clf_nopad = ClipActivityClassifier(quantized=True, pad_square=False, models_dir=
 clf_pad = ClipActivityClassifier(quantized=True, pad_square=True, models_dir=models_dir)
 yolo = YOLO(str(ROOT / 'yolo11n-pose.pt'))
 
-videos_dir = Path(args.dir) if args.dir else ROOT / 'videos'
+videos_dir = Path(args.dir) if args.dir else ROOT / 'videos' / 'ToyotaSmarthome'
 
 by_label: dict[str, list[Path]] = {}
 skipped = 0

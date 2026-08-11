@@ -4,7 +4,7 @@ cameras:
   realtime: true
   loop: false
 - id: readbook
-  source: videos/sentado/Readbook_p12_r00_v05_c05_old.mp4
+  source: videos/ToyotaSmarthome/Readbook_p12_r00_v05_c05_old.mp4
   realtime: true
   loop: true
 pose_model: yolo11n-pose.pt

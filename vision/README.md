@@ -540,11 +540,12 @@ poder cortar la corrida antes de los clips largos, y guardado incremental
 si se corta.
 
 Hallazgo aparte, más barato que terminar los 4 clips largos: los 39 clips
-cortos del subset Toyota Smarthome en `videos/*.mp4` (dataset de
-actividades, no de caídas — no tenían `Fall.csv`) **sí generan eventos
-geométricos falsos**, en particular los clips `Laydown_*` (acostarse en
-cama/sillón): 14 eventos de 12 clips. Se generó `videos/Fall.csv` marcando
-las 39 actividades como `NoFall` completo, para que
+cortos del subset Toyota Smarthome en `videos/ToyotaSmarthome/*.mp4`
+(dataset de actividades, no de caídas — no tenían `Fall.csv`) **sí generan
+eventos geométricos falsos**, en particular los clips `Laydown_*` (acostarse
+en cama/sillón): 14 eventos de 12 clips. Se generó
+`videos/ToyotaSmarthome/Fall.csv` marcando las 39 actividades como `NoFall`
+completo, para que
 `extract_fall_confirmation_embeddings.py` las levante como negativos. Con
 esto, el cache pasó de 150 caída real / 16 no-caída (≈9:1) a **110/36
 (≈3:1)** — mejora real en el desbalance, con costo de cómputo mínimo (clips

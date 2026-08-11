@@ -36,7 +36,7 @@ Vive en la raíz del proyecto:
 ```yaml
 cameras:
 - id: asd
-  source: videos/Uselaptop_p12_r00_v14_c05.mp4   # archivo, URL RTSP/HTTP, o índice de webcam ("0")
+  source: videos/ToyotaSmarthome/Uselaptop_p12_r00_v14_c05.mp4   # archivo, URL RTSP/HTTP, o índice de webcam ("0")
   realtime: true    # ver "Tiempo real y frame dropping" abajo — recomendado en true
   loop: true         # si true, reinicia el archivo al terminar (ignorado en streams en vivo)
 pose_model: yolo11n-pose.pt
