@@ -574,6 +574,136 @@ zero-shot, sin cambios. Si en el futuro se consigue correr los 4 clips
 largos (con frame-skip o límite de threads, ver arriba), vale reentrenar
 de nuevo antes de decidir si reemplazar el zero-shot.
 
+**Actualización (2026-08-11): GPU, dataset URFD, intento fallido de mejorar
+la geometría para caídas hacia adelante, y hallazgo de que la geometría ya
+llegó a su techo razonable.**
+
+*GPU sin usar (bug encontrado y arreglado):* `FallImmobilityDetector` nunca
+movía el modelo YOLO a GPU pese a haber una disponible (RTX 3050, CUDA) —
+corría en CPU por default. Explica buena parte de la lentitud de intentos
+anteriores con los 4 clips largos de `ToyotaSmarthome_FP` (3+ horas sin
+terminar). Con `device=None` autodetectando CUDA, el mismo clip pasó a
+~10 min. Con esto se pudieron procesar los 4 clips largos completos por
+primera vez en varias corridas de recalibración.
+
+*Dataset nuevo:* se sumó `videos/URFD/` (UR Fall Detection Dataset — 30
+`fall-XX` + 40 `adl-XX`, cámara fija), elegido específicamente porque sus
+secuencias ADL son "casi-caídas" diseñadas a propósito (sentarse,
+agacharse). `vision/build_urfd_groundtruth.py` genera su `Fall.csv` a partir
+de las etiquetas oficiales por frame. También se reorganizó `videos/` para
+que cada dataset viva en su propia subcarpeta (`ToyotaSmarthome/` en vez de
+clips sueltos en la raíz) — sin impacto en el código, que ya usaba globs
+recursivos.
+
+*Hallazgo real: la geometría no detecta caídas hacia adelante.* Diagnóstico
+sobre clips aislados de CAUCAFall mostró que 9 de 10 sujetos "Fall forward"
+generan **cero** eventos geométricos — la velocidad vertical sí dispara
+(picos >1.8, muy por encima del umbral 0.12), pero `aspect_ratio` nunca
+cruza 1.4 porque en una caída hacia la cámara la persona termina encogida
+(bbox angosto), no ensanchada como en una caída lateral. Es un techo
+estructural del heurístico de dos fases, no un problema de datos.
+
+*Intento de arreglarlo, con dos vueltas de bugs de metodología antes de un
+resultado confiable:*
+1. Se probó una condición alternativa (OR con `aspect_ratio`): el bbox se
+   derrumba en altura vs. una línea de base "de pie" (`height_drop_ratio`).
+   Sola, no sirve — cualquier sentada/agachada normal también derrumba el
+   bbox, dispara todo el tiempo.
+2. Se agregó un segundo requisito: además del drop, la cadera tiene que
+   terminar cerca del piso en términos absolutos (`floor_hip_y`), no solo
+   relativo al bbox — sentarse en una silla deja la cadera a media altura,
+   una caída real termina en el piso. El barrido inicial (`score()` capeando
+   FP a 1 por clip) dio una mejora aparente: 86.1%→87.3% recall por
+   46→55 FP. Validado con `evaluate_falls.py` (conteo real, sin capear) el
+   número real fue 340 FP, no 55 — un solo clip largo (~19min) disparó
+   **124 veces**, ~cada 9s en promedio. El capeo a 1 FP por clip en el
+   barrido era ciego a que una condición puede repetirse sin límite dentro
+   del mismo video, y eso es exactamente lo que pasa en video doméstico
+   continuo. Se corrigió `score()` para contar cada evento.
+3. Con el conteo corregido, los números seguían sin cerrar (159 predichos
+   vs. 340 reales para los mismos umbrales) — la causa fue otro bug,
+   `MAX_FRAMES_PER_CLIP = 10_000` en `recalibrate_fall_thresholds.py`
+   (agregado como tope de seguridad contra videos corruptos) cortaba los
+   clips largos a los primeros 400s de sus 1100-1600s reales, subestimando
+   sus FP por ~3x sin ningún aviso. Subido a 100_000 (~66min) y reconstruido
+   el cache completo.
+
+*Resultado final, con cache completo y conteo real:* el baseline actual
+(vel=0.12, asp=1.4, sin las condiciones nuevas) da **86.1% recall, 325 FP**
+sobre los 292 clips (la mayoría de esos FP viene de los 4 clips largos de
+Toyota — siempre generaron esa cantidad, nunca se había medido bien porque
+no se procesaban completos). Ninguna combinación con `height_drop`/
+`floor_hip_y` domina al baseline: todas suman FP por cada punto de recall
+ganado (ej. 87.3% recall cuesta 340 FP, +15 FP por +1.2pp). Dado que el
+criterio del proyecto es priorizar bajar falsos positivos sobre subir
+recall (una alarma doméstica que grita en falso repetidamente pierde
+confianza, ver riesgo de "boy who cried wolf"), **no se integró ningún
+cambio a producción** — `FALL_HEIGHT_DROP_RATIO = None` en
+`pose_pipeline.py` deja la condición nueva escrita pero desactivada,
+documentada con este resultado. El heurístico geométrico queda exactamente
+como estaba antes de esta sesión.
+
+**Conclusión — dónde seguir a partir de acá:** el heurístico geométrico ya
+está razonablemente cerca de su techo con una sola cámara 2D: geométricamente,
+"arrodillarse" o "sentarse cerca del piso" y "estar tirado por una caída
+real" se ven casi idénticos en un frame aislado, y seguir agregando
+condiciones geométricas solo mueve el mismo trade-off recall/FP, no lo
+mejora. Los dos ejes con margen real, para retomar:
+
+1. **El filtro de confirmación (CLIP), no la geometría.** El heurístico
+   geométrico solo necesita ser un disparador razonable — la decisión fina
+   de "¿esto es realmente una caída?" la tiene que hacer algo que vea
+   contexto visual (postura completa, entorno, si hay una silla debajo),
+   que es justo lo que la geometría no puede. Ahí hay más margen: mejores
+   prompts para el zero-shot, o seguir sumando negativos duros al linear
+   probe experimental (ya se sumó URFD, ver arriba).
+2. **Confirmación por inmovilidad sostenida, en vez de postura instantánea.**
+   No se llegó a probar esta sesión. En vez de decidir en el instante del
+   "drop" de altura, esperar 1-2s y ver si la persona se queda quieta en el
+   piso vs. se reacomoda y sigue con lo suyo — separaría mejor "se arrodilló
+   un segundo" de "se cayó y no se levantó", sin el disparo repetido que
+   causó la explosión de FP en el intento de este punto (2).
+
+**Actualización, más tarde el mismo día (2026-08-12): se probaron ambas
+ideas del punto anterior — la de inmovilidad falló peor todavía, la de CLIP
+dio el mejor resultado de toda la sesión.**
+
+*Inmovilidad sostenida (punto 2), probada y descartada:* exigir que la
+persona se quede quieta 1-2s después del "drop" antes de confirmar, en vez
+de mejorar el trade-off, lo empeoró mucho más — con 2s de inmovilidad el
+recall se derrumbó a 27.8% (bajaba los FP a 58, pero tirando 3 de cada 4
+caídas reales). Causa: justo después de una caída real la pose estimada es
+ruidosa (la persona se acomoda, keypoints con jitter), así que la condición
+de "quietud" se rompe seguido incluso en caídas reales; varios clips además
+son más cortos que la ventana de confirmación pedida. Implementado en
+`recalibrate_fall_thresholds.py` (`immobility_confirm_s`) por si se retoma
+con una versión menos estricta (ej. promedio de desplazamiento en vez de
+"ningún frame se puede mover"), pero no se integró a producción.
+
+*CLIP con más negativos duros (punto 1), resultado fuerte:* con el fix de
+GPU de esta misma sesión (`FallImmobilityDetector` no usaba CUDA pese a
+haber una disponible — ver arriba), finalmente se pudo correr
+`extract_fall_confirmation_embeddings.py` con los 4 clips largos de
+`ToyotaSmarthome_FP` incluidos (antes: 3+ horas sin terminar en CPU; con
+GPU: ~10 min cada uno). Cache resultante: 509 eventos geométricos (antes
+195), **177 caída real / 323 no-caída** (vs. el 150/38 anterior) — la
+mayoría de los 323 son el ruido geométrico real de los clips largos
+(coincide con los 325 FP geométricos medidos más arriba con el heurístico
+sin cambios). Reentrenado con `train_fall_confirmation_probe.py`:
+**84.8% recall (134/158), 30 FP** out-of-fold sobre 500 eventos etiquetados
+— mejor resultado de la sesión: supera el recall del zero-shot en
+producción (82.0%) entrenado sobre un conjunto de negativos mucho más duro
+que el de intentos anteriores (323 eventos "no-caída" reales de video
+continuo, no clips cortos limpios). Que falle en solo 30/323 sugiere que el
+enfoque "CLIP ve el contexto visual completo" generaliza mucho mejor que
+seguir afinando la geometría (ver los dos intentos fallidos de arriba).
+`vlm/models/fall_confirmation_probe.npz` quedó sobreescrito con este
+resultado — **sigue sin estar integrado en `FallConfirmationClassifier`**,
+decisión pendiente para una sesión con más calma, no a esta hora. Si se
+integra, evaluar contra el zero-shot con el mismo conjunto de evaluación
+(actualmente no son directamente comparables en FP: el zero-shot se midió
+sobre 183 clips, el probe sobre 292 con datasets adicionales).
+
 ## Entrada
 
 Un archivo de video en `../videos/<nombre>.mp4` (o `.avi`/`.mov`), o toda

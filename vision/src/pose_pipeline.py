@@ -23,6 +23,31 @@ sujeto — ver `recalibrate_fall_thresholds.py`), para generalizar entre
 setups de cámara en vez de sobreajustar a uno solo. Recall combinado 85.2%
 (vs. 66.4% con los umbrales viejos y la velocidad sin normalizar), FP 18/179
 clips evaluados.
+
+Confirmación por postura, segunda condición, EXPERIMENTAL/DESACTIVADA
+(2026-08-11): `FALL_ASPECT_RATIO` solo no detecta caídas hacia
+adelante/hacia la cámara — la persona termina encogida (bbox angosto), no
+"ancha" como en una caída lateral, así que nunca cruza el umbral (9/10
+sujetos "Fall forward" de CAUCAFall no generaban NINGÚN evento). Se probó una
+condición alternativa (OR): el bbox se derrumba en altura respecto a la
+"altura de pie" de referencia (`FALL_HEIGHT_DROP_RATIO`) Y la cadera termina
+cerca del piso del frame (`FALL_FLOOR_HIP_Y`, posición absoluta, no relativa
+al bbox) — el segundo requisito filtra la mayoría de sentadas/agachadas
+normales (que sin él también derrumban el bbox y disparan todo el tiempo).
+
+Calibrado con `recalibrate_fall_thresholds.py` sobre 292 clips (los mismos +
+`videos/URFD/` + los 4 clips largos de `ToyotaSmarthome_FP/`): parecía dar
+86.1%->87.3% recall por 46->55 FP, PERO ese conteo capea a 1 FP por clip —
+ciego a que la condición nueva se puede disparar repetidamente dentro del
+mismo video. Validado con `evaluate_falls.py` (conteo real, sin capear): un
+solo clip largo (~19min, sedentario) disparó **124 veces** — la persona
+cambiando de postura naturalmente re-cumple la condición una y otra vez, cada
+~9s en promedio. Total real: 340 FP sobre 292 clips (vs. ~46-146 del
+baseline sin esta condición, según el conteo). Inutilizable así en
+producción (spam de alertas sobre video continuo). Queda `FALL_HEIGHT_DROP_RATIO
+= None` (desactivada) hasta re-tunear con una métrica que penalice disparos
+repetidos, no solo si el clip tuvo *algún* FP. Detalle completo en
+`vision/README.md`.
 """
 from __future__ import annotations
 
@@ -48,6 +73,9 @@ FALL_VELOCITY_WINDOW_S = 0.4          # ventana para medir la velocidad vertical
 FALL_VERTICAL_VELOCITY = 0.12         # "alturas de persona" por segundo (hip_y / bbox_height_frac) => posible caída en curso
 FALL_ASPECT_RATIO = 1.4               # width/height por encima de esto => postura final acostada
 FALL_CONFIRM_WINDOW_S = 1.5           # tiempo máx. entre el pico de velocidad y la postura final
+FALL_HEIGHT_DROP_RATIO = None          # bbox_height_frac cae por debajo de esta fracción de la altura "de pie" => posible caída (forward, ver docstring). None = desactivado: la calibración inicial (0.55/0.75) disparaba en loop sobre video largo continuo (124 FP en un solo clip de 19min, ver vision/README.md) porque el barrido de calibración capeaba el conteo de FP a 1 por clip, sin penalizar disparos repetidos. Pendiente re-tunear con una métrica que sí penalice eso.
+FALL_FLOOR_HIP_Y = 0.75               # + hip_y (posición absoluta en el frame) por encima de esto => cerca del piso, no sentado a media altura
+FALL_BASELINE_WINDOW_S = 2.0          # ventana antes del pico de velocidad para estimar la altura "de pie" de referencia
 FALL_COOLDOWN_S = 3.0                 # tras confirmar una caída, no reportar otra hasta pasado esto
 MIN_KEYPOINT_CONFIDENCE = 0.2         # confianza promedio mínima de keypoints para no descartar el frame
 IMMOBILITY_WINDOW_S = 180.0            # segundos de movimiento casi nulo => evento de inmovilidad (sedentarismo sostenido, no un instante)
@@ -176,6 +204,8 @@ class FallImmobilityDetector:
         self._immobility_reported = False
         self._posture_history: deque[str] = deque(maxlen=IMMOBILITY_POSTURE_VOTE_N)
         self._last_velocity_spike_t: float | None = None
+        self._baseline_height: float | None = None
+        self._heights_history: deque[tuple[float, float]] = deque()  # (t, bbox_height_frac), ventana propia para estimar altura "de pie"
         self._fall_cooldown_until: float = float("-inf")
         self.last_detection: tuple[np.ndarray, np.ndarray] | None = None
         # Confianza por keypoint de la última detección, separada de
@@ -198,6 +228,9 @@ class FallImmobilityDetector:
         sample = build_pose_sample(kpts, box, w, h, timestamp_s)
         self._history.append(sample)
         self._trim_history(sample.timestamp_s)
+        self._heights_history.append((sample.timestamp_s, sample.bbox_height_frac))
+        while self._heights_history and sample.timestamp_s - self._heights_history[0][0] > FALL_BASELINE_WINDOW_S + FALL_CONFIRM_WINDOW_S:
+            self._heights_history.popleft()
 
         if self._detect_fall(sample):
             events.append({
@@ -218,9 +251,15 @@ class FallImmobilityDetector:
 
     def _detect_fall(self, sample: PoseSample) -> bool:
         """Dos fases: (1) un pico de velocidad vertical marca una posible caída
-        en curso, (2) si dentro de FALL_CONFIRM_WINDOW_S el aspect ratio se
-        estabiliza en postura acostada, se confirma el evento. No exige que
-        ambas condiciones ocurran en el mismo frame (ver docstring del módulo).
+        en curso, (2) si dentro de FALL_CONFIRM_WINDOW_S la postura confirma
+        el aterrizaje, se confirma el evento. No exige que ambas condiciones
+        ocurran en el mismo frame (ver docstring del módulo).
+
+        Confirmación por postura, dos condiciones alternativas (OR): el
+        aspect ratio se ensancha (caída lateral/de espaldas) O el bbox se
+        derrumba en altura Y la cadera termina cerca del piso del frame
+        (caída hacia adelante/hacia la cámara, no ensancha el bbox — ver
+        docstring del módulo).
         """
         if sample.timestamp_s < self._fall_cooldown_until:
             return False
@@ -228,13 +267,23 @@ class FallImmobilityDetector:
         velocity = self._vertical_velocity(sample)
         if velocity is not None and velocity > FALL_VERTICAL_VELOCITY:
             self._last_velocity_spike_t = sample.timestamp_s
+            pre_spike = [h for t, h in self._heights_history if sample.timestamp_s - t <= FALL_BASELINE_WINDOW_S]
+            self._baseline_height = max(pre_spike) if pre_spike else None
+
+        posture_ok = sample.aspect_ratio > FALL_ASPECT_RATIO
+        if not posture_ok and FALL_HEIGHT_DROP_RATIO is not None and self._baseline_height:
+            posture_ok = (
+                sample.bbox_height_frac < self._baseline_height * FALL_HEIGHT_DROP_RATIO
+                and sample.hip_y > FALL_FLOOR_HIP_Y
+            )
 
         if (
             self._last_velocity_spike_t is not None
-            and sample.aspect_ratio > FALL_ASPECT_RATIO
+            and posture_ok
             and sample.timestamp_s - self._last_velocity_spike_t <= FALL_CONFIRM_WINDOW_S
         ):
             self._last_velocity_spike_t = None
+            self._baseline_height = None
             self._fall_cooldown_until = sample.timestamp_s + FALL_COOLDOWN_S
             return True
         return False
