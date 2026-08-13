@@ -8,6 +8,11 @@ venv/
 .DS_Store
 runner_state/
 
+# Config/cache local de Claude Code (herramienta, no código del proyecto)
+.claude/
+.agents/
+skills-lock.json
+
 # Dataset de video: no versionar los archivos, solo la estructura, el README
 # y el ground truth derivado (Fall.csv, kaggle_data.csv, etc.)
 videos/**/*.mp4
