@@ -4,18 +4,21 @@ Repositorio de desarrollo del Proyecto Final de Ingeniería (UADE, 2026). Para
 el marco teórico, el estado del arte y la justificación de cada decisión de
 diseño, ver el informe del proyecto.
 
-## Fase actual: validación local sobre dataset de video
+## Fase actual: validación local sobre dataset de video + primer despliegue en Pi
 
-Esta etapa **no** integra Raspberry Pi, cámaras IP ni servicios en la nube.
-Todo el pipeline corre en la PC de desarrollo, procesando un dataset de
-videos ya grabados (carpeta `videos/`, ver más abajo). El objetivo es validar
-la lógica de detección (pose estimation, caídas, inmovilidad, clasificación
-de actividades) de forma reproducible antes de integrar hardware real.
+El desarrollo y la calibración de la lógica de detección (pose estimation,
+caídas, inmovilidad, clasificación de actividades) siguen haciéndose sobre
+la PC de desarrollo, procesando un dataset de videos ya grabados (carpeta
+`videos/`, ver más abajo), porque es lo reproducible para iterar y medir.
+En paralelo, la Raspberry Pi 5 ya está configurada y corriendo el proyecto
+completo directamente sobre el hardware, leyendo un stream de cámara real
+en vez del dataset — no se integraron todavía cámaras IP externas ni
+servicios en la nube.
 
 Los módulos están pensados para que la arquitectura final del informe (edge
 en Raspberry Pi + cloud) sea una extensión de este código, no una reescritura:
-el mismo pipeline que hoy lee un archivo de video de `videos/` va a leer, más
-adelante, un stream RTSP en vivo.
+el mismo pipeline que hoy lee un archivo de video de `videos/` es el que ya
+corre en la Pi leyendo un stream RTSP/webcam en vivo.
 
 ## Arquitectura (fase local)
 
@@ -183,14 +186,14 @@ comandos) en su README.
 - [x] `events/`: store local funcionando end-to-end (SQLite).
 - [x] `runner/` + `dashboard/`: orquestación multi-cámara (archivo o stream
       en vivo) y panel web de control — primera versión de la migración a
-      ingesta en vivo (ver más abajo), corriendo todavía sobre PC de
-      desarrollo, no sobre Raspberry Pi.
+      ingesta en vivo (ver más abajo).
 - [ ] `baseline/`: clustering dinámico + detección de desvíos (Snoun et al.
       2024).
 - [ ] `evaluation/`: exportar video anotado para inspección visual.
-- [ ] *(fase futura, no ahora)* desplegar `runner/` en Raspberry Pi 5 (el
-      código ya soporta streams RTSP/webcam vía `cameras.yaml`, falta
-      validar en el hardware real).
+- [x] Raspberry Pi 5 configurada, con el proyecto corriendo directamente
+      sobre el hardware (stream de cámara real vía `cameras.yaml`, no
+      dataset de video). Falta medir y documentar el rendimiento real
+      (la tabla en `vlm/README.md` sigue siendo una estimación).
 - [ ] *(fase futura, no ahora)* exponer `events/` + `baseline/` vía API
       (FastAPI) para una futura app móvil — separado de `dashboard/`, que es
       panel de operación local, no la API pública del sistema final.
