@@ -186,11 +186,6 @@ ACTIVITY_PROMPTS: dict[str, list[str]] = {
         "a person tilting a kettle to pour water into a cup",
         "someone pouring water from a kettle while making tea or coffee",
     ],
-    "Standing": [
-        "a photo of a person standing still in a room",
-        "a person standing upright without moving",
-        "someone standing idle, not walking or sitting",
-    ],
 }
 
 # Clases negativas: absorben recortes sin persona visible (bbox desfasado,
@@ -241,10 +236,6 @@ COARSE_CATEGORIES: dict[str, list[str]] = {
     # como Takepills — hay que medir con evaluate_activity.py/
     # train_category_probe.py si CLIP la distingue antes de decidir.
     "Phone": ["Usetelephone"],
-    # Datos de entrenamiento vía extract_omnifall_features.py (segmentos
-    # OmniFall sobre videos/CAUCAFall/, ver vlm/README.md) — ninguna clase
-    # de Toyota Smarthome cubre "parado sin hacer nada".
-    "Standing": ["Standing"],
     "Background": list(BACKGROUND_PROMPTS),
 }
 
@@ -259,7 +250,6 @@ CATEGORY_DESCRIPTIONS: dict[str, str] = {
     "ReadingScreen": "a person reading or using a screen device",
     "Moving": "a person walking or moving around the room",
     "Phone": "a person talking on the phone",
-    "Standing": "a person standing still, not doing any particular activity",
     "Background": "no clear person visible in the frame",
 }
 

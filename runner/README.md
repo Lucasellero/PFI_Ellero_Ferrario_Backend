@@ -103,13 +103,18 @@ promedio estabiliza la predicción. Además:
   una clase negativa `Background` en los prompts: si el recorte no muestra
   una persona reconocible (bbox desfasado, persona saliendo de cuadro), esa
   clase absorbe la probabilidad y la ventana se descarta.
-- **Categorías gruesas**: se clasifica con las clases finas del dataset
-  (31, todo el catálogo de Toyota Smarthome + `Standing` vía OmniFall —
-  mejor cobertura de prompts, ver `vlm/README.md`) pero el evento se emite a
-  nivel de categoría (`COARSE_CATEGORIES` en `vlm/src/clip_classifier.py`:
-  `Cooking`, `EatingDrinkingMedication`, `Resting`, `ReadingScreen`,
-  `Moving`, `Phone`, `Standing`), sumando las probabilidades de las
-  subclases (zero-shot) o vía el linear probe entrenado. Distinguir
+- **Categorías gruesas**: se clasifica con las 31 clases finas del catálogo
+  de Toyota Smarthome (mejor cobertura de prompts, ver `vlm/README.md`) pero
+  el evento se emite a nivel de categoría (`COARSE_CATEGORIES` en
+  `vlm/src/clip_classifier.py`: `Cooking`, `EatingDrinkingMedication`,
+  `Resting`, `ReadingScreen`, `Moving`, `Phone`), sumando las probabilidades
+  de las subclases (zero-shot) o vía el linear probe entrenado. Hubo una
+  séptima categoría, `Standing` ("parado sin hacer nada", vía OmniFall), que
+  se agregó y se terminó sacando — no generalizaba a una cámara distinta a
+  la de entrenamiento (0% recall medido contra GMDCSA-24) y su valor de
+  producto era bajo frente a lo que ya cubre la inmovilidad geométrica de
+  `vision/`; ver "`Standing`: se probó y se descartó" en `vlm/README.md`.
+  Distinguir
   `Drink.Fromcan` de `Drink.Fromcup` en un frame estático es imposible y al
   familiar tampoco le aporta; agregarlas elimina ese error. `activity_label`
   en el metadata es la categoría; la clase fina ganadora queda en

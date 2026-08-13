@@ -160,20 +160,26 @@ comandos) en su README.
       completo, el zero-shot cae a ~48%. Se entrenó en cambio un **linear
       probe sobre los embeddings de CLIP** (categorías fusionadas donde el
       zero-shot no distinguía, ver `vlm/README.md`) — vocabulario ampliado
-      de 14 a las **31 clases completas de Toyota Smarthome** más
-      `Standing` (parado inactivo, vía anotaciones de OmniFall sobre
-      `CAUCAFall`, sin descargar nada nuevo), y el probe ahora usa un
-      **embedding de manos concatenado al de cuerpo** (recorte por
-      keypoints de muñeca, con filtro de confianza por-muñeca para descartar
-      posiciones adivinadas) que mejoró la categoría más floja
-      (`EatingDrinkingMedication`) de 39% a **56.1%** — de camino se encontró
-      y arregló un bug real que hacía que el hand-crop nunca se activara
-      antes de esta ronda (coordenadas de píxel tratadas como normalizadas,
-      ver `vlm/README.md`). Sigue siendo la categoría más débil, así que el
+      de 14 a las **31 clases completas de Toyota Smarthome**, y el probe
+      ahora usa un **embedding de manos concatenado al de cuerpo** (recorte
+      por keypoints de muñeca, con filtro de confianza por-muñeca para
+      descartar posiciones adivinadas) que mejoró la categoría más floja
+      (`EatingDrinkingMedication`) de 39% a ~55% — de camino se encontró y
+      arregló un bug real que hacía que el hand-crop nunca se activara antes
+      de esta ronda (coordenadas de píxel tratadas como normalizadas, ver
+      `vlm/README.md`). Sigue siendo la categoría más débil, así que el
       runner le exige más confianza que al resto antes de afirmarla, con
       fallback a la segunda categoría más probable o a un evento marcado
-      `confirmed: false`. `Standing` dio 97.3% pero con salvedad de
-      generalización (una sola instalación de cámara, ver `vlm/README.md`).
+      `confirmed: false`. Se probó sumar una séptima categoría (`Standing`,
+      "parado sin hacer nada", vía anotaciones de OmniFall) y se descartó:
+      validado contra el dataset GMDCSA-24 completo (cámara nunca vista en
+      entrenamiento) dio 0% de recall — el 97.3% original era el modelo
+      reconociendo la cámara de `CAUCAFall`, no la postura. Se sacó por
+      completo en vez de perseguir la generalización (ver "`Standing`: se
+      probó y se descartó" en `vlm/README.md`). El runner también calcula,
+      sin costo extra, la agregación zero-shot en paralelo al probe como
+      doble check de confianza (`confirmed: false` si no coinciden — ver
+      "Doble check probe/zero-shot" en `runner/README.md`).
 - [x] `events/`: store local funcionando end-to-end (SQLite).
 - [x] `runner/` + `dashboard/`: orquestación multi-cámara (archivo o stream
       en vivo) y panel web de control — primera versión de la migración a

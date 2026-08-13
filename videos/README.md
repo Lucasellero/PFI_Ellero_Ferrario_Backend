@@ -22,7 +22,20 @@ producción:
 
 - **`GMDCSA-24/fall1/` a `fall4/`** (16+25+21+17 = 79 clips, ~2-15s cada
   uno): caídas simuladas reales, mismo encuadre de cámara fijo. `Fall.csv`
-  anotado a mano por quien armó el dataset.
+  anotado a mano por quien armó el dataset. Es un subset (solo caídas) del
+  dataset GMDCSA-24; el `fall1-4` es la fuente que ya se usaba para calibrar
+  el detector geométrico de `vision/`, sin tocar.
+- **`GMDCSA-24/official/`** (2026-08-13, 81 caídas + 79 ADL, 4 actores en 3
+  ambientes domésticos — dataset completo, [Zenodo, DOI
+  10.5281/zenodo.11216408](https://zenodo.org/records/11216408), CC BY 4.0):
+  se bajó para validar si la categoría `Standing` de `vlm/` (parado sin
+  hacer nada) generalizaba a una cámara distinta a la de entrenamiento — no
+  generalizó (0% recall) y la categoría se sacó por completo, ver
+  "`Standing`: se probó y se descartó" en `vlm/README.md`. Queda acá sin
+  usarse desde `vlm/` por ahora; es un candidato para completar el dataset
+  de caídas de `vision/` (que documentaba el GMDCSA-24 completo como
+  pendiente) si se retoma esa evaluación más adelante — no se integró en
+  esta ronda, es trabajo aparte.
 - **`CAUCAFall/`** (100 clips: 10 sujetos × 10 actividades, 5 tipos de
   caída + 5 sin caída — Walk/Sit down/Hop/Kneel/Pick up object): entorno
   doméstico no controlado, distancia/ángulo de cámara variable por sujeto.

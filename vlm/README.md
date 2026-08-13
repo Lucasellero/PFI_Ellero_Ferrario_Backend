@@ -308,8 +308,9 @@ reentrenar:
 | Resting | 53.2% | 62.9% |
 | Standing | 94.6%* | 97.3%* |
 
-*Ver salvedad de generalización de `Standing` más abajo — no cambia con
-esta ronda de cambios, sigue siendo la misma limitación.
+*`Standing` se sacó de `COARSE_CATEGORIES` más adelante — ver "`Standing`:
+se probó y se descartó" más abajo. Esta fila queda como registro histórico
+del número que se reportaba en ese momento, no como estado actual.
 
 El salto de +11.4 puntos en `EatingDrinkingMedication` confirma que el bug
 era la causa principal del techo anterior: la señal de manos, cuando
@@ -336,7 +337,7 @@ nombrarla con seguridad). Ver "Clasificación de actividades (CLIP)" en
 `runner/README.md` para el detalle. Es un ajuste de umbral/presentación en
 el runner, no un cambio al modelo entrenado.
 
-### `Standing`: parado inactivo, vía OmniFall + CAUCAFall
+### `Standing`: se probó y se descartó
 
 Ninguna de las 31 clases de Toyota Smarthome cubre "persona parada sin hacer
 nada" (`Getup` es la transición de incorporarse, no un estado). Se buscaron
@@ -353,12 +354,13 @@ tenemos: el `path` de cada fila (ej. `adl/PickupobjectS3`) mapea a
 `videos/CAUCAFall/CAUCAFall/Subject.{subject}/{Carpeta}/{Activity}S{subject}.avi`,
 así que no hizo falta descargar nada — implementado en
 `extract_omnifall_features.py`. `labels/GMDCSA24.csv` en cambio referencia
-una estructura (`Subject_1/ADL/...`) que no está en nuestro
-`videos/GMDCSA-24/` (solo tenemos el subset de caídas de ese dataset) — para
-sumarlo habría que descargar el dataset completo; queda pendiente, no
-implementado. Los otros 6 datasets que unifica OmniFall (`UP-Fall`,
-`CMDFall`, `Le2i`, `EDF`, `OCCU`, `MCFD`) tampoco están en el repo — mismo
-motivo.
+una estructura (`Subject_1/ADL/...`) que en ese momento no estaba en
+`videos/GMDCSA-24/` (solo teníamos el subset de caídas de ese dataset) —
+más abajo, en "se probó y se descartó", se terminó bajando el dataset
+completo para validar `Standing`, pero ya no se usa (la categoría se sacó).
+Los otros 6 datasets que unifica OmniFall (`UP-Fall`, `CMDFall`, `Le2i`,
+`EDF`, `OCCU`, `MCFD`) tampoco están en el repo — mismo motivo original
+(no se descargaron), no hubo necesidad de revisarlo.
 
 De las 16 clases de OmniFall, sobre `caucafall.csv` (258 segmentos) solo dos
 tenían volumen y aportaban algo nuevo:
@@ -376,7 +378,10 @@ tenían volumen y aportaban algo nuevo:
 
 El resto (`Walk`, `Fall`, `Fallen`, `Sitting`, etc.) ya está cubierto por
 Toyota Smarthome o por el detector geométrico de `vision/`, así que no se
-extrae. Nueva categoría en `COARSE_CATEGORIES`: `Standing`.
+extrae. `StandUp` se mantiene hoy como refuerzo de `Getup` (ver
+`extract_omnifall_features.py`); `Standing` se agregó como categoría propia
+en `COARSE_CATEGORIES` y **se terminó sacando por completo** — ver el resto
+de esta sección.
 
 Resultado (probe reentrenado sobre Toyota Smarthome + estos 60 frames,
 `train_category_probe.py --extra-features omnifall_features.npz`):
@@ -402,6 +407,68 @@ orden/composición del array de videos únicos, así que el mismo `--seed` ya
 no reproduce exactamente la misma partición train/val de antes), no un
 efecto de esta clase nueva sobre las demás.
 
+#### Validación con GMDCSA-24: el 97.3% no generalizaba
+
+La salvedad de arriba (¿el probe aprende "postura parada" o "es un frame de
+`CAUCAFall`"?) no se podía descartar sin datos de `Standing` de otra cámara.
+Se bajó el dataset **GMDCSA-24 completo** (81 caídas + 79 ADL, 4 actores en 3
+ambientes domésticos, [Zenodo, DOI
+10.5281/zenodo.11216408](https://zenodo.org/records/11216408), CC BY 4.0 —
+hasta entonces solo teníamos el subset de caídas, `videos/GMDCSA-24/fall1-4`,
+usado para calibrar el detector geométrico de `vision/`; el dataset completo
+se guardó aparte en `videos/GMDCSA-24/official/` para no tocar esa
+calibración) y se resolvió `labels/GMDCSA24.csv` de OmniFall contra los
+archivos reales (`extract_gmdcsa24_features.py`, mismo patrón que
+`extract_omnifall_features.py`) para sacar 41 muestras de `Standing` y 24 de
+`StandUp`/`Getup` de una instalación de cámara que el probe nunca vio.
+
+Resultado, evaluando el probe entrenado sobre Toyota Smarthome + CAUCAFall
+(sin ningún dato de GMDCSA-24) contra estas muestras: **0% de recall en
+`Standing`**. El probe no predijo `Standing` ni una sola vez sobre las 41
+muestras reales — todas se fueron a `Moving` (33) o `Phone` (8). Confirma la
+sospecha: el 97.3% no era una medida real de "reconoce la postura parada",
+era "reconoce la cámara de `CAUCAFall`".
+
+Para separar "el dato de una sola cámara no alcanza" de "CLIP no puede con
+esto en absoluto", se probó un segundo experimento: mezclar GMDCSA-24 en el
+entrenamiento con validación *leave-one-subject-out* (entrenar con
+Toyota+CAUCAFall + 3 de los 4 actores de GMDCSA-24, evaluar sobre el actor
+restante, nunca visto ni en esa ronda). El recall de `Standing` subió a
+**82.9%** — confirma que sí es un problema de diversidad de cámaras, no un
+límite estructural de CLIP. Pero **`Moving` cayó de 91.7% a 37.5%** en el
+mismo experimento: forzar la generalización de `Standing` la vuelve más
+fácil de confundir con posturas de pie que en realidad son transiciones de
+`Moving` — un trade-off real, no ruido.
+
+**Decisión: se sacó `Standing` de `COARSE_CATEGORIES` por completo** (vuelve
+a 6 categorías) en vez de perseguir la generalización sumando más cámaras.
+Razones, más allá del resultado técnico:
+
+- **Bajo valor de producto**: "parado sin hacer nada" es un estado raro y de
+  corta duración en la vida real — las 31 clases de Toyota Smarthome ya
+  cubren "parado haciendo algo" (cocinando, etc.) dentro de sus categorías
+  propias; `Standing` solo intentaba tapar el residuo de "parado sin
+  actividad reconocible".
+- **Redundante con `vision/`**: la parte clínicamente relevante de "parado
+  quieto mucho tiempo" (mareo, pre-caída) ya la cubre
+  `FallImmobilityDetector` (heurística geométrica, sin CLIP) — ver
+  "Detección de caída como evento" en `vision/README.md`. CLIP no aportaba
+  algo que esa señal no diera ya para ese caso de uso.
+- **Costo de arreglarlo bien era alto**: hacían falta más datasets de
+  `Standing` de cámaras distintas para no repetir el mismo problema con solo
+  2 instalaciones, y el trade-off con `Moving` mostraba que no era un ajuste
+  trivial. Mismo criterio que con el detector de objetos sostenidos (ver
+  "Bug de coordenadas..." arriba): cuando el costo de mantener/documentar
+  algo supera lo que aporta, se saca.
+
+`extract_omnifall_features.py` ya no extrae `Standing` (solo `StandUp` →
+`Getup`, que sigue aportando). `extract_gmdcsa24_features.py` y las 65
+muestras cacheadas de esta validación se borraron del repo — el dataset
+completo de GMDCSA-24 queda en `videos/GMDCSA-24/official/` (no versionado,
+igual que el resto de `videos/`) por si sirve más adelante para `vision/`
+(que documentaba el dataset de caídas completo como pendiente, ver
+`vision/README.md`), pero ya no se usa desde `vlm/`.
+
 ### Escalar la evaluación a un dataset externo
 
 `evaluate_activity.py`, `extract_clip_features.py` y `train_category_probe.py`
@@ -421,34 +488,40 @@ versiona por ser un artefacto derivado, igual que el resto de `models/`).
 Con el probe entrenado, `category` ya no sale de los prompts de texto — así
 que antes de seguir tocando prompts a ciegas se sacó una matriz de confusión
 por categoría (mismo split por participante de 5 seeds, embeddings
-cacheados, sin re-extraer nada) para ver si los errores tienen un patrón:
+cacheados, sin re-extraer nada) para ver si los errores tienen un patrón.
+Números medidos originalmente con `Standing` todavía en `COARSE_CATEGORIES`
+(ver sección anterior) y reproducidos después de sacarla — las 6 categorías
+que quedan tuvieron variaciones chicas (`ReadingScreen` +11pts, `Moving` y
+`Phone` +4pts, `Resting` -4pts, `EatingDrinkingMedication` -2pts, `Cooking`
+sin cambio), esperable al redistribuirse las decisiones que antes podían ir
+a `Standing`, no una mejora sistemática:
 
-| Real \\ Predicho | Cooking | EatingDrinkingMedication | Resting | ReadingScreen | Moving | Phone | Standing |
-|---|---|---|---|---|---|---|---|
-| Cooking | **89%** | 7% | 0% | 0% | 4% | 0% | 0% |
-| EatingDrinkingMedication | 11% | **56%** | 11% | 5% | 6% | 11% | 0% |
-| Resting | 1% | 10% | **63%** | 11% | 11% | 5% | 0% |
-| ReadingScreen | 2% | 15% | 9% | **63%** | 9% | 3% | 0% |
-| Moving | 8% | 7% | 5% | 6% | **64%** | 7% | 3% |
-| Phone | 2% | 14% | 3% | 2% | 16% | **63%** | 0% |
-| Standing | 0% | 0% | 0% | 0% | 3% | 0% | **97%** |
+| Real \\ Predicho | Cooking | EatingDrinkingMedication | Resting | ReadingScreen | Moving | Phone |
+|---|---|---|---|---|---|---|
+| Cooking | **89%** | 5% | 0% | 0% | 4% | 1% |
+| EatingDrinkingMedication | 9% | **54%** | 11% | 12% | 5% | 10% |
+| Resting | 1% | 6% | **59%** | 19% | 10% | 6% |
+| ReadingScreen | 1% | 10% | 9% | **74%** | 4% | 1% |
+| Moving | 7% | 7% | 4% | 7% | **68%** | 7% |
+| Phone | 6% | 9% | 3% | 6% | 9% | **67%** |
 
 Dos patrones, no ruido aleatorio:
 
 - **`EatingDrinkingMedication` no tiene un confusor dominante**: se reparte
-  casi parejo entre `Cooking`, `Resting` y `Phone` (11% cada uno). Descarta
-  la hipótesis de "un prompt le está robando la clase" — son varias
+  entre `Resting`, `ReadingScreen`, `Phone` y `Cooking` (9-12% cada una).
+  Descarta la hipótesis de "un prompt le está robando la clase" — son varias
   categorías distintas compitiendo, consistente con la limitación ya
   documentada (gesto de mano breve, embedding holístico). Prompts más
   específicos no resolverían esto porque `category` ya no depende de los
   prompts.
-- **`Moving` filtra hacia todas las categorías por igual** (5-8% cada una):
+- **`Moving` filtra hacia todas las categorías por igual** (4-7% cada una):
   agrupa `Sitdown`/`Getup`/`Enter`/`Leave`, que por definición atraviesan
   posturas de otras categorías a mitad de la transición. Es un límite de
   diseño de la categoría, no un error a corregir con prompts.
-- `Resting`↔`ReadingScreen` se confunden mutuamente (9-11%): ambas son
-  "sentado quieto", CLIP no siempre resuelve si hay libro/laptop en el
-  recorte.
+- `Resting`→`ReadingScreen` es la confusión más marcada de la tabla (19%):
+  ambas son "sentado quieto", CLIP no siempre resuelve si hay libro/laptop
+  en el recorte — el hand-crop ayuda menos acá porque el objeto (libro,
+  control remoto) es chico y a veces ni está en el recorte de manos.
 
 Como parte del mismo análisis se midió si la **agregación zero-shot**
 (descartada para `category` pero igual calculada en cada `classify()`, sin
@@ -457,14 +530,14 @@ acierta el probe según si el zero-shot coincide o no con su predicción?
 
 | | Videos | Accuracy del probe |
 |---|---|---|
-| Probe y zero-shot **coinciden** | 1090 | **74.1%** |
-| Probe y zero-shot **no coinciden** | 1153 | **57.8%** |
+| Probe y zero-shot **coinciden** | 1315 | **76.7%** |
+| Probe y zero-shot **no coinciden** | 1192 | **55.7%** |
 
-16 puntos de diferencia — suficiente para usarla como filtro de confianza
+21 puntos de diferencia — suficiente para usarla como filtro de confianza
 adicional en producción, donde no hay ground truth para saber si el probe
 acertó. Se generalizó el patrón que ya existía solo para
 `EatingDrinkingMedication` (`_EATING_CONFIRM_THRESHOLD`, ver
-"Clasificación de actividades (CLIP)" en `../runner/README.md`) a las 7
+"Clasificación de actividades (CLIP)" en `../runner/README.md`) a las 6
 categorías: si la categoría del probe y la del zero-shot no coinciden en la
 ventana, el evento se emite con `confirmed: false` en vez de afirmarse con
 seguridad, y el metadata guarda `zeroshot_category` siempre (coincida o no)

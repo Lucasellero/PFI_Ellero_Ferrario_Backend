@@ -10,12 +10,14 @@ de CAUCAFall (mismo trazado que un video de Toyota Smarthome: nombre de
 carpeta de actividad + subject → archivo .avi) y extrae frames dentro de la
 ventana [start, end] de cada segmento.
 
-Solo se extraen las clases de interés: `Standing` (parado inactivo, no
-cubierto por ninguna de las 31 clases de Toyota Smarthome) y `StandUp`
-(fusionada con `Getup`, mismo gesto de incorporarse). El resto de las 16
-clases de OmniFall (Walk, Fall, Fallen, Sitting, etc.) ya están cubiertas
-por Toyota Smarthome o por el detector geométrico de vision/, así que no
-aportan nada nuevo acá — ver vlm/README.md para el detalle completo.
+Solo se extrae la clase `StandUp` (fusionada con `Getup`, mismo gesto de
+incorporarse). El resto de las 16 clases de OmniFall (Walk, Fall, Fallen,
+Sitting, Standing, etc.) ya están cubiertas por Toyota Smarthome o por el
+detector geométrico de vision/, así que no aportan nada nuevo acá — ver
+vlm/README.md para el detalle completo. `Standing` (parado inactivo) se
+probó como categoría propia y se descartó: no generalizaba a una cámara
+distinta a la de estas muestras (0% de recall en GMDCSA-24, ver
+vlm/README.md, "Standing: se intentó y se descartó") — ya no se extrae.
 
 Uso:
     curl -sL https://huggingface.co/datasets/simplexsigil2/omnifall/resolve/main/labels/caucafall.csv \
@@ -54,12 +56,12 @@ FOLDER_OF_ACTIVITY = {
     'FallSitting': 'Fall sitting',
 }
 
-# label2id de OmniFall (ver LABELS.md): solo nos interesan estas dos.
-LABEL_ID_TO_NAME = {7: 'StandUp', 8: 'Standing'}
+# label2id de OmniFall (ver LABELS.md): solo nos interesa esta.
+LABEL_ID_TO_NAME = {7: 'StandUp'}
 # StandUp es el mismo gesto que la clase 'Getup' ya definida en
 # ACTIVITY_PROMPTS/COARSE_CATEGORIES (src/clip_classifier.py) — se etiqueta
 # así para reforzar esa clase en vez de crear una redundante.
-OUTPUT_LABEL = {'StandUp': 'Getup', 'Standing': 'Standing'}
+OUTPUT_LABEL = {'StandUp': 'Getup'}
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--csv', default=None, help='Default: vlm/caucafall_omnifall.csv')
