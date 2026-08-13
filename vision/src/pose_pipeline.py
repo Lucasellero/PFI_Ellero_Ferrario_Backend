@@ -82,6 +82,7 @@ IMMOBILITY_WINDOW_S = 180.0            # segundos de movimiento casi nulo => eve
 IMMOBILITY_MOVEMENT_THRESHOLD = 0.02   # desplazamiento normalizado de keypoints POR SEGUNDO (no por frame, ver _smoothed_displacement_rate) => "se está moviendo"
 IMMOBILITY_SAMPLE_WINDOW_S = 2.0       # ventana para promediar el desplazamiento: un solo frame ruidoso (dar vuelta una hoja) no debe resetear la cuenta
 IMMOBILITY_POSTURE_VOTE_N = 5          # cuántas clasificaciones de postura recientes se usan (mayoría) para decidir sentado/acostado al reportar
+IMMOBILITY_HISTORY_SECONDS = 15.0      # retención propia de _smoothed_displacement_rate, mayor a history_seconds (2.5, pensado para la velocidad de caída) — ver docstring de _smoothed_displacement_rate
 
 
 @dataclass
@@ -200,6 +201,9 @@ class FallImmobilityDetector:
         self._model.to(device)
         self._history: deque[PoseSample] = deque()
         self._history_seconds = history_seconds
+        # Historial propio para inmovilidad, separado de self._history (2.5s,
+        # dimensionado para la velocidad de caída) — ver _smoothed_displacement_rate.
+        self._immobility_history: deque[PoseSample] = deque()
         self._immobile_since: float | None = None
         self._immobility_reported = False
         self._posture_history: deque[str] = deque(maxlen=IMMOBILITY_POSTURE_VOTE_N)
@@ -228,6 +232,9 @@ class FallImmobilityDetector:
         sample = build_pose_sample(kpts, box, w, h, timestamp_s)
         self._history.append(sample)
         self._trim_history(sample.timestamp_s)
+        self._immobility_history.append(sample)
+        while self._immobility_history and sample.timestamp_s - self._immobility_history[0].timestamp_s > IMMOBILITY_HISTORY_SECONDS:
+            self._immobility_history.popleft()
         self._heights_history.append((sample.timestamp_s, sample.bbox_height_frac))
         while self._heights_history and sample.timestamp_s - self._heights_history[0][0] > FALL_BASELINE_WINDOW_S + FALL_CONFIRM_WINDOW_S:
             self._heights_history.popleft()
@@ -372,11 +379,24 @@ class FallImmobilityDetector:
         real transcurrido (mismo criterio que _vertical_velocity: sin esto, el
         frame dropping en tiempo real de `runner/` — ver runner/README.md —
         cambiaría el desplazamiento medido según cuántos frames se saltean,
-        no según cuánto se mueve la persona)."""
-        if not self._history:
+        no según cuánto se mueve la persona).
+
+        Usa `self._immobility_history` (retención `IMMOBILITY_HISTORY_SECONDS`
+        = 15s), NO `self._history` (2.5s, dimensionado para `_vertical_velocity`
+        de caída). Bug encontrado el 2026-08-13 validando la rama `acostado`
+        con datos reales (ver vision/README.md): con `self._history` (2.5s),
+        cualquier hueco de detección más largo que eso —normal en video
+        doméstico real: cambios de ángulo, oclusión parcial, blur— vacía el
+        historial, `_smoothed_displacement_rate` devuelve None,
+        `_track_immobility` lo trata como "moviéndose" y resetea el contador
+        de inmovilidad. En un clip real y limpio (sin oclusión) donde la
+        persona se quedó quieta 213s medidos offline, el detector end-to-end
+        nunca disparó — el motivo no era que la persona se moviera, era que
+        un solo hueco de detección de ~4s (nada anómalo) volaba el contador."""
+        if not self._immobility_history:
             return None
         target_t = sample.timestamp_s - IMMOBILITY_SAMPLE_WINDOW_S
-        ref = min(self._history, key=lambda s: abs(s.timestamp_s - target_t))
+        ref = min(self._immobility_history, key=lambda s: abs(s.timestamp_s - target_t))
         dt = sample.timestamp_s - ref.timestamp_s
         if dt < IMMOBILITY_SAMPLE_WINDOW_S / 2:
             return None

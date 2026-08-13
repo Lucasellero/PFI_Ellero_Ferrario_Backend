@@ -27,6 +27,10 @@ vision/fall_calibration.csv
 vision/immobility_calibration.csv
 vision/fall_descriptors_cache.pkl
 vision/recalibrate_results.pkl
+vision/sweep_immobility_soft_results.pkl
+vision/calibrate_immobility_core_raw.pkl
+vision/diagnose_series_*.pkl
+vision/diagnose_acostado_*.pkl
 vision/fall_confirmation_scores.csv
 vision/fall_confirmation_onnx_check.csv
 vision/fall_confirmation_embeddings.npz

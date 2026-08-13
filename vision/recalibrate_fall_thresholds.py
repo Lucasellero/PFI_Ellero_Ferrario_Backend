@@ -83,6 +83,7 @@ def simulate(
     immobility_confirm_s: float | None = None,
     immobility_hip_thresh: float = 0.05,
     immobility_height_ratio: float = 0.15,
+    immobility_soft: bool = False,
 ) -> list[float]:
     """Reproduce la lógica de dos fases de FallImmobilityDetector._detect_fall
     sobre descriptores ya calculados. Devuelve los timestamps de los eventos 'fall'.
@@ -120,13 +121,27 @@ def simulate(
     siguió" de "se cayó y no se levantó" sin exigir nada en el instante.
     immobility_confirm_s=None desactiva esta fase (comportamiento viejo,
     confirma en el instante).
+
+    immobility_soft=True cambia el criterio de cancelación dentro de esa
+    ventana: en vez de cancelar apenas UN frame se desvía más que
+    immobility_hip_thresh/immobility_height_ratio respecto al momento del
+    candidato ("strict"), acumula el desvío de cada frame de la ventana y al
+    cerrarla exige que el PROMEDIO esté por debajo del umbral. La motivación
+    (ver vision/README.md, 2026-08-12): en modo strict el recall se derrumbó
+    a 27.8% con 2s de ventana porque la pose inmediatamente después de una
+    caída real es ruidosa (la persona se acomoda, jitter de keypoints) y un
+    solo frame ruidoso cancelaba el candidato entero. Promediar tolera ese
+    ruido puntual sin dejar de exigir quietud sostenida: un movimiento real
+    (la persona se levanta y se va) sigue subiendo el promedio porque afecta
+    a todos los frames posteriores al movimiento, no a uno solo.
     """
     history: list[tuple[float, float, float]] = []  # (t, hip_y, bbox_height_frac)
     heights_history: list[tuple[float, float]] = []  # (t, bbox_height_frac), sin trimear a 1.5s
     last_velocity_spike_t: float | None = None
     baseline_height: float | None = None
     cooldown_until = float("-inf")
-    candidate: tuple[float, float, float] | None = None  # (t, hip_y, bbox_height_frac) del momento del candidato
+    # (t, hip_y, bbox_height_frac, suma_desvio_hip, suma_desvio_height, n_frames) del candidato abierto
+    candidate: tuple[float, float, float, float, float, int] | None = None
     events = []
 
     for t, hip_y, bbox_height_frac, aspect_ratio in descriptors:
@@ -138,20 +153,38 @@ def simulate(
         # Candidato pendiente de confirmación por inmovilidad: chequear ANTES
         # de evaluar un nuevo pico/postura, así un movimiento real lo cancela.
         if candidate is not None:
-            cand_t, cand_hip_y, cand_height = candidate
-            moved = (
-                abs(hip_y - cand_hip_y) > immobility_hip_thresh
-                or abs(bbox_height_frac - cand_height) > cand_height * immobility_height_ratio
-            )
-            if moved:
-                candidate = None
-            elif t - cand_t >= immobility_confirm_s:
-                events.append(cand_t)
-                cooldown_until = t + FALL_COOLDOWN_S
-                candidate = None
-                last_velocity_spike_t = None
-                baseline_height = None
-                continue  # confirmado: no re-evaluar pico/postura en el mismo frame
+            cand_t, cand_hip_y, cand_height, sum_hip_dev, sum_height_dev, n = candidate
+            hip_dev = abs(hip_y - cand_hip_y)
+            height_dev = abs(bbox_height_frac - cand_height) / cand_height if cand_height > 1e-6 else 0.0
+
+            if immobility_soft:
+                sum_hip_dev += hip_dev
+                sum_height_dev += height_dev
+                n += 1
+                if t - cand_t >= immobility_confirm_s:
+                    avg_hip_dev = sum_hip_dev / n
+                    avg_height_dev = sum_height_dev / n
+                    confirmed = avg_hip_dev <= immobility_hip_thresh and avg_height_dev <= immobility_height_ratio
+                    candidate = None
+                    if confirmed:
+                        events.append(cand_t)
+                        cooldown_until = t + FALL_COOLDOWN_S
+                        last_velocity_spike_t = None
+                        baseline_height = None
+                        continue  # confirmado: no re-evaluar pico/postura en el mismo frame
+                else:
+                    candidate = (cand_t, cand_hip_y, cand_height, sum_hip_dev, sum_height_dev, n)
+            else:
+                moved = hip_dev > immobility_hip_thresh or height_dev > immobility_height_ratio
+                if moved:
+                    candidate = None
+                elif t - cand_t >= immobility_confirm_s:
+                    events.append(cand_t)
+                    cooldown_until = t + FALL_COOLDOWN_S
+                    candidate = None
+                    last_velocity_spike_t = None
+                    baseline_height = None
+                    continue  # confirmado: no re-evaluar pico/postura en el mismo frame
 
         if t >= cooldown_until and candidate is None:
             target_t = t - FALL_VELOCITY_WINDOW_S
@@ -179,7 +212,7 @@ def simulate(
             ):
                 last_velocity_spike_t = None
                 if immobility_confirm_s is not None:
-                    candidate = (t, hip_y, bbox_height_frac)
+                    candidate = (t, hip_y, bbox_height_frac, 0.0, 0.0, 0)
                     continue
                 baseline_height = None
                 cooldown_until = t + FALL_COOLDOWN_S
@@ -196,6 +229,9 @@ def score(
     height_drop_ratio: float | None = None,
     floor_hip_y: float | None = None,
     immobility_confirm_s: float | None = None,
+    immobility_soft: bool = False,
+    immobility_hip_thresh: float = 0.05,
+    immobility_height_ratio: float = 0.15,
 ) -> tuple[int, int, int]:
     """Devuelve (true_positives, false_negatives, false_positives) sobre todos los casos."""
     tp = fn = fp = 0
@@ -205,6 +241,9 @@ def score(
         event_times = simulate(
             cache[case["video"]], velocity_threshold, aspect_threshold,
             height_drop_ratio, floor_hip_y, immobility_confirm_s,
+            immobility_hip_thresh=immobility_hip_thresh,
+            immobility_height_ratio=immobility_height_ratio,
+            immobility_soft=immobility_soft,
         )
 
         if case["fall_segments"]:

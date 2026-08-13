@@ -382,6 +382,253 @@ Esto quedó documentado como el gap más urgente a resolver en `vision/` — ver
 la sección siguiente, "Recalibración con el setup de Toyota Smarthome como
 contraste", para el proceso completo que lo cerró.
 
+**Actualización (2026-08-13): revalidado con el filtro CLIP ya integrado —
+el "secuestro" por falsos positivos de caída prácticamente desaparece, pero
+eso no alcanzó para que la inmovilidad se disparara en la mayoría de estos
+4 clips.** `vision/validate_immobility_with_clip.py` (nuevo) corre el
+pipeline completo (heurística geométrica + confirmación CLIP + tracking de
+inmovilidad) sobre los 4 clips completos de `videos/ToyotaSmarthome_FP/`
+(1100-1591s cada uno, no solo el sub-tramo corto de la tabla de arriba —
+esos límites exactos no habían quedado guardados en ningún script
+versionado, así que esta corrida no es una reproducción exacta de la
+original, es una nueva medición más completa sobre el clip entero):
+
+| Clip | Caídas geométricas crudas | Sobreviven CLIP | Inmovilidad |
+|---|---|---|---|
+| `P07T10C02` | 3 | 0 | disparó @238.3s, `sentado`/`baja` (correcto) |
+| `P09T05C05` | 82 | 0 | nunca se disparó |
+| `P07T05C05` | 124 | 0 | nunca se disparó |
+| `P09T06C05` | 61 | 1 | nunca se disparó |
+
+**El filtro CLIP elimina 269 de 270 caídas geométricas falsas (99.6%) sobre
+~80 minutos de video doméstico continuo real** — el mismo orden de magnitud
+que ya mostró el 30 FP/500 eventos out-of-fold (ver arriba), pero acá medido
+end-to-end sobre clips que antes disparaban decenas o cientos de veces cada
+uno. La única que sobrevive (`P09T06C05` @150.52s, margin 0.182) es
+holgadamente confirmada por el modelo — candidata a revisar el frame en
+persona en algún momento, pero es 1 evento, no un patrón.
+
+Lo que **no** se resolvió: la inmovilidad solo se disparó correctamente en
+1 de los 4 clips. No es evidencia de que el fix no sirva — es evidencia de
+que la hipótesis original ("el fall FP tapa la inmovilidad") no explica el
+comportamiento de estos 3 clips en particular: si la persona nunca se queda
+quieta 180s seguidos en el clip COMPLETO (a diferencia del tramo corto y
+aislado con el que se armó la tabla de arriba), suprimir los falsos
+positivos de caída no la va a hacer quedarse quieta — el gap no era el
+"secuestro", era que estos clips (elegidos justamente como negativos duros
+por tener mucho movimiento ambiguo) tienen más actividad real de la que
+tenía el tramo corto original. Sin los límites exactos de esos tramos no se
+puede aislar si el disparo tardío/ausente es por eso o por otra causa
+distinta — queda documentado como el próximo paso si se retoma esto, no
+como cerrado.
+
+**Diagnóstico de por qué (2026-08-13): se probó restringir el desplazamiento
+a hombros+cadera en vez de los 17 keypoints, y el aparente arreglo se
+deshace al retunear el umbral correctamente — explorado, sin ganancia
+neta.** La hipótesis (planteada por el usuario del proyecto): una persona
+sentada durante mucho tiempo no está 100% quieta — mueve las manos (comer,
+usar el celular, gesticular) sin cambiar de postura — y
+`_smoothed_displacement_rate` promedia sobre los 17 keypoints COCO,
+incluyendo manos/codos, así que ese movimiento normal infla el
+desplazamiento medido y nunca deja acumular los 180s de la ventana.
+
+`vision/diagnose_immobility_displacement.py` (nuevo) reprodujo, frame a
+frame y a framerate nativo (no subsampleado — una primera pasada a ~2fps
+dio números que no se sostuvieron al pasar a framerate completo, mismo tipo
+de error de resolución temporal que otros hallazgos de esta sesión) la
+racha continua más larga de "quietud" en los 3 clips que nunca dispararon,
+comparando los 17 keypoints ("full", el método actual) contra solo
+hombros+cadera ("core", índices COCO 5,6,11,12):
+
+| Clip | racha `full` | racha `core` (umbral 0.02) |
+|---|---|---|
+| `P09T05C05` | 80s | 82s (sin cambio real) |
+| `P07T05C05` | 79s | 79s (sin cambio) |
+| `P09T06C05` | 145s | **210s** (cruza los 180s) |
+
+Con el umbral actual (0.02, calibrado para `full`), restringir a `core`
+parecía arreglar 1 de los 3 casos. Pero 0.02 nunca se calibró para `core` —
+se reusó tal cual. `vision/calibrate_immobility_core.py` (nuevo) repitió la
+calibración original (10 tramos "quieto" + 9 "moviendo" reales de Toyota
+Smarthome untrimmed, mismo dataset de `calibrate_immobility.py`) calculando
+`core` en paralelo a `full`:
+
+| | mediana quieto | mediana moviendo | ratio separación |
+|---|---|---|---|
+| full | 0.0056 | 0.0606 | 10.8x |
+| core | 0.0036 | 0.0550 | 15.2x |
+
+`core` separa mejor en términos relativos (15.2x vs 10.8x), pero ambas
+distribuciones están desplazadas hacia abajo — el umbral que balancea error
+en "quieto" vs. error en "moviendo" para `core` no es 0.02, es **~0.014**
+(7.1%/7.7% de error, comparable a como está calibrado `full` hoy). Repitiendo
+la racha de `P09T06C05` con ese umbral bien calibrado (no el reusado): **baja
+de 210s a 161s — vuelve a quedar por debajo de los 180s.** La mejora
+observada con 0.02 no venía de mirar menos keypoints, venía de estar usando
+sin querer un umbral más laxo para esa variante — al retunear correctamente,
+la ganancia desaparece.
+
+**Conclusión: no hay una combinación (subconjunto de keypoints, umbral) que
+arregle este caso sin resignar precisión en otro lado — es un trade-off
+genuino, no una mejora limpia.** De los 3 clips, solo uno estaba cerca del
+límite (145-161s vs. 180s) con cualquiera de los dos métodos; los otros dos
+(`P09T05C05` 80-82s, `P07T05C05` 79s) ni se acercan, sea cual sea el
+criterio — ahí la persona genuinamente mueve el cuerpo entero cada
+poco más de un minuto, no es un problema de qué keypoints mirar. No se
+integró ningún cambio a producción; queda explorado y documentado, no
+resuelto — alargar `IMMOBILITY_SAMPLE_WINDOW_S` (hoy 2s) para diluir más los
+gestos de mano es una idea alternativa no probada, con el mismo riesgo de
+trade-off (también diluiría el arranque de un movimiento real).
+
+**Datos reales nuevos para la rama `acostado` (2026-08-13): se recuperó la
+anotación untrimmed oficial y se encontraron 214 segmentos `Lay_down` largos
+— la primera validación de esta rama con minutos reales de "acostado
+quieto", no solo segundos.** Hasta ahora la rama de severidad "alta"
+(posible caída no detectada) no tenía ninguna validación de duración real —
+solo un sanity-check de postura sobre los últimos 2s de clips de caída (ver
+arriba), muy lejos de los 180s de la ventana. `calibrate_immobility.py`
+había usado el dataset untrimmed de Toyota Smarthome para el caso
+sedentario, pero la anotación cruda (`smarthome_CS_51.json`, tuplas
+`[label, start_frame, end_frame]` por video) no había quedado guardada en
+ningún archivo del proyecto — se recuperó del repo oficial
+([dairui01/Toyota_Smarthome](https://github.com/dairui01/Toyota_Smarthome/blob/main/pipline/data/smarthome_CS_51.json),
+mapeo de labels en `pipline/data/Action_list` del mismo repo: `25=Sit_down`,
+`28=Get_up`, `32=Lay_down`).
+
+Buscando `Lay_down -> próximo evento anotado` (mismo criterio que
+`Sit_down -> Get_up` para el caso sedentario) entre los 536 videos ya
+descargados: **214 segmentos**, varios de varios minutos —
+`P25T05C05`/`P25T05C04` (misma escena real, 2 cámaras sincronizadas) con
+~519s/518s hasta `Get_up`, `P18T03C04` con 277s. Se revisaron frames de los
+candidatos más largos a ojo: cuerpo visible, sin la oclusión por manta que
+arruinó el intento anterior con clips `Lay_down` cortos (ver arriba) — la
+diferencia es que esos eran clips *trimmed* (1.7-7.5s, la acción de
+acostarse en sí) mientras que estos son gaps *untrimmed* (el tiempo que la
+persona se queda acostada después). **Matiz importante:** son personas
+acostadas en un sillón, no en el piso después de una caída — no es el
+escenario clínico exacto del informe (Sec 2.1.2), pero sí es la primera
+evidencia real de que el mecanismo (clasificación de postura +
+desplazamiento) se sostiene —o no— durante minutos reales, no solo segundos.
+
+`vision/validate_immobility_acostado.py` (nuevo) corrió el pipeline
+completo (heurística geométrica + confirmación CLIP + tracking de
+inmovilidad) frame a frame, a framerate nativo, sobre los 3 casos más
+largos, empezando 3s antes del `Lay_down` anotado para capturar la
+transición completa:
+
+| Clip | Ventana | Caídas geométricas crudas | Sobreviven CLIP | Inmovilidad |
+|---|---|---|---|---|
+| `P25T05C05` | 527s | 7 (t=1-283s) | 1 | nunca se disparó |
+| `P25T05C04` (misma escena, otra cámara) | 527s | 3 (t=4-12s) | **3 (todas)** | nunca se disparó |
+| `P18T03C04` | 279s | 1 (t=2.3s) | 0 | nunca se disparó |
+
+Tres resultados, ninguno el esperado:
+
+1. **Las caídas geométricas falsas se agrupan en la transición de
+   acostarse** (los primeros ~12s de la ventana en los 3 casos) — el acto de
+   acostarse en sí produce el patrón geométrico de dos fases (velocidad +
+   postura ensanchada) que dispara el heurístico. Ya sabíamos que sentarse
+   podía disparar esto (ver "Recalibración..." abajo); acostarse en un
+   sillón hace lo mismo.
+2. **Hallazgo nuevo, no relacionado con inmovilidad pero real: el filtro
+   CLIP fue inconsistente entre dos cámaras sincronizadas del MISMO evento.**
+   `P25T05C05` y `P25T05C04` son la misma persona acostándose en el mismo
+   sillón al mismo tiempo. En una vista de cámara, CLIP filtró 6 de 7 caídas
+   falsas. En la otra vista del mismo evento real, **las 3 sobrevivieron**
+   (margin 0.189-0.435, confirmadas con margen cómodo, no al límite). No se
+   investigó la causa (ángulo, recorte de persona, iluminación) — queda como
+   gap de robustez conocido: la validación de CLIP hecha hasta ahora
+   (84.8% recall/30 FP, ver arriba) es sobre eventos ya recortados de los
+   datasets de entrenamiento/evaluación, no sobre variación de cámara
+   explícita.
+3. **La inmovilidad NO se disparó en ninguno de los 3 casos**, pese a ser
+   ventanas de 279-527s reales de "acostado" anotado. Diagnosticado a
+   fondo (ver siguiente sección): la causa NO fue la misma que en el caso
+   sedentario (mover manos/cabeza) — fue un bug real de código (ya
+   corregido) más un problema de detección más profundo que ese bug no
+   alcanza a tapar.
+
+**Diagnóstico y fix (mismo día): bug real encontrado en `_smoothed_displacement_rate`
+(corregido), pero el bloqueante de fondo es que YOLO11n-pose no detecta bien
+a alguien acostado en un sillón visto desde cámara ancha/elevada — no es un
+problema de código, es un límite del modelo.**
+
+Repitiendo el diagnóstico full-vs-core (`diagnose_immobility_acostado.py`,
+nuevo, mismo método que `diagnose_immobility_displacement.py`) sobre estos 3
+clips: `P25T05C05`/`P25T05C04` muestran baja detección explicada por la
+manta (revisado a ojo con capturas a distintos tiempos: la persona ya está
+tapada a los 30s de acostarse y se queda así el resto de la ventana — mismo
+patrón ya documentado arriba, no es nuevo). Pero `P18T03C04` —confirmado
+SIN manta, cuerpo visible en capturas a los 10s/60s/120s/180s/250s— dio una
+racha offline de **213s de quietud** (por encima de los 180s), y sin
+embargo el detector end-to-end real nunca disparó. Esa contradicción llevó
+a un bug real:
+
+`self._history` (la ventana de 2.5s usada por `_smoothed_displacement_rate`
+para inmovilidad) está dimensionada para `_vertical_velocity` de caída, que
+solo necesita 0.4s de lookback. Pero `IMMOBILITY_SAMPLE_WINDOW_S` es 2.0s —
+casi todo ese presupuesto. Cualquier hueco de detección más largo que 2.5s
+(nada anómalo en video doméstico real: cambio de ángulo, blur, oclusión
+parcial breve) vacía `self._history`, `_smoothed_displacement_rate` devuelve
+`None`, y `_track_immobility` lo trata como "moviéndose" — resetea el
+contador. **Corregido:** se separó un historial propio para inmovilidad
+(`self._immobility_history`, constante nueva `IMMOBILITY_HISTORY_SECONDS =
+15.0`, `vision/src/pose_pipeline.py`), independiente del de caída, que
+tolera huecos de hasta 15s sin resetear el contador de quietud.
+
+**Validado sin regresión:** se re-corrió `validate_immobility_with_clip.py`
+(los 4 clips sedentarios de `ToyotaSmarthome_FP`) con el fix — resultado
+IDÉNTICO al de antes, `P07T10C02` dispara exactamente en el mismo segundo
+(238.3s) y los otros 3 siguen sin disparar. Esperable y bueno: esos clips
+tienen detección casi continua (99.6-100%, ya medido), así que el fix no
+tenía nada que corregir ahí — confirma que no rompió nada donde ya
+funcionaba.
+
+**Pero el fix NO alcanzó para `P18T03C04`.** Revisando los huecos reales de
+detección en ese clip: no son huecos breves — son **4 huecos de 17 a 103s**
+cada uno, cubriendo casi toda la ventana de 279s. 15s de tolerancia no
+alcanza para huecos de esa magnitud (ni tendría sentido subir la tolerancia
+tanto: un hueco de 100s podría perfectamente ser alguien que se levantó y
+volvió). Diagnosticando por qué hay huecos tan grandes pese a que el cuerpo
+está visible a ojo en TODOS los frames revisados: se corrió YOLO sin el
+filtro de confianza sobre una muestra del clip —
+`vision/diagnose_detection_lying.py` (nuevo)— y **94.5% de los frames no
+tienen NINGUNA detección de persona**, ni siquiera de baja confianza (no es
+un problema de `MIN_KEYPOINT_CONFIDENCE`, es que YOLO no encuentra el
+bounding box). No es oclusión (ya descartada a ojo) — es que `yolo11n-pose`
+(la variante liviana elegida para poder correr en la Raspberry Pi) no
+reconoce bien a una persona acostada en un sillón vista desde una cámara
+ancha, elevada y lejos, donde ocupa una fracción chica del frame con un
+bounding box horizontal poco común en los datos de entrenamiento típicos de
+modelos de pose (mayoría personas paradas/caminando). Contraste: el
+sanity-check de la rama `acostado` sobre clips de CAÍDA real (arriba) dio
+99.6-100% de detección — ahí la persona cae al piso, más cerca de cámara,
+con el cuerpo extendido de forma más prominente; acá es una persona en
+reposo normal en un mueble, lejos, en una cámara de vigilancia de ambiente
+completo.
+
+**Conclusión: el fix de historial es real, correcto, y queda integrado
+(sin regresión, corrige un bug genuino) — pero no resuelve el caso que lo
+motivó.** El bloqueante de fondo para la rama `acostado` no es una cuestión
+de umbral, ventana de suavizado, ni ahora tampoco de historial: es que el
+modelo de pose liviano no detecta confiablemente a una persona en reposo en
+un mueble desde una cámara de ambiente completo. Mejorar esto necesitaría
+un modelo de pose más grande (yolo11s/m-pose en vez de nano) — con el
+costo de cómputo que eso implica en una Raspberry Pi, fuera de alcance para
+resolver en esta sesión — o repensar la estrategia de detección para esta
+situación específica (ej. no depender de keypoints completos para
+"¿hay alguien ahí, quieto?", bastaría con la presencia/tamaño del bounding
+box aunque la confianza de keypoints individuales sea baja).
+
+No se integró ningún cambio de umbrales/keypoints a producción — solo el
+fix de historial, que es una corrección de bug, no un ajuste de
+calibración. Queda documentado como la primera evidencia real (aunque
+parcial: sillón, no piso) de que la rama `acostado` tiene un problema más
+profundo que la rama `sentado` (que sí es "la persona se mueve", medido y
+confirmado arriba) — acá el problema es anterior, es de detección, no de
+movimiento. Más el hallazgo aparte sobre robustez de CLIP entre cámaras que
+no se había visto antes.
+
 ### Recalibración con el setup de Toyota Smarthome como contraste (resuelto con un filtro de CLIP, no con umbrales)
 
 **Paso 1 — sumar los 4 clips como contraste y re-correr el grid search.** Se
@@ -703,6 +950,67 @@ decisión pendiente para una sesión con más calma, no a esta hora. Si se
 integra, evaluar contra el zero-shot con el mismo conjunto de evaluación
 (actualmente no son directamente comparables en FP: el zero-shot se midió
 sobre 183 clips, el probe sobre 292 con datasets adicionales).
+
+**Actualización (2026-08-13): comparación justa hecha, probe integrado a
+producción.** `vision/compare_confirmation_filters.py` (nuevo) resuelve el
+pendiente de arriba: recalcula el margen zero-shot sobre exactamente el
+mismo cache de 509 eventos/292 clips que usó el probe (los embeddings de
+imagen ya estaban cacheados en `fall_confirmation_embeddings.npz`, no hizo
+falta re-extraer nada), y compara ambos con el mismo criterio de recall/FP.
+Zero-shot sobre este conjunto: 82.3% recall, 116 FP. Probe (out-of-fold):
+**84.8% recall, 30 FP**. El probe domina en los dos ejes a la vez —no hay
+trade-off que resolver según el criterio de "menos FP por sobre más
+recall"— así que se integró directo: `FallConfirmationClassifier`
+(`vlm/src/fall_confirmation.py`) ahora usa el probe si encuentra
+`fall_confirmation_probe.npz` en `vlm/models/`, y cae al zero-shot
+(`fall_confirmation_features.npy`) si no está presente (p. ej. una
+instalación que nunca corrió `train_fall_confirmation_probe.py`). No
+requirió cambios en `runner/camera_worker.py`: la interfaz `confirm(crop) ->
+(bool, margin)` se mantuvo igual, solo cambió qué modelo calcula el margen
+por dentro.
+
+Pendiente real ahora: `vlm/models/` está en `.gitignore` (se regenera en la
+máquina de desarrollo, no se versiona) — antes de desplegar a la Raspberry
+Pi hay que asegurarse de copiar `fall_confirmation_probe.npz` junto con los
+`.onnx`, no solo lo que genera `export_onnx.py` (que solo produce el
+`.npy` del zero-shot, el probe se genera aparte con
+`train_fall_confirmation_probe.py`).
+
+**Actualización (2026-08-13): se probó la versión "soft" de inmovilidad
+sostenida (punto 2 de la lista de arriba) — también descartada, peor que la
+versión strict ya rechazada.** La idea pendiente era: en vez de cancelar el
+candidato apenas UN frame se mueve más que el umbral ("strict", ver arriba,
+2s de ventana → 27.8% recall), promediar el desvío de hip_y/altura de bbox
+en TODA la ventana antes de decidir, para tolerar el jitter puntual de
+keypoints justo después de una caída real sin dejar de exigir quietud
+sostenida. Implementado en `simulate()` (`immobility_soft=True`,
+`vision/recalibrate_fall_thresholds.py`) y barrido en
+`vision/sweep_immobility_soft.py` (nuevo) sobre ventanas de 0.5-3.0s y
+combinaciones de `immobility_hip_thresh`/`immobility_height_ratio`, todo
+sobre el mismo cache de 292 clips.
+
+Resultado: el promediado es **peor** que el strict a ventana equivalente, no
+mejor. Ej. a 1.0s: strict daba 53.2% recall/93 FP, soft da 53.8% recall/
+**141 FP** — prácticamente el mismo recall pero 52% más falsos positivos.
+Ningún punto del frente de Pareto (17 combos no dominados) se acerca al
+baseline sin inmovilidad (86.1% recall/325 FP). La explicación: promediar
+no solo tolera el jitter post-caída (el efecto buscado), también tolera
+mejor el movimiento real dentro de la ventana si el resto de los frames se
+quedan quietos — exactamente lo que pasa seguido en video doméstico
+continuo (alguien se agacha, se mueve un poco, se vuelve a quedar quieto),
+así que termina confirmando más falsos positivos sin ganar recall real.
+
+**Conclusión sobre el punto 2: la confirmación por inmovilidad sostenida
+—tanto strict como soft— queda cerrada, no hay una versión de esta idea que
+mejore el trade-off.** El problema de fondo no es el criterio de
+cancelación (instantáneo vs. promediado) sino que la señal geométrica
+post-caída es intrínsecamente ambigua entre "se cayó y no se levantó" y
+"se movió normalmente" con solo hip_y/bbox_height_frac — para distinguirlas
+hace falta ver la escena, que es lo que ya está resolviendo mejor el punto 1
+(CLIP, ver arriba, 84.8% recall/30 FP, ya integrado a producción). No queda
+ningún eje pendiente de la lista original del 2026-08-11: los dos puntos se
+probaron a fondo, uno se integró (CLIP) y el otro se cierra definitivamente
+(inmovilidad, ambas variantes).
 
 ## Entrada
 
