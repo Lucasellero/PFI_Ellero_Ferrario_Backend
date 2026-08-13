@@ -42,8 +42,11 @@ y evaluación" abajo) y el metadata incluye además `fine_label` (la clase
 fina ganadora), `confidence` (de la categoría, promedio de la ventana),
 `samples` (cuántos frames se promediaron), `ongoing` (`true` si es el
 heartbeat de una actividad que continúa, no un cambio), `scores`
-(distribución sobre las 15 clases finas, incluida `Background`) y
-`category_scores` (distribución agregada por categoría).
+(distribución sobre las 15 clases finas, incluida `Background`),
+`category_scores` (distribución agregada por categoría) y
+`zeroshot_category` (la categoría según la agregación zero-shot, calculada en
+paralelo al probe como doble check — ver "Doble check probe/zero-shot" en
+`../runner/README.md`).
 
 Los eventos se persisten vía `../events/store.py`, igual que en `vision/`.
 
@@ -412,6 +415,62 @@ git (son de cada desarrollador), así que los resultados de esta sección no
 son reproducibles solo con lo que hay en el repo — sí lo son los scripts y
 los pesos entrenados (`models/category_probe.npz`, aunque tampoco se
 versiona por ser un artefacto derivado, igual que el resto de `models/`).
+
+### Matriz de confusión del probe y doble check probe/zero-shot
+
+Con el probe entrenado, `category` ya no sale de los prompts de texto — así
+que antes de seguir tocando prompts a ciegas se sacó una matriz de confusión
+por categoría (mismo split por participante de 5 seeds, embeddings
+cacheados, sin re-extraer nada) para ver si los errores tienen un patrón:
+
+| Real \\ Predicho | Cooking | EatingDrinkingMedication | Resting | ReadingScreen | Moving | Phone | Standing |
+|---|---|---|---|---|---|---|---|
+| Cooking | **89%** | 7% | 0% | 0% | 4% | 0% | 0% |
+| EatingDrinkingMedication | 11% | **56%** | 11% | 5% | 6% | 11% | 0% |
+| Resting | 1% | 10% | **63%** | 11% | 11% | 5% | 0% |
+| ReadingScreen | 2% | 15% | 9% | **63%** | 9% | 3% | 0% |
+| Moving | 8% | 7% | 5% | 6% | **64%** | 7% | 3% |
+| Phone | 2% | 14% | 3% | 2% | 16% | **63%** | 0% |
+| Standing | 0% | 0% | 0% | 0% | 3% | 0% | **97%** |
+
+Dos patrones, no ruido aleatorio:
+
+- **`EatingDrinkingMedication` no tiene un confusor dominante**: se reparte
+  casi parejo entre `Cooking`, `Resting` y `Phone` (11% cada uno). Descarta
+  la hipótesis de "un prompt le está robando la clase" — son varias
+  categorías distintas compitiendo, consistente con la limitación ya
+  documentada (gesto de mano breve, embedding holístico). Prompts más
+  específicos no resolverían esto porque `category` ya no depende de los
+  prompts.
+- **`Moving` filtra hacia todas las categorías por igual** (5-8% cada una):
+  agrupa `Sitdown`/`Getup`/`Enter`/`Leave`, que por definición atraviesan
+  posturas de otras categorías a mitad de la transición. Es un límite de
+  diseño de la categoría, no un error a corregir con prompts.
+- `Resting`↔`ReadingScreen` se confunden mutuamente (9-11%): ambas son
+  "sentado quieto", CLIP no siempre resuelve si hay libro/laptop en el
+  recorte.
+
+Como parte del mismo análisis se midió si la **agregación zero-shot**
+(descartada para `category` pero igual calculada en cada `classify()`, sin
+costo extra) sirve como señal de confianza independiente: por video, ¿cuánto
+acierta el probe según si el zero-shot coincide o no con su predicción?
+
+| | Videos | Accuracy del probe |
+|---|---|---|
+| Probe y zero-shot **coinciden** | 1090 | **74.1%** |
+| Probe y zero-shot **no coinciden** | 1153 | **57.8%** |
+
+16 puntos de diferencia — suficiente para usarla como filtro de confianza
+adicional en producción, donde no hay ground truth para saber si el probe
+acertó. Se generalizó el patrón que ya existía solo para
+`EatingDrinkingMedication` (`_EATING_CONFIRM_THRESHOLD`, ver
+"Clasificación de actividades (CLIP)" en `../runner/README.md`) a las 7
+categorías: si la categoría del probe y la del zero-shot no coinciden en la
+ventana, el evento se emite con `confirmed: false` en vez de afirmarse con
+seguridad, y el metadata guarda `zeroshot_category` siempre (coincida o no)
+para poder auditar desacuerdos analizando eventos ya guardados, sin
+reprocesar el video — pensado para cuando se empiece a trabajar con video
+real sin ground truth.
 
 ## Confirmación de caídas (`src/fall_confirmation.py`)
 

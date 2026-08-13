@@ -488,4 +488,9 @@ class ClipActivityClassifier:
             "category": top_category,
             "category_confidence": category_scores[top_category],
             "category_scores": category_scores,
+            # Categoría por agregación zero-shot, calculada siempre (aunque
+            # se use el probe para 'category') — permite un doble check
+            # barato entre dos señales independientes del mismo embedding,
+            # ver "Doble check probe/zero-shot" en runner/README.md.
+            "zeroshot_category_scores": zeroshot_category_scores,
         }

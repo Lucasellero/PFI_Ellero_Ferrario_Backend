@@ -104,6 +104,7 @@ class CameraWorker(threading.Thread):
         self._clip_sampling = False
         self._clip_scores: list[dict] = []
         self._clip_cat_scores: list[dict] = []
+        self._clip_zs_cat_scores: list[dict] = []
         self._clip_skipped = 0
         self._clip_next_window_ts = 0.0
         self._clip_last_sample_ts = float("-inf")
@@ -221,6 +222,7 @@ class CameraWorker(threading.Thread):
             self._clip_sampling = True
             self._clip_scores = []
             self._clip_cat_scores = []
+            self._clip_zs_cat_scores = []
             self._clip_skipped = 0
             self._clip_last_sample_ts = float("-inf")
             self._clip_next_window_ts = ts + self._clip_interval
@@ -238,6 +240,7 @@ class CameraWorker(threading.Thread):
             result = self._clip.classify(crop_to_person(frame.image, box), hand_crop)
             self._clip_scores.append(result["scores"])
             self._clip_cat_scores.append(result["category_scores"])
+            self._clip_zs_cat_scores.append(result["zeroshot_category_scores"])
 
         if len(self._clip_scores) + self._clip_skipped >= _CLIP_SAMPLES_PER_WINDOW:
             self._clip_sampling = False
@@ -262,6 +265,14 @@ class CameraWorker(threading.Thread):
         cat_scores = {c: sum(s.get(c, 0.0) for s in self._clip_cat_scores) / n for c in all_cats}
         top_cat = max(cat_scores, key=cat_scores.get)
         confidence = cat_scores[top_cat]
+
+        # Categoría por la otra señal (agregación zero-shot de prompts de
+        # texto, sin pasar por el probe) — mismo promedio de ventana. Se usa
+        # solo como doble check de confianza, no reemplaza al probe (ver
+        # "Doble check probe/zero-shot" en runner/README.md).
+        zs_all_cats = {c for s in self._clip_zs_cat_scores for c in s}
+        zs_cat_scores = {c: sum(s.get(c, 0.0) for s in self._clip_zs_cat_scores) / n for c in zs_all_cats}
+        zs_top_cat = max(zs_cat_scores, key=zs_cat_scores.get) if zs_cat_scores else None
 
         if top_cat == "Background":
             # El recorte no muestra una persona reconocible: no hay actividad
@@ -295,6 +306,21 @@ class CameraWorker(threading.Thread):
             else:
                 confirmed = False
 
+        # Doble check general: si el probe y el zero-shot no coinciden en la
+        # categoría (aunque cada uno por separado supere su propio umbral),
+        # es una ventana ambigua. Medido offline sobre el dataset de
+        # validación (vlm/README.md): cuando ambas señales coinciden el
+        # probe acierta 74.1%, cuando no coinciden cae a 57.8% — sigue
+        # siendo mejor que el azar, pero conviene marcarla en vez de
+        # afirmarla con la misma seguridad. No pisa un confirmed=False ya
+        # decidido arriba (EatingDrinkingMedication sin runner-up).
+        if confirmed and zs_top_cat is not None and zs_top_cat != top_cat:
+            confirmed = False
+            self._log.info(
+                "[%s] %s sin confirmar @ %.2fs: zero-shot no coincide (dice %s)",
+                self._config.id, top_cat, ts, zs_top_cat,
+            )
+
         # Deduplicación: emitir solo en cambio de actividad, con heartbeat
         # periódico para que el análisis registre que la actividad continúa.
         changed = top_cat != self._last_activity_label
@@ -316,6 +342,11 @@ class CameraWorker(threading.Thread):
                 "ongoing": not changed,
                 "scores": {label: round(v, 4) for label, v in avg.items()},
                 "category_scores": {c: round(v, 4) for c, v in cat_scores.items()},
+                # Categoría de la señal zero-shot, guardada aparte del probe
+                # para poder auditar desacuerdos al analizar video real sin
+                # ground truth (ver "Doble check probe/zero-shot" en
+                # runner/README.md) sin tener que reprocesar nada.
+                "zeroshot_category": zs_top_cat,
             },
         )
         store.add(event)
