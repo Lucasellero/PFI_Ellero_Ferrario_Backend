@@ -116,7 +116,7 @@ class LiveStream:
     frames salteados, no en lag acumulado.
     """
 
-    def __init__(self, source: str, realtime: bool = False):
+    def __init__(self, source: str, realtime: bool = False, stop_event: threading.Event | None = None):
         # Para webcam se pasa como int, para URLs como str
         try:
             self._source: int | str = int(source)
@@ -127,7 +127,12 @@ class LiveStream:
         self._lock = threading.Lock()
         self._new_frame = threading.Event()
         self._latest: tuple[np.ndarray, float] | None = None
-        self._stop = threading.Event()
+        # Se comparte el stop_event del caller (si se pasa uno) en vez de usar
+        # siempre un Event propio: así una señal de corte externa (SIGTERM del
+        # runner) interrumpe de inmediato tanto el loop de frames() como el
+        # de reconexión en _reader_loop, en vez de depender de que primero
+        # llegue un frame nuevo para que frames() note que hay que cortar.
+        self._stop = stop_event if stop_event is not None else threading.Event()
 
     def frames(self) -> Iterator[Frame]:
         reader = threading.Thread(target=self._reader_loop, name="live-stream-reader", daemon=True)
@@ -158,7 +163,7 @@ class LiveStream:
             if not cap.isOpened():
                 logger.warning("No se pudo conectar a %s, reintentando en %.0fs...",
                                self._source, RECONNECT_DELAY_S)
-                time.sleep(RECONNECT_DELAY_S)
+                self._stop.wait(RECONNECT_DELAY_S)
                 continue
 
             fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
@@ -178,15 +183,20 @@ class LiveStream:
 
             if self._stop.is_set():
                 return
-            time.sleep(RECONNECT_DELAY_S)
+            self._stop.wait(RECONNECT_DELAY_S)
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def make_source(source: str, realtime: bool = False, loop: bool = True) -> VideoFileLoop | LiveStream:
+def make_source(
+    source: str,
+    realtime: bool = False,
+    loop: bool = True,
+    stop_event: threading.Event | None = None,
+) -> VideoFileLoop | LiveStream:
     if _is_live_source(source):
-        return LiveStream(source, realtime=realtime)
+        return LiveStream(source, realtime=realtime, stop_event=stop_event)
     # Resuelve rutas relativas al root del proyecto
     path = Path(source)
     if not path.is_absolute():

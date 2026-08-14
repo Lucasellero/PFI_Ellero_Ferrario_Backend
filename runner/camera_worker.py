@@ -115,7 +115,10 @@ class CameraWorker(threading.Thread):
     def run(self) -> None:
         store = EventStore(self._db_path)
         detector = FallImmobilityDetector(model_path=self._pose_model)
-        source = make_source(self._config.source, self._config.realtime, self._config.loop)
+        source = make_source(
+            self._config.source, self._config.realtime, self._config.loop,
+            stop_event=self._stop_event,
+        )
 
         self._log.info("Iniciando [%s] ← %s", self._config.id, self._config.source)
         if self._clip:

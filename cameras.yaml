@@ -1,10 +1,18 @@
 cameras:
-- id: webcam
-  source: http://192.168.1.51:8080/stream.mjpg
+- id: video2
+  source: videos/sentado/Drink.Fromcan_p25_r06_v15_c03.mp4
   realtime: true
-  loop: false
-- id: readbook
-  source: videos/ToyotaSmarthome/Readbook_p12_r00_v05_c05_old.mp4
+  loop: true
+- id: video1
+  source: videos/sentado/Cook.Cleanup_p10_r01_v14_c03.mp4
+  realtime: true
+  loop: true
+- id: video3
+  source: videos/sentado/Readbook_p12_r00_v05_c05_old.mp4
+  realtime: true
+  loop: true
+- id: pills
+  source: videos/sentado/Takepills_p15_r00_v10_c02.mp4
   realtime: true
   loop: true
 pose_model: yolo11n-pose.pt
