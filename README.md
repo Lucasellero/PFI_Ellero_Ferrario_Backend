@@ -27,7 +27,8 @@ videos/ (dataset) ──┐
 cameras.yaml (streams en vivo) ──► runner/ (orquesta N cámaras en paralelo)
     │                                  │
     │                     por cámara: ├──► vision/  (pose estimation, caídas e inmovilidad — YOLOv11n-pose)
-    │                                  └──► vlm/     (clasificación semántica de actividad — CLIP, consulta periódica)
+    │                                  ├──► vlm/     (clasificación semántica de actividad — CLIP, consulta periódica)
+    │                                  └──► fusion/  (clasificador temporal de esqueleto + fusión con CLIP, ver abajo)
     │                                            │
     │                                            ▼
     │                                        events/  (esquema de evento común + SQLite)
@@ -48,13 +49,22 @@ store, no del código interno de `vision/` o `vlm/`. Esto es intencional: son
 las líneas de trabajo pensadas para desarrollarse en paralelo (ver más
 abajo).
 
-`runner/` es la forma de correr `vision/` + `vlm/` juntos sobre varias
-fuentes en simultáneo (archivos en loop o streams RTSP/HTTP/webcam), pensada
-para la fase con cámaras reales. `vision/main.py` y `vlm/main.py` siguen
-existiendo como scripts batch independientes para procesar el dataset de
-`videos/` de una sola vez, sin pasar por `runner/`. `dashboard/` es la capa
-de operación sobre `runner/`: no duplica lógica de detección, solo la
-orquesta (arranca el subproceso) y visualiza lo que hay en `events/`.
+`fusion/` combina la secuencia temporal de keypoints (que ya calcula
+`vision/`, sin cargar un segundo modelo de pose) con CLIP (`vlm/`) para las
+actividades donde un solo frame no alcanza (gestos de mano breves —
+comer/beber/medicación, ver `vlm/README.md` y `fusion/README.md`). Se
+engancha en el mismo punto que ya usa `vlm/` dentro de `runner/`
+(`detector.last_detection`), sin modificar `vision/` ni `vlm/` — ver
+"Integración" en `fusion/README.md`.
+
+`runner/` es la forma de correr `vision/` + `vlm/` (+ opcionalmente
+`fusion/`) juntos sobre varias fuentes en simultáneo (archivos en loop o
+streams RTSP/HTTP/webcam), pensada para la fase con cámaras reales.
+`vision/main.py` y `vlm/main.py` siguen existiendo como scripts batch
+independientes para procesar el dataset de `videos/` de una sola vez, sin
+pasar por `runner/`. `dashboard/` es la capa de operación sobre `runner/`:
+no duplica lógica de detección, solo la orquesta (arranca el subproceso) y
+visualiza lo que hay en `events/`.
 
 ## Dataset de video
 
@@ -80,6 +90,7 @@ rompe a todos los módulos que dependen de él.
 |---|---|---|
 | `vision/` | Pose estimation + detección de caídas/inmovilidad prolongada | [vision/README.md](vision/README.md) |
 | `vlm/` | Clasificación semántica de actividades vía VLM local | [vlm/README.md](vlm/README.md) |
+| `fusion/` | Clasificador temporal de esqueleto (movimiento) + fusión con CLIP (contexto) | [fusion/README.md](fusion/README.md) |
 | `events/` | Esquema común + almacenamiento local (SQLite) | [events/README.md](events/README.md) |
 | `baseline/` | Línea base de comportamiento (clustering dinámico) + detección de desvíos | [baseline/README.md](baseline/README.md) |
 | `evaluation/` | Validación cualitativa (video anotado, inspección manual) | [evaluation/README.md](evaluation/README.md) |
@@ -102,12 +113,19 @@ rompe a todos los módulos que dependen de él.
    virtual. `vision/`, `vlm/` y `baseline/` **no se importan código entre
    sí** — la única comunicación entre ellos es a través de `events/`, que sí
    está pensado para ser importado directamente (como librería local, sin
-   servidor) por cualquiera de los tres. La única excepción es `runner/`,
+   servidor) por cualquiera de los tres. La excepción es `runner/`,
    que sí importa `vision/` y `vlm/` directamente para correrlos juntos por
    cámara (ver `runner/README.md`) — es orquestación, no lógica de
    detección duplicada. `dashboard/` no importa código de detección de
    ninguno de los tres: solo lanza `runner/` como subproceso y lee
-   `events/` para mostrar resultados.
+   `events/` para mostrar resultados. `fusion/` es otra excepción del mismo
+   tipo que `runner/`: sus scripts de entrenamiento/evaluación (no su
+   código de inferencia, que es autocontenido) importan `vision/` y `vlm/`
+   directamente porque necesitan correr YOLO-pose y CLIP para generar los
+   datos de entrenamiento — mismo patrón que ya usan los propios scripts de
+   extracción de `vlm/` (`extract_clip_features.py` importa
+   `vision/src/pose_pipeline.py`). Ver "Integración" en
+   `fusion/README.md`.
 
 ## Setup general
 
@@ -187,6 +205,15 @@ comandos) en su README.
 - [x] `runner/` + `dashboard/`: orquestación multi-cámara (archivo o stream
       en vivo) y panel web de control — primera versión de la migración a
       ingesta en vivo (ver más abajo).
+- [ ] `fusion/`: clasificador temporal de esqueleto (GRU sobre ventanas de
+      keypoints, ver `fusion/README.md`) + fusión configurable con CLIP,
+      para las actividades donde un solo frame no alcanza
+      (`EatingDrinkingMedication`, ver `vlm/README.md`). Implementado
+      (extracción, entrenamiento, export ONNX, evaluación comparativa de
+      los tres enfoques) y con smoke test end-to-end sobre el dataset local
+      chico — **sin entrenar todavía en serio**: falta correrlo sobre el
+      dataset completo (en otra máquina) para tener un número que valga
+      para el informe.
 - [ ] `baseline/`: clustering dinámico + detección de desvíos (Snoun et al.
       2024).
 - [ ] `evaluation/`: exportar video anotado para inspección visual.

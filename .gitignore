@@ -45,5 +45,8 @@ vlm/omnifall_features.npz
 vlm/caucafall_omnifall.csv
 vlm/models/
 vlm/models_*/
+fusion/models/
+fusion/dataset_features.npz
+fusion/*_features.npz
 *.onnx
 *.onnx.data

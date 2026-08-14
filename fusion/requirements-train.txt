@@ -1,0 +1,12 @@
+# Dependencias para la máquina de desarrollo: extracción de dataset,
+# entrenamiento y export a ONNX (extract_dataset.py, train_temporal_classifier.py,
+# train_fusion_combiner.py, export_temporal_onnx.py, evaluate_hybrid.py).
+# No hace falta instalar esto en el Pi (ver requirements.txt).
+torch>=2.0.0
+scikit-learn>=1.3.0
+onnx>=1.14.0
+onnxscript
+onnxruntime>=1.17.0
+opencv-python>=4.10.0
+ultralytics>=8.3.0
+numpy>=1.26

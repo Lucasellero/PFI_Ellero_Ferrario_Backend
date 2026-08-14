@@ -1,0 +1,7 @@
+# Dependencias para el Pi 5 (inference only, sin PyTorch/Ultralytics).
+# SkeletonActivityClassifier (src/temporal_classifier.py) y ScoreFuser
+# (src/fusion.py) solo necesitan numpy + onnxruntime — la detección de pose
+# la sigue corriendo vision/ (ver README.md, sección "Integración"), este
+# módulo no carga un segundo modelo YOLO.
+onnxruntime>=1.17.0
+numpy>=1.26
