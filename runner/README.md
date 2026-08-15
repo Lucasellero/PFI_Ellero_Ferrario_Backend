@@ -19,7 +19,9 @@ runner/
 ├── main.py           # entry point: carga config, arranca un CameraWorker por cámara
 ├── config.py          # lee cameras.yaml → RunnerConfig / CameraConfig
 ├── camera_source.py    # VideoFileLoop (archivo con loop) / LiveStream (RTSP/HTTP/webcam)
-├── camera_worker.py    # thread por cámara: pose pipeline + CLIP periódico + frame preview
+├── camera_worker.py    # thread por cámara: gate de movimiento + pose pipeline + CLIP periódico + frame preview
+├── motion_gate.py       # detector de movimiento barato (MOG2) que pausa YOLO/CLIP sin nadie en cuadro
+├── motion_state.py      # publica awake/dormida por cámara en runner_state/motion/, para que dashboard/ lo muestre
 └── overlay_state.py     # lee/escribe runner_state/overlay.json (toggle de overlay compartido con dashboard/)
 ```
 
@@ -44,6 +46,9 @@ log_level: INFO
 clip_interval_s: 10.0      # segundos entre ventanas de clasificación CLIP por cámara
 clip_min_confidence: 0.4   # confianza mínima para emitir un evento de actividad
 clip_heartbeat_s: 60.0     # cada cuánto re-emitir una actividad que sigue igual
+motion_gate_enabled: true          # ver "Gate de movimiento" abajo
+motion_min_area_ratio: 0.005       # sensibilidad del detector de movimiento
+motion_absence_timeout_s: 45.0     # segundos sin persona detectada antes de volver a modo bajo consumo
 ```
 
 Si `source` empieza con `rtsp://`, `http(s)://`, o es un entero (índice de
@@ -183,6 +188,75 @@ Calibrado sobre 445 eventos geométricos de 183 clips
 geométrico y elimina 67% de los falsos positivos totales (70% en el setup de
 cámara más afectado). El margen de confirmación queda en el `metadata` del
 evento (`clip_confirmation_margin`) cuando se confirma.
+
+## Gate de movimiento
+
+YOLO11n-pose tarda ~150-300ms/frame en CPU y CLIP agrega más costo encima
+(ver "Tiempo real y frame dropping" arriba) — correr ambos sin parar sobre
+una cámara que apunta a una habitación vacía la mayor parte del día es
+desperdicio puro, más relevante todavía en el hardware objetivo (Pi 5, ver
+`../README.md`). `motion_gate.py` agrega un filtro previo mucho más barato
+(sustracción de fondo con `cv2.createBackgroundSubtractorMOG2` sobre una
+copia del frame reducida a 160px de ancho, ~1-2ms/frame) que decide si vale
+la pena correr el pipeline pesado en absoluto.
+
+**Diseño: el movimiento solo despierta, YOLO decide cuándo dormir.** Cada
+`CameraWorker` arranca en modo dormido (si `motion_gate_enabled: true`) y
+solo corre `MotionDetector.detect()` sobre cada frame — nada de YOLO ni
+CLIP. Apenas detecta movimiento, pasa a modo despierto y el pipeline corre
+normal (igual que con el gate desactivado). Volver a dormir **no** lo decide
+el detector de movimiento: lo decide `FallImmobilityDetector` al confirmar
+que no ve a nadie (`last_detection is None`) durante
+`motion_absence_timeout_s` segundos seguidos.
+
+Esta asimetría es intencional y no es un detalle menor: si el gate durmiera
+el pipeline apenas cesa el movimiento, una persona inmóvil en el piso
+(posible caída) o sentada sin moverse (sedentarismo, ver "Inmovilidad
+prolongada" en `vision/README.md`) dejaría de generar movimiento como
+cualquier habitación vacía — el sistema apagaría YOLO justo en el momento en
+que más importa que siga viendo a esa persona. Con este diseño, mientras
+YOLO siga detectando a alguien en cuadro (se mueva o no) el pipeline sigue
+despierto; solo se duerme cuando confirma ausencia real.
+
+Costo de este diseño: no ahorra CPU mientras hay alguien presente e
+inmóvil, solo cuando la habitación está genuinamente vacía. Es la
+contrapartida aceptada frente a un gate puramente por movimiento, que
+ahorraría más pero a costa de la detección de inmovilidad/caída.
+
+**Calibración de `motion_min_area_ratio`**: el umbral por defecto (0.005) se
+ajustó a mano contra clips de `videos/` (Toyota Smarthome, cámara fija) —
+ver el ratio de píxeles en movimiento típico de un video con actividad real
+contra el de una escena estática con solo ruido de sensor (~0, con
+`varThreshold=16` de MOG2 filtrando ruido normal). Primer valor probado,
+0.008: nunca cruzaba el umbral en `Drink.Fromcan_p25_r06_v15_c03.mp4` (3.5s,
+persona ya de pie, solo levanta una lata — el clip completo no supera un
+ratio de 0.0069), así que esa cámara quedaba dormida todo el tiempo pese a
+tener a alguien en cuadro. Bajado a 0.005, con margen de sobra contra ruido
+sintético de sensor (probado sin falsos despertares hasta con σ=5, más
+agresivo que el ruido típico de una webcam). No está calibrado contra una
+cámara real de la Pi ni contra una habitación vacía de verdad (el dataset
+son todo clips recortados a actividad, casi siempre cortos) — igual que el
+resto de los umbrales del proyecto, conviene reajustarlo empíricamente por
+cámara si en la práctica se ven demasiados falsos despertares (iluminación
+variable, sombras, cambios de exposición automática) o si tarda en
+despertar con movimiento real sutil.
+
+**Estado visible en el dashboard**: cada `CameraWorker` publica si está
+despierta o dormida en `runner_state/motion/{id}.json` (`motion_state.py`,
+mismo patrón que `overlay_state.py` — un archivo porque `dashboard/` corre
+en un proceso separado del runner). Un archivo por cámara, no uno
+compartido: varios threads (uno por cámara) escribirían al mismo archivo si
+fuera uno solo, y cada worker sanitiza su propio id para el nombre de
+archivo igual que ya hace para el frame preview (`frames/{id}.jpg`). Se
+escribe en las transiciones de despertar/dormir (para que el dashboard
+reaccione al toque) y además cada `_FRAME_PREVIEW_EVERY_N` frames como
+heartbeat mientras está despierta. `dashboard/` expone ese estado en
+`GET /api/motion` (ver `dashboard/README.md`) y lo pinta como un punto verde
+(despierta) o el texto "SIN MOVIMIENTO" (dormida) sobre cada cámara — ver
+"Indicador de movimiento" en `dashboard/README.md`. Una cámara con
+`motion_gate_enabled: false` no escribe archivo, así que no aparece en
+`/api/motion` y el dashboard no muestra nada para ella, en vez de asumir un
+estado que no corresponde.
 
 ## CLIP es opcional
 

@@ -14,6 +14,7 @@ Expone:
   GET  /api/events  → lee eventos de SQLite
   GET  /api/overlay → estado del overlay de pose (bbox + keypoints)
   POST /api/overlay → activa/desactiva el overlay en todas las cámaras
+  GET  /api/motion  → estado del gate de movimiento (runner/motion_gate.py) por cámara
   WS   /ws          → stream de logs + estado en tiempo real
 """
 from __future__ import annotations
@@ -32,6 +33,7 @@ import yaml
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 
+from runner.motion_state import read_all_motion_state
 from runner.overlay_state import read_overlay_enabled, write_overlay_enabled
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -200,6 +202,15 @@ async def set_overlay(body: dict) -> dict:
     enabled = bool(body["show_overlay"])
     write_overlay_enabled(enabled)
     return {"show_overlay": enabled}
+
+
+@app.get("/api/motion")
+async def get_motion() -> dict:
+    """Estado del gate de movimiento por cámara (ver runner/motion_gate.py):
+    despierta (YOLO/CLIP corriendo) o dormida (pausados, sin movimiento ni
+    persona detectada). Una cámara sin el gate activo, o mientras el runner
+    no arrancó, simplemente no aparece en la respuesta."""
+    return {"cameras": read_all_motion_state()}
 
 
 @app.get("/api/cameras")

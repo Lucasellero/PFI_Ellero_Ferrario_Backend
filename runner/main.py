@@ -85,15 +85,19 @@ def main() -> None:
             clip_interval_s=config.clip_interval_s,
             clip_min_confidence=config.clip_min_confidence,
             clip_heartbeat_s=config.clip_heartbeat_s,
+            motion_gate_enabled=config.motion_gate_enabled,
+            motion_min_area_ratio=config.motion_min_area_ratio,
+            motion_absence_timeout_s=config.motion_absence_timeout_s,
         )
         for cam in config.cameras
     ]
 
     logger.info(
-        "=== Iniciando %d cámara(s) | CLIP: %s | intervalo: %.0fs — Ctrl+C para detener ===",
+        "=== Iniciando %d cámara(s) | CLIP: %s | intervalo: %.0fs | gate de movimiento: %s — Ctrl+C para detener ===",
         len(workers),
         "activo" if clip else "inactivo",
         config.clip_interval_s,
+        "activo" if config.motion_gate_enabled else "inactivo",
     )
     for w in workers:
         w.start()

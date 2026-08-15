@@ -21,6 +21,8 @@ from src.pose_pipeline import FallImmobilityDetector, draw_pose  # noqa: E402  (
 
 from .camera_source import make_source
 from .config import CameraConfig
+from .motion_gate import MotionDetector
+from .motion_state import write_motion_state
 from .overlay_state import read_overlay_enabled
 
 _FRAMES_DIR = _ROOT / "frames"
@@ -77,6 +79,9 @@ class CameraWorker(threading.Thread):
         clip_interval_s: float = 10.0,
         clip_min_confidence: float = 0.4,
         clip_heartbeat_s: float = 60.0,
+        motion_gate_enabled: bool = True,
+        motion_min_area_ratio: float = 0.005,
+        motion_absence_timeout_s: float = 45.0,
     ):
         super().__init__(name=f"cam-{config.id}", daemon=True)
         self._config = config
@@ -95,6 +100,9 @@ class CameraWorker(threading.Thread):
         self._clip_interval = clip_interval_s
         self._clip_min_confidence = clip_min_confidence
         self._clip_heartbeat = clip_heartbeat_s
+        self._motion_gate_enabled = motion_gate_enabled
+        self._motion_min_area_ratio = motion_min_area_ratio
+        self._motion_absence_timeout = motion_absence_timeout_s
         self._log = logging.getLogger(f"camera.{config.id}")
         # nombre de archivo seguro para el frame preview
         self._frame_name = re.sub(r'[^a-zA-Z0-9_-]', '_', config.id)
@@ -112,6 +120,11 @@ class CameraWorker(threading.Thread):
         self._last_activity_label: Optional[str] = None
         self._last_activity_emit_ts = float("-inf")
 
+        # Estado del gate de movimiento (ver _update_motion_gate)
+        self._motion: Optional[MotionDetector] = None
+        self._awake = True
+        self._last_person_seen_ts = float("-inf")
+
     def run(self) -> None:
         store = EventStore(self._db_path)
         detector = FallImmobilityDetector(model_path=self._pose_model)
@@ -119,6 +132,14 @@ class CameraWorker(threading.Thread):
             self._config.source, self._config.realtime, self._config.loop,
             stop_event=self._stop_event,
         )
+
+        if self._motion_gate_enabled:
+            self._motion = MotionDetector(min_area_ratio=self._motion_min_area_ratio)
+            self._awake = False
+            # Publica el estado inicial ya mismo — si no, el dashboard no
+            # muestra nada para esta cámara hasta el primer preview (ver
+            # motion_state.py).
+            write_motion_state(self._config.id, awake=False)
 
         self._log.info("Iniciando [%s] ← %s", self._config.id, self._config.source)
         if self._clip:
@@ -133,14 +154,37 @@ class CameraWorker(threading.Thread):
             "[%s] confirmación de caídas con CLIP: %s",
             self._config.id, "activa" if self._fall_confirm else "inactiva (solo heurística geométrica)",
         )
+        if self._motion:
+            self._log.info(
+                "[%s] gate de movimiento activo: YOLO/CLIP arrancan dormidos hasta detectar movimiento, "
+                "y vuelven a dormir tras %.0fs sin persona detectada",
+                self._config.id, self._motion_absence_timeout,
+            )
 
         try:
             for frame in source.frames():
                 if self._stop_event.is_set():
                     break
 
-                # ── Pose pipeline (todos los frames) ──────────────────────
+                # ── Gate de movimiento: decide si este frame corre YOLO/CLIP ─
+                if self._motion is not None:
+                    self._update_motion_gate(frame)
+
+                if not self._awake:
+                    self._frame_count += 1
+                    if self._frame_count % _FRAME_PREVIEW_EVERY_N == 0:
+                        self._save_preview(frame.image)
+                        write_motion_state(self._config.id, awake=False)
+                    continue
+
+                # ── Pose pipeline (todos los frames, mientras está despierto) ─
                 raw_events = detector.process_frame(frame.image, frame.timestamp_s)
+
+                if self._motion is not None:
+                    if detector.last_detection is not None:
+                        self._last_person_seen_ts = frame.timestamp_s
+                    elif frame.timestamp_s - self._last_person_seen_ts > self._motion_absence_timeout:
+                        self._sleep()
 
                 # ── Frame preview para el dashboard (con esqueleto de YOLO) ─
                 self._frame_count += 1
@@ -150,6 +194,8 @@ class CameraWorker(threading.Thread):
                         kpts, box = detector.last_detection
                         preview = draw_pose(frame.image, kpts, box)
                     self._save_preview(preview)
+                    if self._motion is not None:
+                        write_motion_state(self._config.id, awake=True)
                 for raw in raw_events:
                     if raw["event_type"] == "fall" and self._fall_confirm is not None:
                         confirmed, margin = self._confirm_fall(frame, detector)
@@ -188,6 +234,34 @@ class CameraWorker(threading.Thread):
         finally:
             store.close()
             self._log.info("[%s] detenida.", self._config.id)
+
+    def _update_motion_gate(self, frame) -> None:
+        """Corre el detector de movimiento barato y, si hay movimiento y el
+        worker estaba dormido, lo despierta. No hace nada si ya está
+        despierto — volver a dormir lo decide `run()` en base a si YOLO
+        sigue viendo a alguien, no en base a este chequeo (ver docstring de
+        motion_gate.py)."""
+        motion_detected = self._motion.detect(frame.image)
+        if motion_detected and not self._awake:
+            self._wake(frame.timestamp_s)
+
+    def _wake(self, ts: float) -> None:
+        self._awake = True
+        self._last_person_seen_ts = ts
+        # Arranca una ventana de CLIP nueva en vez de retomar una a medio
+        # llenar con muestras de antes de dormir (ver motion_gate.py).
+        self._clip_sampling = False
+        self._clip_next_window_ts = ts
+        write_motion_state(self._config.id, awake=True)
+        self._log.info("[%s] movimiento detectado — YOLO/CLIP activados", self._config.id)
+
+    def _sleep(self) -> None:
+        self._awake = False
+        write_motion_state(self._config.id, awake=False)
+        self._log.info(
+            "[%s] sin persona detectada por %.0fs — YOLO/CLIP en pausa hasta el próximo movimiento",
+            self._config.id, self._motion_absence_timeout,
+        )
 
     def _confirm_fall(self, frame, detector) -> tuple[bool, float]:
         """Segunda etapa del evento 'fall': confirma con CLIP zero-shot antes

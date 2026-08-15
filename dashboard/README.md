@@ -50,6 +50,7 @@ para logs) y del store de eventos (SQLite) para los datos, igual que
 | `GET /api/events` | eventos del store, paginado por `since_id` |
 | `GET /api/overlay` | estado actual del toggle de overlay de pose (bbox + keypoints) |
 | `POST /api/overlay` | activa/desactiva el overlay en el preview de todas las cámaras |
+| `GET /api/motion` | estado del gate de movimiento (despierta/dormida) por cámara |
 | `WS /ws` | push de logs del runner + eventos nuevos + estado, cada ~1s |
 
 `GET`/`POST /api/overlay` leen y escriben `runner_state/overlay.json` vía
@@ -57,6 +58,13 @@ para logs) y del store de eventos (SQLite) para los datos, igual que
 decidir si dibuja el esqueleto en el preview (ver "Frame preview" en
 `runner/README.md`). Es la forma en que el dashboard y el runner, procesos
 separados, comparten ese estado sin acoplar código.
+
+`GET /api/motion` lee `runner_state/motion/{id}.json` vía
+`runner/motion_state.py` — un archivo por cámara, escrito por su
+`CameraWorker` cada vez que despierta/duerme (ver "Gate de movimiento" en
+`runner/README.md`). Devuelve `{"cameras": {"<id>": {"awake": bool,
+"updated_at": <epoch>}}}`; una cámara con el gate desactivado, o mientras el
+runner no arrancó, no aparece en la respuesta.
 
 El WebSocket manda el estado (`running`) cada segundo y consulta eventos
 nuevos cada 2 segundos (`_background_broadcaster`), solo si hay clientes
@@ -80,6 +88,30 @@ traducida al español con ícono propio (mapa `ACTIVITY_ES` en
 `static/index.html`: `Walk` → "🚶 Caminando", `Readbook` → "📖 Leyendo un
 libro", etc.) y la confianza de la predicción en la línea de metadata. Una
 clase que no esté en el mapa se muestra con su etiqueta cruda.
+
+## Indicador de movimiento
+
+Junto al nombre de cada cámara (grilla de "Todas las fuentes" y overlay de
+la vista única) hay un indicador del gate de movimiento
+(`runner/motion_gate.py`): un punto verde mientras YOLO/CLIP están activos
+para esa cámara (hay movimiento reciente o YOLO sigue viendo a la persona,
+se mueva o no — ver "Gate de movimiento" en `runner/README.md`), o el texto
+"SIN MOVIMIENTO" mientras están en pausa por no detectar a nadie. Si la
+cámara no tiene el gate activo (`motion_gate_enabled: false`) o el runner
+todavía no arrancó, no se muestra nada — no hay estado que mostrar, y
+mostrar un punto apagado por defecto se podría confundir con "sin
+movimiento".
+
+`pollMotion()` en `static/index.html` consulta `GET /api/motion` cada
+segundo (aparte del poll de frames, que es cada 400ms pero por cámara — el
+de movimiento es una sola consulta liviana para todas) y actualiza el badge
+de cada celda de la grilla y el de la vista única vía `renderMotionBadge()`.
+
+Antes existía además un `.live-dot` junto al nombre de cada cámara (si el
+último frame pedido a `/api/frame/{id}` cargó bien en el browser) — se sacó
+al agregar el badge de movimiento: los dos puntos uno al lado del otro no se
+distinguían y esa señal ya la muestra el placeholder de la celda
+("Conectando…"/ícono de pausa cuando el `<img>` no carga).
 
 ## Seguridad de rutas de archivo
 

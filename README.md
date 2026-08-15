@@ -204,7 +204,16 @@ comandos) en su README.
 - [x] `events/`: store local funcionando end-to-end (SQLite).
 - [x] `runner/` + `dashboard/`: orquestación multi-cámara (archivo o stream
       en vivo) y panel web de control — primera versión de la migración a
-      ingesta en vivo (ver más abajo).
+      ingesta en vivo (ver más abajo). `runner/` agrega además un gate de
+      movimiento (`motion_gate.py`, detector de movimiento barato vía MOG2)
+      que pausa YOLO/CLIP por cámara mientras no hay nadie en cuadro — el
+      movimiento solo despierta el pipeline, volver a dormir lo decide YOLO
+      al confirmar ausencia real, para no perder la detección de
+      inmovilidad/caída de una persona quieta (ver "Gate de movimiento" en
+      `runner/README.md`). Ese estado se ve en `dashboard/`: punto verde
+      sobre la cámara mientras el pipeline está activo, texto "SIN
+      MOVIMIENTO" mientras está en pausa (ver "Indicador de movimiento" en
+      `dashboard/README.md`).
 - [ ] `fusion/`: clasificador temporal de esqueleto (GRU sobre ventanas de
       keypoints, ver `fusion/README.md`) + fusión configurable con CLIP,
       para las actividades donde un solo frame no alcanza

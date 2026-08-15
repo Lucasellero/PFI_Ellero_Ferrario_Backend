@@ -15,5 +15,9 @@ cameras:
   source: videos/sentado/Takepills_p15_r00_v10_c02.mp4
   realtime: true
   loop: true
+- id: webcam
+  source: http://127.0.0.1:8080/stream.mjpg
+  realtime: true
+  loop: false
 pose_model: yolo11n-pose.pt
 log_level: INFO
