@@ -1,18 +1,18 @@
 cameras:
 - id: video2
-  source: videos/sentado/Drink.Fromcan_p25_r06_v15_c03.mp4
+  source: videos/ToyotaSmarthome/Drink.Fromcup_p18_r07_v09_c01.mp4
   realtime: true
   loop: true
 - id: video1
-  source: videos/sentado/Cook.Cleanup_p10_r01_v14_c03.mp4
+  source: videos/ToyotaSmarthome/Cook.Cleanup_p06_r00_v12_c03.mp4
   realtime: true
   loop: true
 - id: video3
-  source: videos/sentado/Readbook_p12_r00_v05_c05_old.mp4
+  source: videos/ToyotaSmarthome/Laydown_p03_r02_v19_c04.mp4
   realtime: true
   loop: true
-- id: pills
-  source: videos/sentado/Takepills_p15_r00_v10_c02.mp4
+- id: fall
+  source: videos/GMDCSA-24/fall2/19.mp4
   realtime: true
   loop: true
 - id: webcam

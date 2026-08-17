@@ -246,6 +246,13 @@
       background: rgba(255,255,255,.08);
       box-shadow: 0 2px 10px rgba(0,0,0,.35);
     }
+    .cam-card.dragging { opacity: .4; }
+    .cam-card.drag-over { border-color: var(--primary); border-style: dashed; }
+    .cam-drag-handle {
+      cursor: grab; color: var(--muted); flex-shrink: 0;
+      font-size: 13px; line-height: 1; user-select: none;
+    }
+    .cam-drag-handle:active { cursor: grabbing; }
 
     .cam-icon {
       width: 30px; height: 30px;
@@ -1309,7 +1316,7 @@ async function loadCameras() {
   const res = await apiFetch('GET', '/api/cameras');
   if (!res.ok) return;
   const data = await res.json();
-  renderCameras(data.cameras || []);
+  renderCameras(applySavedOrder(data.cameras || []));
 }
 
 function renderCameras(cams) {
@@ -1331,7 +1338,14 @@ function renderCameras(cams) {
     const sel   = cam.id === selectedCam ? 'selected' : '';
     return `
       <div class="cam-card ${sel}" data-cam-id="${escHtml(cam.id)}"
+           draggable="true"
+           ondragstart="onCardDragStart(event, '${escHtml(cam.id)}')"
+           ondragover="onCardDragOver(event)"
+           ondragleave="onCardDragLeave(event)"
+           ondrop="onCardDrop(event, '${escHtml(cam.id)}')"
+           ondragend="onCardDragEnd(event)"
            onclick="viewCamera('${escHtml(cam.id)}')">
+        <span class="cam-drag-handle" title="Arrastrá para reordenar">⠿</span>
         <div class="cam-icon ${cls}">${icon}</div>
         <div class="cam-info">
           <div class="cam-id">${escHtml(cam.id)}</div>
@@ -1345,6 +1359,73 @@ function renderCameras(cams) {
   }).join('');
 
   renderVideoGrid(cams);
+}
+
+// ── Reordenar cámaras por drag & drop ──────────────────────────────────────
+// El orden elegido se guarda en localStorage (por navegador, no toca
+// cameras.yaml ni el backend) y se reaplica cada vez que se recarga la
+// lista de cámaras (alta/baja o F5).
+const CAMERA_ORDER_KEY = 'dashboard.cameraOrder';
+
+function loadCameraOrder() {
+  try {
+    return JSON.parse(localStorage.getItem(CAMERA_ORDER_KEY) || '[]');
+  } catch {
+    return [];
+  }
+}
+
+function saveCameraOrder(ids) {
+  localStorage.setItem(CAMERA_ORDER_KEY, JSON.stringify(ids));
+}
+
+function applySavedOrder(cams) {
+  const order = loadCameraOrder();
+  if (!order.length) return cams;
+  const byId = new Map(cams.map(c => [c.id, c]));
+  const ordered = order.filter(id => byId.has(id)).map(id => byId.get(id));
+  cams.forEach(c => { if (!order.includes(c.id)) ordered.push(c); });
+  return ordered;
+}
+
+let dragSourceId = null;
+
+function onCardDragStart(ev, camId) {
+  dragSourceId = camId;
+  ev.dataTransfer.effectAllowed = 'move';
+  ev.currentTarget.classList.add('dragging');
+}
+
+function onCardDragOver(ev) {
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = 'move';
+  ev.currentTarget.classList.add('drag-over');
+}
+
+function onCardDragLeave(ev) {
+  ev.currentTarget.classList.remove('drag-over');
+}
+
+function onCardDrop(ev, targetId) {
+  ev.preventDefault();
+  ev.currentTarget.classList.remove('drag-over');
+  if (!dragSourceId || dragSourceId === targetId) return;
+
+  const ids = activeCameras.map(c => c.id);
+  const from = ids.indexOf(dragSourceId);
+  const to = ids.indexOf(targetId);
+  if (from === -1 || to === -1) return;
+  ids.splice(to, 0, ids.splice(from, 1)[0]);
+
+  saveCameraOrder(ids);
+  const byId = new Map(activeCameras.map(c => [c.id, c]));
+  renderCameras(ids.map(id => byId.get(id)));
+}
+
+function onCardDragEnd(ev) {
+  ev.currentTarget.classList.remove('dragging');
+  document.querySelectorAll('.cam-card.drag-over').forEach(el => el.classList.remove('drag-over'));
+  dragSourceId = null;
 }
 
 function renderVideoGrid(cams) {
