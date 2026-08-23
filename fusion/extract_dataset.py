@@ -112,7 +112,7 @@ def extract_video(path: Path) -> list[tuple[float, np.ndarray, np.ndarray, np.nd
 
 
 by_label: dict[str, list[Path]] = {}
-for f in sorted(DATASET_DIR.glob("*.mp4")):
+for f in sorted(DATASET_DIR.glob("**/*.mp4")):
     label = f.stem.split("_")[0]
     if label in FINE_LABELS:
         by_label.setdefault(label, []).append(f)

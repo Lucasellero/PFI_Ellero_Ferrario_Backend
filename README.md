@@ -200,7 +200,15 @@ comandos) en su README.
       probó y se descartó" en `vlm/README.md`). El runner también calcula,
       sin costo extra, la agregación zero-shot en paralelo al probe como
       doble check de confianza (`confirmed: false` si no coinciden — ver
-      "Doble check probe/zero-shot" en `runner/README.md`).
+      "Doble check probe/zero-shot" en `runner/README.md`). *Actualización
+      2026-08-18:* se sumó un dataset local grande (~2200 clips
+      categorizados por el usuario en `videos/`, ver `videos/README.md`) y
+      se reentrenó `category_probe.npz` con él — **75.6%** de accuracy por
+      video (participantes disjuntos), sobre las 4 categorías que cubre ese
+      dataset (no comparable 1:1 al 58.4% global de 7 categorías medido
+      antes sobre el dataset externo — ver "Reentrenamiento con dataset
+      local categorizado por carpetas" en `vlm/README.md`). Es el modelo que
+      corre en producción hoy.
 - [x] `events/`: store local funcionando end-to-end (SQLite).
 - [x] `runner/` + `dashboard/`: orquestación multi-cámara (archivo o stream
       en vivo) y panel web de control — primera versión de la migración a
@@ -217,12 +225,25 @@ comandos) en su README.
 - [ ] `fusion/`: clasificador temporal de esqueleto (GRU sobre ventanas de
       keypoints, ver `fusion/README.md`) + fusión configurable con CLIP,
       para las actividades donde un solo frame no alcanza
-      (`EatingDrinkingMedication`, ver `vlm/README.md`). Implementado
-      (extracción, entrenamiento, export ONNX, evaluación comparativa de
-      los tres enfoques) y con smoke test end-to-end sobre el dataset local
-      chico — **sin entrenar todavía en serio**: falta correrlo sobre el
-      dataset completo (en otra máquina) para tener un número que valga
-      para el informe.
+      (`EatingDrinkingMedication`, ver `vlm/README.md`). *Actualización
+      2026-08-18:* entrenado en serio sobre el mismo dataset local grande
+      que `vlm/` (ver arriba) — **47.9%** de accuracy del esqueleto solo a
+      nivel de clase fina (18 clases, participantes disjuntos), exportado a
+      ONNX, y **ya integrado en `runner/`** (`camera_worker.py` fusiona
+      esqueleto+CLIP en vivo, modo `hybrid`/`clip_only` según disponibilidad
+      — ver "Fusión con esqueleto" en `runner/README.md`). La primera
+      corrida de `evaluate_hybrid.py` (CLIP 87.6% / esqueleto 98.5% /
+      híbrido 99.2%) evaluó contra el mismo dataset con el que se
+      entrenaron los modelos — optimista, no confiable, descartada. Repetida
+      sobre 273 videos genuinamente no vistos (filtrados por overlap real,
+      no solo por cambiar el seed de extracción — ver "Estado" en
+      `fusion/README.md`): **CLIP 75.8% / esqueleto 78.0% / híbrido 82.8%**
+      (`skeleton_weight=0.2-0.5`) — la fusión sí mejora sobre cada señal
+      sola, +7pts sobre CLIP. Cobertura parcial (11 de 18 clases, las que
+      tenían video sobrante sin usar en entrenamiento) — suficiente para
+      validar la dirección del efecto y el `skeleton_weight` del default
+      (0.5), no un número definitivo de matriz de confusión completa para
+      el informe.
 - [ ] `baseline/`: clustering dinámico + detección de desvíos (Snoun et al.
       2024).
 - [ ] `evaluation/`: exportar video anotado para inspección visual.

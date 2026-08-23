@@ -59,7 +59,7 @@ def image_features(image_bgr: np.ndarray) -> np.ndarray:
 
 
 by_label: dict[str, list[Path]] = {}
-for f in sorted(DATASET_DIR.glob('*.mp4')):
+for f in sorted(DATASET_DIR.glob('**/*.mp4')):
     label = f.stem.split('_')[0]
     if label in LABEL_TO_CATEGORY:
         by_label.setdefault(label, []).append(f)

@@ -1,0 +1,22 @@
+﻿Cook.Cleandishes       60/66 videos
+Cook.Cleanup           60/71 videos
+Cook.Cut               45/45 videos
+Cook.Stir              60/87 videos
+Cook.Usestove          19/19 videos
+Drink.Frombottle       60/63 videos
+Drink.Fromcan          60/79 videos
+Drink.Fromcup          60/367 videos
+Drink.Fromglass        12/12 videos
+Eat.Attable            60/100 videos
+Eat.Snack              39/39 videos
+Getup                  60/104 videos
+Laydown                32/32 videos
+Maketea.Insertteabag   1/1 videos
+Sitdown                60/206 videos
+Takepills              46/46 videos
+Walk                   60/730 videos
+WatchTV                60/112 videos
+
+Guardado dataset_features.npz: 2464 ventanas, (16, 55) shape (+ embeddings CLIP)
+(30 videos sin ninguna ventana con cobertura temporal suficiente, ignorados)
+Por clase: {np.str_('Cook.Cleandishes'): 166, np.str_('Cook.Cleanup'): 174, np.str_('Cook.Cut'): 126, np.str_('Cook.Stir'): 159, np.str_('Cook.Usestove'): 51, np.str_('Drink.Frombottle'): 180, np.str_('Drink.Fromcan'): 174, np.str_('Drink.Fromcup'): 162, np.str_('Drink.Fromglass'): 36, np.str_('Eat.Attable'): 180, np.str_('Eat.Snack'): 117, np.str_('Getup'): 178, np.str_('Laydown'): 90, np.str_('Maketea.Insertteabag'): 3, np.str_('Sitdown'): 180, np.str_('Takepills'): 136, np.str_('Walk'): 174, np.str_('WatchTV'): 178}

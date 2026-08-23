@@ -1,0 +1,28 @@
+﻿CLIP: usando el linear probe (vlm/models/category_probe.npz)
+
+=== CLIP solo: 85.3% accuracy (830 videos) ===
+Real \ Predicho           Cooking     EatingDrin  Moving      Resting     
+Cooking                   225/228     1/228       2/228       0/228       
+EatingDrinkingMedication  29/333      264/333     17/333      23/333      
+Moving                    10/179      19/179      137/179     13/179      
+Resting                   0/90        3/90        5/90        82/90       
+
+=== Esqueleto solo: 92.2% accuracy (830 videos) ===
+Real \ Predicho           Cooking     EatingDrin  Moving      Resting     
+Cooking                   223/228     3/228       2/228       0/228       
+EatingDrinkingMedication  2/333       324/333     4/333       3/333       
+Moving                    5/179       23/179      148/179     3/179       
+Resting                   1/90        16/90       3/90        70/90       
+
+--- Barrido de skeleton_weight (híbrido, weighted_average) ---
+skeleton_weight=0.0  accuracy=85.3%
+skeleton_weight=0.1  accuracy=88.2%
+skeleton_weight=0.2  accuracy=91.2%
+skeleton_weight=0.3  accuracy=92.2%
+skeleton_weight=0.4  accuracy=93.1%
+skeleton_weight=0.5  accuracy=93.5%
+skeleton_weight=0.6  accuracy=93.3%
+skeleton_weight=0.7  accuracy=93.4%
+skeleton_weight=0.8  accuracy=93.0%
+skeleton_weight=0.9  accuracy=92.4%
+skeleton_weight=1.0  accuracy=92.2%

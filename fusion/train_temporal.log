@@ -1,0 +1,13 @@
+﻿seed=0  train=1680 val=784 ventanas  val_acc=48.0%
+seed=1  train=1759 val=705 ventanas  val_acc=47.2%
+seed=2  train=1769 val=695 ventanas  val_acc=52.8%
+seed=3  train=1783 val=681 ventanas  val_acc=40.4%
+seed=4  train=1725 val=739 ventanas  val_acc=51.0%
+
+=== Promedio 5 seeds, por ventana (participantes disjuntos train/val) ===
+accuracy: 47.9%  (std 4.3%)
+
+Entrenando sobre el cache completo...
+Parámetros del modelo: 50,272
+Guardado D:\PFI_Ellero_Ferrario_Backend-main\fusion\models\temporal_classifier.pt (entrenado sobre 2464 ventanas, 824 videos)
+Siguiente paso: python export_temporal_onnx.py

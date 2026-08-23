@@ -17,7 +17,7 @@ sys.path.insert(0, str(_ROOT / "vision"))
 
 from schema import EventType, MonitoringEvent  # noqa: E402  (de events/)
 from store import EventStore                   # noqa: E402  (de events/)
-from src.pose_pipeline import FallImmobilityDetector, draw_pose  # noqa: E402  (de vision/)
+from src.pose_pipeline import FallImmobilityDetector, build_pose_sample, draw_pose  # noqa: E402  (de vision/)
 
 from .camera_source import make_source
 from .config import CameraConfig
@@ -65,6 +65,17 @@ try:
 except ImportError:
     _FALL_CONFIRMATION_AVAILABLE = False
 
+# Clasificador temporal de esqueleto (ver fusion/README.md, sección
+# "Integración"): opcional, degrada a CLIP solo si fusion/ no está
+# entrenado/exportado todavía (fusion/train_temporal_classifier.py +
+# fusion/export_temporal_onnx.py) — mismo patrón try/except que CLIP arriba.
+try:
+    from fusion.src.fusion import HybridActivityClassifier, ScoreFuser
+    from fusion.src.keypoint_sequence import SkeletonSequenceBuffer, frame_features
+    _SKELETON_AVAILABLE = True
+except ImportError:
+    _SKELETON_AVAILABLE = False
+
 
 class CameraWorker(threading.Thread):
     """Un thread por cámara: lee frames y emite eventos al store compartido."""
@@ -76,6 +87,8 @@ class CameraWorker(threading.Thread):
         pose_model: str,
         stop_event: threading.Event,
         clip_classifier: Optional["ClipActivityClassifier"] = None,
+        skeleton_classifier=None,
+        skeleton_weight: float = 0.5,
         clip_interval_s: float = 10.0,
         clip_min_confidence: float = 0.4,
         clip_heartbeat_s: float = 60.0,
@@ -97,6 +110,29 @@ class CameraWorker(threading.Thread):
                 self._fall_confirm = FallConfirmationClassifier(self._clip)
             except FileNotFoundError:
                 pass  # fall_confirmation_features.npy no generado — solo geometría, ver README
+
+        # Fusión esqueleto+CLIP (ver fusion/README.md, "Integración"): el
+        # buffer acumula features de pose por frame (ver run()) y arma
+        # ventanas en cada tick de _clip_tick. Si fusion/ no está disponible
+        # (paquete no importable o modelo no exportado), self._skeleton_buffer
+        # queda None y _hybrid degrada a mode="clip_only" — mismo
+        # comportamiento que antes de este enganche.
+        self._skeleton_buffer = None
+        self._hybrid = None
+        if self._clip is not None:
+            if _SKELETON_AVAILABLE and skeleton_classifier is not None:
+                self._skeleton_buffer = SkeletonSequenceBuffer()
+                self._hybrid = HybridActivityClassifier(
+                    mode="hybrid",
+                    skeleton_classifier=skeleton_classifier,
+                    clip_classifier=self._clip,
+                    fuser=ScoreFuser(skeleton_weight=skeleton_weight),
+                )
+            elif _SKELETON_AVAILABLE:
+                self._hybrid = HybridActivityClassifier(mode="clip_only", clip_classifier=self._clip)
+            # si no _SKELETON_AVAILABLE, self._hybrid queda None y _clip_tick
+            # usa self._clip.classify() directo (fallback más abajo).
+
         self._clip_interval = clip_interval_s
         self._clip_min_confidence = clip_min_confidence
         self._clip_heartbeat = clip_heartbeat_s
@@ -151,6 +187,10 @@ class CameraWorker(threading.Thread):
         else:
             self._log.info("[%s] CLIP no disponible, solo pose estimation", self._config.id)
         self._log.info(
+            "[%s] fusión de esqueleto (fusion/): %s",
+            self._config.id, "activa (modo hybrid)" if self._skeleton_buffer is not None else "inactiva (solo CLIP)",
+        )
+        self._log.info(
             "[%s] confirmación de caídas con CLIP: %s",
             self._config.id, "activa" if self._fall_confirm else "inactiva (solo heurística geométrica)",
         )
@@ -179,6 +219,23 @@ class CameraWorker(threading.Thread):
 
                 # ── Pose pipeline (todos los frames, mientras está despierto) ─
                 raw_events = detector.process_frame(frame.image, frame.timestamp_s)
+
+                # ── Buffer de esqueleto para fusion/ (mismo criterio que el
+                # historial de inmovilidad de vision/: push por frame con
+                # detección, reset en cada hueco — no interpolar sobre el
+                # vacío, ver keypoint_sequence.py) ─
+                if self._skeleton_buffer is not None:
+                    if detector.last_detection is not None:
+                        kpts, box = detector.last_detection
+                        h, w = frame.image.shape[:2]
+                        ps = build_pose_sample(kpts, box, w, h, frame.timestamp_s)
+                        feat = frame_features(
+                            kpts, detector.last_detection_conf, box,
+                            ps.aspect_ratio, ps.torso_angle_deg, ps.hip_y, ps.bbox_height_frac,
+                        )
+                        self._skeleton_buffer.push(frame.timestamp_s, feat)
+                    else:
+                        self._skeleton_buffer.reset()
 
                 if self._motion is not None:
                     if detector.last_detection is not None:
@@ -252,6 +309,8 @@ class CameraWorker(threading.Thread):
         # llenar con muestras de antes de dormir (ver motion_gate.py).
         self._clip_sampling = False
         self._clip_next_window_ts = ts
+        if self._skeleton_buffer is not None:
+            self._skeleton_buffer.reset()
         write_motion_state(self._config.id, awake=True)
         self._log.info("[%s] movimiento detectado — YOLO/CLIP activados", self._config.id)
 
@@ -291,6 +350,8 @@ class CameraWorker(threading.Thread):
             self._clip_sampling = False
             self._clip_next_window_ts = ts
             self._last_activity_emit_ts = float("-inf")
+            if self._skeleton_buffer is not None:
+                self._skeleton_buffer.reset()
         self._clip_prev_ts = ts
 
         if not self._clip_sampling:
@@ -314,10 +375,26 @@ class CameraWorker(threading.Thread):
             kpts, box = detector.last_detection
             kpts_conf = detector.last_detection_conf
             hand_crop = crop_to_hands(frame.image, kpts, box, keypoints_conf=kpts_conf)
-            result = self._clip.classify(crop_to_person(frame.image, box), hand_crop)
-            self._clip_scores.append(result["scores"])
-            self._clip_cat_scores.append(result["category_scores"])
-            self._clip_zs_cat_scores.append(result["zeroshot_category_scores"])
+            crop = crop_to_person(frame.image, box)
+
+            # Con esqueleto disponible, category_scores sale fusionado
+            # (HybridActivityClassifier, ver fusion/src/fusion.py); si no,
+            # cae a CLIP solo — mismo resultado que antes de este enganche.
+            if self._hybrid is not None:
+                window = (
+                    self._skeleton_buffer.build_window(ts)
+                    if self._skeleton_buffer is not None else None
+                )
+                fused = self._hybrid.classify(window, crop, hand_crop)
+                clip_result = fused["clip"]
+                cat_scores = fused["category_scores"]
+            else:
+                clip_result = self._clip.classify(crop, hand_crop)
+                cat_scores = clip_result["category_scores"]
+
+            self._clip_scores.append(clip_result["scores"])
+            self._clip_cat_scores.append(cat_scores)
+            self._clip_zs_cat_scores.append(clip_result["zeroshot_category_scores"])
 
         if len(self._clip_scores) + self._clip_skipped >= _CLIP_SAMPLES_PER_WINDOW:
             self._clip_sampling = False
@@ -415,6 +492,7 @@ class CameraWorker(threading.Thread):
                 "description": CATEGORY_DESCRIPTIONS[top_cat],
                 "confidence": confidence,
                 "confirmed": confirmed,
+                "fusion_mode": self._hybrid.mode if self._hybrid is not None else "clip_only",
                 "samples": n,
                 "ongoing": not changed,
                 "scores": {label: round(v, 4) for label, v in avg.items()},

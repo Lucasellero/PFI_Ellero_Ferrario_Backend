@@ -545,6 +545,68 @@ para poder auditar desacuerdos analizando eventos ya guardados, sin
 reprocesar el video — pensado para cuando se empiece a trabajar con video
 real sin ground truth.
 
+### Reentrenamiento con dataset local categorizado por carpetas (2026-08-18)
+
+Se sumó a `../videos/` un dataset local grande (no versionado en git, igual
+que el resto de `videos/`) organizado por el usuario en subcarpetas por
+actividad en español (`beber/`, `caminar/`, `cocinar/`, `comer/`,
+`sentarse/`, `acostarse/`, `acostado/`, `levantarse (acostado)/`, `pararse
+(sentado)/`, `mirar tele/`, `tomar pastillas/` — ver `../videos/README.md`),
+~2200 clips en total. Los nombres de archivo dentro de cada carpeta siguen el
+patrón `<Actividad>_pXX_...mp4` de siempre (ej. `Walk_p13_r07_v23_c07.mp4`
+dentro de `caminar/`), así que la carpeta contenedora es solo organización
+del usuario — el label sigue saliendo del nombre de archivo, no de la
+carpeta, mismo criterio que ya documenta "Por qué no está organizado por
+postura" en `../videos/README.md`.
+
+**Bug encontrado y corregido**: `extract_clip_features.py` barría los videos
+con `DATASET_DIR.glob('*.mp4')` (no recursivo) — con los videos anidados en
+subcarpetas, esto encontraba 0 archivos. Cambiado a `glob('**/*.mp4')`.
+Mismo bug y mismo fix en `fusion/extract_dataset.py` (ver `fusion/README.md`).
+
+Extracción (`extract_clip_features.py ../videos --max-per-class 60`): 3949
+muestras, 830 videos, **18 clases finas** (las que efectivamente hay en este
+dataset: `Cook.Cleandishes`, `Cook.Cleanup`, `Cook.Cut`, `Cook.Stir`,
+`Cook.Usestove`, `Drink.Frombottle`, `Drink.Fromcan`, `Drink.Fromcup`,
+`Drink.Fromglass`, `Eat.Attable`, `Eat.Snack`, `Getup`, `Laydown`,
+`Maketea.Insertteabag`, `Sitdown`, `Takepills`, `Walk`, `WatchTV`), que caen
+en solo **4 de las 7 categorías gruesas** (`Cooking`,
+`EatingDrinkingMedication`, `Moving`, `Resting` — no hay `ReadingScreen`,
+`Phone` ni `Background` en este dataset).
+
+Reentrenando `train_category_probe.py` sobre este cache (participantes
+disjuntos train/val, 5 seeds):
+
+| | Zero-shot | Linear probe |
+|---|---|---|
+| Global (4 categorías presentes) | 40.2% (±4.0%) | **75.6%** (±3.5%) |
+
+**No es comparable 1:1 al 58.4%/47.7% global de la sección anterior**: ese
+número es sobre 7 categorías y un dataset externo distinto
+(`D:\DESCARGAS\mp4`, 31 clases, 1916 videos); este es sobre un subconjunto
+más chico y más fácil por diseño (menos categorías entre las que confundirse,
+ninguna tan floja como `Phone`/`Background` para el zero-shot). El modelo
+final se reentrenó sobre el 100% de este cache y quedó guardado en
+`vlm/models/category_probe.npz` — es el que carga `ClipActivityClassifier`
+en producción hoy. Pendiente si se quiere un número estrictamente comparable
+al histórico: correr esta misma extracción contra `D:\DESCARGAS\mp4` (o
+donde esté hoy) para tener las 7 categorías con el dataset chico también
+sumado.
+
+**Hallazgo aparte, de metodología de testeo, no del modelo**: probando la
+mejora vía `cameras.yaml` + `python -m runner` con una cámara en loop sobre
+un único clip corto (~2-9s) y `clip_interval_s=10s` (default), el resultado
+en vivo fue peor que el 75.6% medido acá — no por una falla del reentreno,
+sino porque cada ventana de clasificación termina promediando varias vueltas
+del mismo clip cortadas de forma abrupta, un patrón de input que no se da en
+el uso real (una cámara continua, no un clip de segundos repitiéndose para
+siempre). Reproducir el mismo clip con el método de muestreo offline (5
+frames parejos, igual que `extract_clip_features.py`) sí da la categoría
+correcta con confianza alta. Ver "Clasificación de actividades (CLIP)" en
+`../runner/README.md` para el detalle. Moraleja: para validar una mejora de
+`vlm/`, usar `evaluate_activity.py`/`train_category_probe.py` contra un
+dataset, no eyeballear el dashboard con cámaras de prueba en loop corto.
+
 ## Confirmación de caídas (`src/fall_confirmation.py`)
 
 Además de clasificar actividades, `vlm/` expone un segundo uso de CLIP:

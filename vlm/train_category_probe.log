@@ -1,0 +1,11 @@
+﻿seed=0  266 videos val  zero-shot=40.6%  linear-probe=71.4%
+seed=1  236 videos val  zero-shot=35.6%  linear-probe=76.7%
+seed=2  235 videos val  zero-shot=47.2%  linear-probe=76.6%
+seed=3  229 videos val  zero-shot=40.2%  linear-probe=72.1%
+seed=4  248 videos val  zero-shot=37.5%  linear-probe=81.0%
+
+=== Promedio 5 seeds, por video (participantes disjuntos train/val) ===
+zero-shot:    40.2%  (std 4.0%)
+linear-probe: 75.6%  (std 3.5%)
+
+Guardado D:\PFI_Ellero_Ferrario_Backend-main\vlm\models\category_probe.npz (entrenado sobre 3949 frames, 830 videos)

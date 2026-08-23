@@ -80,6 +80,25 @@ y `detect_person` ya son públicos y ya se usan así desde `vlm/` (ver
 tupla). `vlm/` tampoco cambia: `ClipActivityClassifier.classify()` se sigue
 llamando exactamente igual, `HybridActivityClassifier` solo lo envuelve.
 
+**Implementado (2026-08-18)**: el enganche de arriba ya no es solo el plan —
+está en producción en `runner/camera_worker.py`. `CameraWorker` acumula un
+`SkeletonSequenceBuffer` por cámara (push en cada frame con detección, reset
+en cada hueco/loop de video/despertar del gate de movimiento, igual criterio
+que el historial de inmovilidad de `vision/`) y arma la ventana en cada tick
+de `_clip_tick` (mismo `clip_interval_s` que ya usaba CLIP solo). El modo se
+decide en el constructor: `"hybrid"` si `fusion/models/temporal_classifier_int8.onnx`
+existe (cargado una sola vez en `runner/main.py`, compartido entre cámaras,
+igual que CLIP), `"clip_only"` si no — degradación elegante, mismo patrón que
+ya usa el proyecto para CLIP y la confirmación de caídas. `skeleton_weight`
+es configurable por `cameras.yaml`/`RunnerConfig` (default 0.5, el de
+`ScoreFuser` — **sin validar todavía**, ver "Estado" abajo). Cada evento de
+actividad guarda `fusion_mode` en su metadata para poder auditar si salió de
+`hybrid` o `clip_only`. El doble check probe/zero-shot de `vlm/` (ver
+`runner/README.md`) sigue operando solo sobre la señal de CLIP, sin tocar
+esqueleto — es una verificación de acuerdo interno de CLIP consigo mismo, no
+cambia con esta integración. Ver "Clasificación de actividades (CLIP)" en
+`runner/README.md` para el detalle de la ventana fusionada.
+
 **Costo en el Pi**: el GRU corre sobre una ventana ya calculada a partir de
 keypoints que YOLO-pose ya produjo — no hay inferencia de red neuronal
 nueva por *frame*, solo una pasada de GRU (miles de FLOPs, no millones)
@@ -199,6 +218,31 @@ clases no tienen ningún clip local. Para entrenar/evaluar de verdad hace
 falta apuntar `extract_dataset.py` al dataset completo de Toyota Smarthome
 en la otra máquina (mismo flujo que `vlm/extract_clip_features.py`).
 
+**Actualización (2026-08-18): ya no falta.** Se sumó a `../videos/` un
+dataset local de ~2200 clips (no versionado en git), organizado por el
+usuario en subcarpetas por actividad en español (`beber/`, `caminar/`,
+`cocinar/`, etc. — ver `../videos/README.md`), con los mismos nombres de
+archivo `<Actividad>_pXX_...mp4` de siempre dentro de cada carpeta. Cubre 18
+de las 31 clases finas (las que ya se ven en "Estado" abajo). No cubre
+`Standing` (sigue sin datos, ver más abajo) ni las clases de `ReadingScreen`/
+`Phone`/`Background` que sí tiene el dataset externo de `vlm/`. Bug
+encontrado en el camino: `extract_dataset.py` barría con
+`DATASET_DIR.glob("*.mp4")` (no recursivo) — con los videos anidados en
+subcarpetas, encontraba 0 archivos. Corregido a `glob("**/*.mp4")`, mismo fix
+que `vlm/extract_clip_features.py`.
+
+**Nota sobre las carpetas y `Getup`**: el usuario separó "levantarse desde
+el piso/cama" (`levantarse (acostado)/`, 8 clips) de "levantarse desde una
+silla" (`pararse (sentado)/`, 95 clips, y algunos más mezclados con
+`Sitdown` en `sentarse/`) — pero el label real (nombre de archivo) para
+todos esos clips es el mismo `Getup` de Toyota Smarthome, que no distingue
+el punto de partida. Esa distinción más fina que sí está en la organización
+de carpetas **se pierde** con el pipeline actual (labels salen del nombre de
+archivo, no de la carpeta — mismo criterio documentado en
+`../videos/README.md`). Si se quisiera esa distinción como clase nueva,
+haría falta tratar la carpeta como fuente de label solo para estos casos
+(cambio real, no solo de datos) — no implementado.
+
 **`Standing`**: cero datos locales. Si se retoma (ver `src/labels.py` para
 la justificación de por qué el esqueleto podría generalizar mejor que CLIP
 acá), el camino más corto es el mismo que ya recorrió `vlm/` con
@@ -215,19 +259,79 @@ retome.
 
 ## Estado
 
-Implementado y con smoke test end-to-end corrido sobre el dataset local
-chico (ver más abajo el resultado real, incluida su salvedad — dataset
-demasiado chico para que el número signifique generalización real, igual
-que la primera versión de `vlm/`, medida sobre 39 videos, tampoco
-generalizó — ver "El 65.2% no generalizaba" en `vlm/README.md`).
+Implementado, con smoke test end-to-end corrido en su momento sobre el
+dataset local chico (39 clips) y, desde el 2026-08-18, entrenado en serio
+sobre el dataset local grande (ver "Datos" arriba) — integrado además en
+`runner/` (ver "Integración" arriba). Resultados reales:
 
-**Pendiente, antes de tener un resultado que valga para la tesis:**
-extraer sobre el dataset completo en la otra máquina, entrenar en serio
-(`train_temporal_classifier.py`, con más de una clase por participante),
-elegir `skeleton_weight` (o entrenar `train_fusion_combiner.py`) contra un
-split de validación real, y recién ahí correr `evaluate_hybrid.py` con
-matrices de confusión que valgan para comparar los tres enfoques en el
-informe.
+**Extracción** (`extract_dataset.py ../videos --max-per-class 60`): 2464
+ventanas de esqueleto+CLIP, 824 videos, mismas 18 clases finas que
+`vlm/README.md` documenta para su propio reentreno (30 videos sin ventana
+con cobertura temporal suficiente, descartados).
+
+**Clasificador temporal** (`train_temporal_classifier.py`, participantes
+disjuntos train/val, 5 seeds, a nivel de **clase fina** — no de categoría
+gruesa, no comparable directo al 75.6% de `vlm/`):
+
+| | Accuracy |
+|---|---|
+| Esqueleto solo (18 clases finas) | **47.9%** (±4.3%) |
+
+Con azar en ~5.6% (1/18), el esqueleto solo captura señal real de
+movimiento — esperable que separe bien `Walk` de posturas estáticas, más
+dudoso entre gestos finos de mano (`Drink.*`/`Takepills`), que es
+justamente la hipótesis que motivó este módulo (ver "Por qué existe este
+módulo" arriba). No se desglosó todavía por clase — pendiente si hace falta
+para el informe. Modelo final entrenado sobre el 100% del cache, exportado a
+ONNX (`export_temporal_onnx.py`, INT8) y ya sirviendo en `runner/`.
+
+**Comparación de los tres enfoques** (`evaluate_hybrid.py
+dataset_features.npz --skeleton-weight-sweep`): CLIP solo 87.6%, esqueleto
+solo 98.5%, híbrido hasta **99.2%** con `skeleton_weight=0.8`.
+
+**Estos números de la comparación NO son confiables — no usar en el
+informe tal cual.** El propio script lo advierte en su docstring: para que
+la comparación sea honesta hace falta evaluar contra videos/participantes
+que los modelos no vieron en entrenamiento. Acá se evaluó
+`dataset_features.npz` contra `temporal_classifier.pt` y
+`category_probe.npz`, **el mismo cache con el que se entrenó el modelo
+final de ambos** (tanto `train_temporal_classifier.py` como
+`train_category_probe.py` reentrenan sobre el 100% del cache en su último
+paso) — es un chequeo de que el pipeline de fusión funciona de punta a
+punta (el barrido de `skeleton_weight` sí muestra que sumar esqueleto ayuda
+en la dirección esperada), no una medición válida de accuracy real.
+
+**Resuelto (2026-08-18): número honesto de comparación.** Se extrajo un
+segundo cache con `--seed 99` (`dataset_features_val.npz`) — pero cambiar
+solo el seed no alcanzó: 7 clases (`Cook.Cut`, `Cook.Usestove`,
+`Drink.Fromglass`, `Eat.Snack`, `Laydown`, `Maketea.Insertteabag`,
+`Takepills`) ya usaban el 100% de sus videos disponibles en el entrenamiento
+original, así que cualquier seed vuelve a elegir exactamente los mismos.
+Midiendo el overlap real video por video: **67.1%** de los 830 videos de
+este segundo cache ya estaban en el cache de entrenamiento. Se filtró a los
+**273 videos genuinamente no vistos** (11 de las 18 clases —
+`dataset_features_holdout.npz`, no versionado) y se corrió
+`evaluate_hybrid.py` sobre ese subconjunto limpio:
+
+| | Accuracy (273 videos, sin leakage) |
+|---|---|
+| CLIP solo | 75.8% |
+| Esqueleto solo | 78.0% |
+| **Híbrido** (`skeleton_weight=0.2-0.5`, empatados) | **82.8%** |
+
+Consistente con el 75.6% que ya reportaba `train_category_probe.py` para
+CLIP solo (mismo orden de magnitud, dataset distinto pero mismo tipo de
+split) — buena señal de que este número sí es honesto. El híbrido mejora
++7 puntos sobre CLIP solo y +4.8 sobre esqueleto solo: la fusión ayuda de
+verdad, no es ruido del leakage. `skeleton_weight=0.5` (el default actual,
+ver "Integración" arriba) cae justo en la zona empatada como mejor opción —
+queda validado, no es solo el default de la librería.
+
+**Salvedad de esta validación**: cubre 11 de las 18 clases (las otras 7 no
+tienen ningún video sobrante para poder medirse sin leakage con este
+dataset) y las clases están desbalanceadas (`Walk` 55 videos,
+`Drink.Frombottle` solo 2) — un número más sólido para el informe pediría
+más datos por clase, no algo resoluble con lo que hay hoy en `videos/`.
 
 ## Uso
 

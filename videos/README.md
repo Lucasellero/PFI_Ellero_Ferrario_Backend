@@ -133,6 +133,53 @@ Este dataset de actividades no tiene etiqueta de "caída" — son clips cortos
 (~1-2s) que no capturan la transición completa. Para eso se usan los
 datasets de caída descriptos arriba.
 
+## Dataset local categorizado por actividad, en la raíz de `videos/` (2026-08-18)
+
+Además de `ToyotaSmarthome/` (39 clips curados), se sumó directo en
+`videos/` un dataset mucho más grande (~2200 clips, no versionado en git,
+igual que el resto) organizado por el usuario en subcarpetas por actividad,
+en español:
+
+| Carpeta | Clips | Actividad real (por nombre de archivo) |
+|---|---|---|
+| `caminar/` | 730 | `Walk` |
+| `beber/` | 521 | `Drink.Frombottle`/`Drink.Fromcan`/`Drink.Fromcup`/`Drink.Fromglass` |
+| `cocinar/` | 288 | `Cook.Cleandishes`/`Cook.Cleanup`/`Cook.Cut`/`Cook.Stir`/`Cook.Usestove` |
+| `sentarse/` | 207 | `Getup`/`Sitdown` (mezclados) |
+| `comer/` | 139 | `Eat.Attable`/`Eat.Snack` |
+| `mirar tele/` | 112 | `WatchTV` |
+| `pararse (sentado)/` | 95 | `Getup` |
+| `tomar pastillas/` | 46 | `Takepills` |
+| `acostarse/` | 30 | `Laydown` |
+| `levantarse (acostado)/` | 8 | `Getup` |
+| `acostado/` | 2 | `Laydown` |
+
+Los nombres de archivo dentro de cada carpeta siguen el patrón
+`<Actividad>_pXX_...mp4` de siempre (ej. `Walk_p13_r07_v23_c07.mp4` dentro de
+`caminar/`) — **la carpeta es solo organización del usuario, el label real
+sigue siendo el nombre de archivo**, mismo criterio que ya establece "Por
+qué no está organizado por postura" arriba: no se reintroduce la
+clasificación manual por carpeta como ground truth, esta vez es agrupación
+por actividad (no por postura) y coincide con el nombre de archivo en todos
+los casos revisados.
+
+**`Getup` aparece en 3 carpetas distintas** (`levantarse (acostado)/`,
+`pararse (sentado)/`, y mezclado con `Sitdown` en `sentarse/`) — el usuario
+separó "levantarse desde el piso/cama" de "levantarse desde una silla", una
+distinción más fina que la que tiene el vocabulario de Toyota Smarthome
+(`Getup` a secas, sin importar el punto de partida). Con los scripts
+actuales (`vlm/extract_clip_features.py`, `fusion/extract_dataset.py`) esa
+distinción se pierde — los tres grupos se entrenan como la misma clase
+`Getup`. Ver la nota correspondiente en `fusion/README.md`, sección "Datos",
+si se quiere retomar esto como clase nueva.
+
+Usado el 2026-08-18 para reentrenar `vlm/models/category_probe.npz` (ver
+"Reentrenamiento con dataset local categorizado por carpetas" en
+`vlm/README.md`) y para entrenar por primera vez en serio
+`fusion/models/temporal_classifier.pt` (ver "Estado" en `fusion/README.md`)
+— exactamente el dataset grande que ambos README documentaban como
+pendiente/en otra máquina.
+
 Los archivos de video no se versionan en git (ver `.gitignore`), solo este
 README, `ToyotaSmarthome/legacy_folder_labels.csv` y los
 `Fall.csv`/`kaggle_data.csv` de ground truth (livianos, a diferencia de los

@@ -1,23 +1,19 @@
 cameras:
-- id: video2
-  source: videos/ToyotaSmarthome/Drink.Fromcup_p18_r07_v09_c01.mp4
+- id: beber
+  source: videos\beber\Drink.Fromcan_p03_r02_v08_c05.mp4
   realtime: true
   loop: true
-- id: video1
-  source: videos/ToyotaSmarthome/Cook.Cleanup_p06_r00_v12_c03.mp4
+- id: acostado
+  source: videos\acostado\Laydown_p25_r06_v03_c05.mp4
   realtime: true
   loop: true
-- id: video3
-  source: videos/ToyotaSmarthome/Laydown_p03_r02_v19_c04.mp4
+- id: tomar
+  source: videos\beber\Drink.Fromcan_p03_r00_v18_c03.mp4
   realtime: true
   loop: true
-- id: fall
-  source: videos/GMDCSA-24/fall2/19.mp4
+- id: cook
+  source: videos\cocinar\Cook.Cut_p11_r01_v13_c06.mp4
   realtime: true
   loop: true
-- id: webcam
-  source: http://127.0.0.1:8080/stream.mjpg
-  realtime: true
-  loop: false
 pose_model: yolo11n-pose.pt
 log_level: INFO

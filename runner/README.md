@@ -27,9 +27,11 @@ runner/
 
 Un `CameraWorker` (thread) por cámara. Cada worker corre su propia instancia
 de `FallImmobilityDetector` (de `vision/`), pero todas comparten una única
-instancia de `ClipActivityClassifier` (de `vlm/`) cargada una sola vez en
-`main.py` — ONNX Runtime es thread-safe para inferencia concurrente, y
-cargar CLIP por cámara sería redundante.
+instancia de `ClipActivityClassifier` (de `vlm/`) y, si está disponible, una
+única instancia de `SkeletonActivityClassifier` (de `fusion/`) cargadas una
+sola vez en `main.py` — ONNX Runtime es thread-safe para inferencia
+concurrente, y cargar cualquiera de los dos por cámara sería redundante. Ver
+"Clasificación de actividades (CLIP)" abajo para cómo se combinan.
 
 ## Config (`cameras.yaml`)
 
@@ -46,6 +48,7 @@ log_level: INFO
 clip_interval_s: 10.0      # segundos entre ventanas de clasificación CLIP por cámara
 clip_min_confidence: 0.4   # confianza mínima para emitir un evento de actividad
 clip_heartbeat_s: 60.0     # cada cuánto re-emitir una actividad que sigue igual
+skeleton_weight: 0.5       # peso del esqueleto vs. CLIP al fusionar categoría (ver fusion/README.md); sin efecto si fusion/ no está entrenado/exportado
 motion_gate_enabled: true          # ver "Gate de movimiento" abajo
 motion_min_area_ratio: 0.005       # sensibilidad del detector de movimiento
 motion_absence_timeout_s: 45.0     # segundos sin persona detectada antes de volver a modo bajo consumo
@@ -170,6 +173,60 @@ promedio estabiliza la predicción. Además:
   metadata, para que el análisis posterior pueda reconstruir duraciones sin
   ahogarse en eventos repetidos.
 
+## Fusión con esqueleto (`fusion/`) (2026-08-18)
+
+Además de CLIP, cada `CameraWorker` puede sumar la señal de movimiento de
+`fusion/` (clasificador temporal de esqueleto sobre la secuencia de
+keypoints que `vision/` ya calcula, ver `fusion/README.md`) a la
+clasificación de actividad, en vez de depender solo de CLIP.
+
+- **Buffer de esqueleto por frame**: en cada frame procesado (mientras la
+  cámara está despierta), si YOLO detectó a la persona, se arma un vector de
+  features (keypoints normalizados + confianzas + descriptores geométricos
+  que `vision/` ya calcula gratis) y se empuja a un `SkeletonSequenceBuffer`
+  propio de esa cámara. Sin detección, el buffer se resetea (no interpolar
+  sobre un hueco) — mismo criterio que el historial de inmovilidad de
+  `vision/`. También se resetea al reiniciar un video en loop y al
+  despertar del gate de movimiento (ventana nueva, no una a medio llenar con
+  contexto de antes de dormir).
+- **Fusión en cada tick de CLIP**: en el mismo muestreo de `clip_interval_s`
+  que ya usa CLIP, se arma la ventana de esqueleto (últimos ~2s
+  resampleados) y se clasifica junto con CLIP vía `HybridActivityClassifier`
+  (`fusion/src/fusion.py`), que combina las dos distribuciones de categoría
+  con un promedio pesado (`skeleton_weight`, configurable arriba). El
+  resultado fusionado es el que se promedia por ventana y decide
+  `activity_label` — todo lo demás (umbral de confianza, umbral extra para
+  `EatingDrinkingMedication`, doble check, deduplicación) sigue operando
+  igual, ahora sobre la categoría ya fusionada.
+- **El doble check probe/zero-shot sigue siendo solo de CLIP**: compara la
+  categoría del probe contra la agregación zero-shot, ambas señales de CLIP
+  — no compara esqueleto contra CLIP. Es una verificación de consistencia
+  interna de CLIP consigo mismo, no del acuerdo entre las dos modalidades.
+- **Degradación elegante**: si `fusion/` no está entrenado/exportado
+  (`fusion/models/temporal_classifier_int8.onnx` no existe —
+  `fusion/train_temporal_classifier.py` + `fusion/export_temporal_onnx.py`),
+  el runner sigue funcionando solo con CLIP, exactamente igual que antes de
+  este enganche. Se loguea al arrancar cada cámara (`fusión de esqueleto
+  (fusion/): activa (modo hybrid)` o `inactiva (solo CLIP)`).
+- **Auditoría**: cada evento de actividad guarda `fusion_mode` (`"hybrid"` o
+  `"clip_only"`) en su metadata.
+- **`skeleton_weight` validado (2026-08-18)**: sobre 273 videos genuinamente
+  no vistos en entrenamiento (ver "Estado" en `fusion/README.md`), el
+  barrido de `evaluate_hybrid.py` da el mejor accuracy (82.8%, +7pts sobre
+  CLIP solo) en la zona `skeleton_weight=0.2-0.5` — el default actual (0.5)
+  cae justo ahí, así que no hace falta cambiarlo. Cobertura parcial: 11 de
+  las 18 clases del dataset local (las otras 7 no tienen video sobrante para
+  medirse sin leakage), desbalanceadas entre sí.
+- **Cuidado al probar la mejora con un `cameras.yaml` de clips cortos en
+  loop**: con un clip de pocos segundos repitiéndose y `clip_interval_s=10s`
+  (default), cada ventana de clasificación promedia varias vueltas del mismo
+  clip cortadas de forma abrupta — un patrón de input que no se da en el uso
+  real (cámara continua). Esto puede hacer que el resultado en vivo se vea
+  peor de lo que realmente mide el modelo offline (ver el hallazgo
+  documentado en "Reentrenamiento con dataset local categorizado por
+  carpetas" en `vlm/README.md`). Para clips cortos en loop, considerar bajar
+  `clip_interval_s` a algo cercano a la duración real del clip.
+
 ## Confirmación de caídas con CLIP
 
 El detector geométrico de `vision/` (velocidad vertical + aspect ratio) no
@@ -270,6 +327,11 @@ runner clasifica actividad normalmente y cae al comportamiento puramente
 geométrico solo para caídas. Ver `../vlm/README.md` para generar los
 modelos.
 
+El esqueleto de `fusion/` (ver "Fusión con esqueleto" arriba) es opcional de
+la misma manera: sin él, la clasificación de actividad sigue siendo CLIP
+solo (`fusion_mode: "clip_only"`), no un modo degradado distinto — es
+literalmente el comportamiento de antes de que existiera `fusion/`.
+
 ## Frame preview
 
 Cada worker guarda 1 de cada 5 frames como `../frames/<cam_id>.jpg`
@@ -294,6 +356,7 @@ proceso importe código del otro.
 pip install -r requirements.txt
 pip install -r ../vision/requirements.txt
 pip install -r ../events/requirements.txt
+pip install -r ../fusion/requirements.txt   # opcional — solo si se quiere fusión con esqueleto, ver "Fusión con esqueleto" abajo
 ```
 
 ## Cómo probarlo
