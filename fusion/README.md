@@ -1,5 +1,25 @@
 # `fusion/` — Clasificación de actividad híbrida (esqueleto temporal + CLIP)
 
+## Resultados actuales (resumen, 2026-08-23)
+
+> Accuracy de clasificación de actividad (4 categorías: Cooking,
+> EatingDrinkingMedication, Moving, Resting), `evaluate_hybrid.py`. El split
+> **holdout** es el que mejor representa producción (datos no usados ni para
+> entrenar ni para elegir el peso de fusión) — no citar train como número esperable.
+
+| Split | CLIP solo | Esqueleto solo | Híbrido (mejor `skeleton_weight`) |
+|---|---|---|---|
+| Train (824 videos) | 87.6% | 98.5% | **99.2%** (peso 0.8) |
+| Val (830 videos) | 85.3% | 92.2% | **93.5%** (peso 0.5) |
+| Holdout (273 videos) | 75.8% | 78.0% | **82.8%** (peso 0.2–0.5) |
+
+El esqueleto solo ya supera a CLIP solo en los tres splits; la fusión suma sobre
+ambos. `runner/config.py` usa `skeleton_weight=0.5` como default — razonable como
+punto medio, pero el óptimo varía según split (0.8 en train, 0.2–0.5 en holdout);
+falta más dato de holdout para fijarlo con más confianza. Integrado en el runner en
+vivo desde el commit `e57542e` (`runner/camera_worker.py` + `main.py`), con
+fallback automático a CLIP solo si el modelo de esqueleto no está entrenado/exportado.
+
 ## Por qué existe este módulo
 
 `vlm/` (CLIP, zero-shot o linear probe) clasifica actividad **frame a

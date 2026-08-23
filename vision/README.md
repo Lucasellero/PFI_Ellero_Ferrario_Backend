@@ -1,5 +1,31 @@
 # `vision/` — Pose estimation, clasificación de postura y detección de caídas/inmovilidad
 
+## Resultados actuales (resumen, 2026-08-23)
+
+> Estado vigente hoy en producción (`FallImmobilityDetector` + `FallConfirmationClassifier`
+> con el probe entrenado). El detalle completo, con la historia de cómo se llegó a estos
+> números, está más abajo — este resumen es solo para no tener que leer todo el documento.
+
+- **Postura (parado/sentado/acostado)**, solo `aspect_ratio`: recall parado 90.0%,
+  sentado 82.1%, acostado 86.6%; accuracy por video (voto mayoritario) 79.5%.
+- **Detección geométrica de caídas + confirmación CLIP (probe entrenado)**: **84.8%
+  recall / 30 FP** sobre 500 eventos out-of-fold (292 clips), dominando al filtro
+  zero-shot (82.3% recall / 116 FP) en las dos métricas a la vez.
+- **Filtro CLIP en validación end-to-end** (heurística + confirmación + tracking de
+  inmovilidad, sobre ~80 min de video doméstico continuo real, los 4 clips más
+  jodidos de `ToyotaSmarthome_FP`): **elimina 269 de 270 falsos positivos geométricos
+  (99.6%)**. Solo sobrevive 1 evento, confirmado con margen holgado.
+- **Inmovilidad/sedentarismo**: bug de historial corregido (`9356c15`, la ventana de
+  2.5s de velocidad de caída se compartía indebidamente con el tracking de
+  inmovilidad; ahora tiene ventana propia de 15s). Pendiente, no bug: en 3 de esos 4
+  clips largos la inmovilidad no se dispara porque la persona nunca está 180s
+  realmente quieta en el clip completo (más actividad real que en el tramo corto
+  usado para calibrar).
+- **Bloqueante identificado, no resuelto**: `yolo11n-pose` no detecta bien a una
+  persona acostada en sillón visto desde cámara ancha/elevada (94.5% de frames sin
+  ninguna detección) — limita la rama "acostado" de inmovilidad en ese ángulo de
+  cámara específico. Es un límite del modelo de pose, no de la lógica del detector.
+
 ## Estructura
 
 ```
