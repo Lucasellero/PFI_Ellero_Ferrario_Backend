@@ -43,7 +43,8 @@ vision/*.log
 vlm/clip_features.npz
 vlm/omnifall_features.npz
 vlm/caucafall_omnifall.csv
-vlm/models/
+vlm/models/*
+!vlm/models/category_probe.npz
 vlm/models_*/
 fusion/models/
 fusion/dataset_features.npz
