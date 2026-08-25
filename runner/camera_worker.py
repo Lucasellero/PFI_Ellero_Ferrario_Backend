@@ -37,9 +37,8 @@ _CLIP_SAMPLE_SPACING_S = 1.0
 # EatingDrinkingMedication es la categoría más floja del probe (46%, ver
 # vlm/README.md) y la más sensible de reportar mal (medicación) — exige más
 # confianza que clip_min_confidence antes de afirmarla. Por debajo de este
-# umbral se degrada a la segunda categoría más probable (si esa sí supera
-# clip_min_confidence) o se reporta igual pero con confirmed=False, para que
-# el consumidor (dashboard) suavice el mensaje en vez de sonar seguro.
+# umbral se degrada a la segunda categoría más probable, si esa sí supera
+# clip_min_confidence.
 _EATING_CONFIRM_THRESHOLD = 0.55
 
 # ClipActivityClassifier se importa como paquete desde la raíz del proyecto
@@ -451,29 +450,12 @@ class CameraWorker(threading.Thread):
             )
             if runner_up_cat is not None and cat_scores[runner_up_cat] >= self._clip_min_confidence:
                 self._log.info(
-                    "[%s] EatingDrinkingMedication sin confirmar @ %.2fs (%.0f%% < %.0f%%) — "
+                    "[%s] EatingDrinkingMedication de baja confianza @ %.2fs (%.0f%% < %.0f%%) — "
                     "se reporta %s (%.0f%%) en su lugar",
                     self._config.id, ts, confidence * 100, _EATING_CONFIRM_THRESHOLD * 100,
                     runner_up_cat, cat_scores[runner_up_cat] * 100,
                 )
                 top_cat, confidence = runner_up_cat, cat_scores[runner_up_cat]
-            else:
-                confirmed = False
-
-        # Doble check general: si el probe y el zero-shot no coinciden en la
-        # categoría (aunque cada uno por separado supere su propio umbral),
-        # es una ventana ambigua. Medido offline sobre el dataset de
-        # validación (vlm/README.md): cuando ambas señales coinciden el
-        # probe acierta 74.1%, cuando no coinciden cae a 57.8% — sigue
-        # siendo mejor que el azar, pero conviene marcarla en vez de
-        # afirmarla con la misma seguridad. No pisa un confirmed=False ya
-        # decidido arriba (EatingDrinkingMedication sin runner-up).
-        if confirmed and zs_top_cat is not None and zs_top_cat != top_cat:
-            confirmed = False
-            self._log.info(
-                "[%s] %s sin confirmar @ %.2fs: zero-shot no coincide (dice %s)",
-                self._config.id, top_cat, ts, zs_top_cat,
-            )
 
         # Deduplicación: emitir solo en cambio de actividad, con heartbeat
         # periódico para que el análisis registre que la actividad continúa.

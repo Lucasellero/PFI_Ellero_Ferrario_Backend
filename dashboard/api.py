@@ -78,16 +78,7 @@ def _write_cameras_yaml(data: dict) -> None:
     )
 
 
-def _fetch_events_since(last_id: int, limit: int = 50) -> list[dict]:
-    if not DB_PATH.exists():
-        return []
-    conn = sqlite3.connect(str(DB_PATH))
-    rows = conn.execute(
-        "SELECT id, video_id, event_type, video_timestamp_s, metadata "
-        "FROM events WHERE id > ? ORDER BY id ASC LIMIT ?",
-        (last_id, limit),
-    ).fetchall()
-    conn.close()
+def _rows_to_events(rows: list[tuple]) -> list[dict]:
     return [
         {
             "id": r[0],
@@ -98,6 +89,32 @@ def _fetch_events_since(last_id: int, limit: int = 50) -> list[dict]:
         }
         for r in rows
     ]
+
+
+def _fetch_events_since(last_id: int, limit: int = 50) -> list[dict]:
+    if not DB_PATH.exists():
+        return []
+    conn = sqlite3.connect(str(DB_PATH))
+    rows = conn.execute(
+        "SELECT id, video_id, event_type, video_timestamp_s, metadata "
+        "FROM events WHERE id > ? ORDER BY id ASC LIMIT ?",
+        (last_id, limit),
+    ).fetchall()
+    conn.close()
+    return _rows_to_events(rows)
+
+
+def _fetch_last_events(limit: int = 30) -> list[dict]:
+    if not DB_PATH.exists():
+        return []
+    conn = sqlite3.connect(str(DB_PATH))
+    rows = conn.execute(
+        "SELECT id, video_id, event_type, video_timestamp_s, metadata "
+        "FROM events ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return _rows_to_events(list(reversed(rows)))
 
 
 # ── Tareas de fondo ────────────────────────────────────────────────────────
@@ -141,6 +158,12 @@ async def _background_broadcaster() -> None:
 
 @app.on_event("startup")
 async def _startup() -> None:
+    global _last_broadcast_event_id
+    if DB_PATH.exists():
+        conn = sqlite3.connect(str(DB_PATH))
+        row = conn.execute("SELECT MAX(id) FROM events").fetchone()
+        conn.close()
+        _last_broadcast_event_id = row[0] or 0
     asyncio.create_task(_background_broadcaster())
 
 
@@ -333,7 +356,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
 
     # Últimos 30 eventos al conectar
     rows = await asyncio.get_event_loop().run_in_executor(
-        None, lambda: _fetch_events_since(0, 30)
+        None, lambda: _fetch_last_events(30)
     )
     for row in rows:
         await ws.send_json({"type": "event", **row})

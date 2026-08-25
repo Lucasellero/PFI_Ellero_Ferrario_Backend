@@ -1,19 +1,8 @@
 cameras:
-- id: beber
-  source: videos\beber\Drink.Fromcan_p03_r02_v08_c05.mp4
+- id: webcam
+  source: http://0.0.0.0:8080/stream.mjpg
   realtime: true
-  loop: true
-- id: acostado
-  source: videos\acostado\Laydown_p25_r06_v03_c05.mp4
-  realtime: true
-  loop: true
-- id: tomar
-  source: videos\beber\Drink.Fromcan_p03_r00_v18_c03.mp4
-  realtime: true
-  loop: true
-- id: cook
-  source: videos\cocinar\Cook.Cut_p11_r01_v13_c06.mp4
-  realtime: true
-  loop: true
+  loop: false
 pose_model: yolo11n-pose.pt
 log_level: INFO
+clip_heartbeat_s: 0

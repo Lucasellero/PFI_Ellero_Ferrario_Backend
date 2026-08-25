@@ -135,39 +135,21 @@ promedio estabiliza la predicción. Además:
   floja del probe (56.1%, ver "Precisión y evaluación" en `vlm/README.md`) y
   la más sensible de reportar mal (medicación) — `_EATING_CONFIRM_THRESHOLD`
   en `camera_worker.py` le exige más confianza que `clip_min_confidence`
-  antes de afirmarla. Si no llega: se reporta la segunda categoría más
-  probable si esa sí supera `clip_min_confidence` (aprovecha la señal ya
-  calculada en vez de descartarla), o se emite igual pero con
-  `confirmed: false` en el metadata — el dashboard lo usa para mostrar un
-  texto genérico ("posiblemente comiendo, bebiendo o con medicación, sin
-  confirmar") en vez de afirmar la categoría con seguridad.
-- **Doble check probe/zero-shot**: `ClipActivityClassifier.classify()`
+  antes de afirmarla. Si no llega y la segunda categoría más probable supera
+  `clip_min_confidence`, se reporta esa en su lugar (aprovecha la señal ya
+  calculada en vez de descartarla).
+- **Zero-shot como señal auxiliar, no como gate**: `ClipActivityClassifier.classify()`
   calcula dos señales independientes del mismo embedding — la categoría vía
   el linear probe (la que se reporta) y, sin costo extra, la agregación
   zero-shot de prompts de texto (la que ya usaba `evaluate_activity.py` antes
   de entrenar el probe, ver `vlm/README.md`). Medido offline sobre el dataset
   de validación: cuando ambas coinciden el probe acierta 74.1%, cuando no
-  coinciden cae a 57.8% — sigue siendo mejor que el azar, pero es una señal
-  de confianza gratis. `camera_worker.py` promedia la categoría zero-shot por
-  ventana igual que la del probe; si no coincide con la reportada, el evento
-  se emite con `confirmed: false` (mismo mecanismo de degradación que
-  `EatingDrinkingMedication` abajo, generalizado a las 7 categorías) y queda
-  logueado con cuál categoría decía cada señal. El `metadata` del evento
-  siempre incluye `zeroshot_category` (coincida o no con `activity_label`)
-  para poder auditar desacuerdos analizando eventos ya guardados, sin
-  reprocesar el video.
-- **Umbral extra para `EatingDrinkingMedication`**: es la categoría más
-  floja del probe (56.1%, ver "Precisión y evaluación" en `vlm/README.md`) y
-  la más sensible de reportar mal (medicación) — `_EATING_CONFIRM_THRESHOLD`
-  en `camera_worker.py` le exige más confianza que `clip_min_confidence`
-  antes de afirmarla. Si no llega: se reporta la segunda categoría más
-  probable si esa sí supera `clip_min_confidence` (aprovecha la señal ya
-  calculada en vez de descartarla), o se emite igual pero con
-  `confirmed: false` en el metadata — el dashboard lo usa para mostrar un
-  texto genérico ("posiblemente comiendo, bebiendo o con medicación, sin
-  confirmar") en vez de afirmar la categoría con seguridad. Corre antes del
-  doble check general de arriba y no se pisan: si esta rama ya bajó
-  `confirmed` a `false`, el doble check no tiene nada que revertir.
+  coinciden cae a 57.8% — sigue siendo mejor que el azar, así que ya no se usa
+  para degradar el evento (antes bajaba `confirmed` a `false` cuando no
+  coincidían; se sacó porque generaba demasiados eventos marcados "sin
+  confirmar" en producción). El `metadata` del evento siempre incluye
+  `zeroshot_category` (coincida o no con `activity_label`) para poder auditar
+  desacuerdos analizando eventos ya guardados, sin reprocesar el video.
 - **Deduplicación**: se emite evento cuando la categoría *cambia*; si sigue
   igual se re-emite cada `clip_heartbeat_s` con `ongoing: true` en el
   metadata, para que el análisis posterior pueda reconstruir duraciones sin
