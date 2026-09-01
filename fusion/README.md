@@ -20,6 +20,14 @@ falta más dato de holdout para fijarlo con más confianza. Integrado en el runn
 vivo desde el commit `e57542e` (`runner/camera_worker.py` + `main.py`), con
 fallback automático a CLIP solo si el modelo de esqueleto no está entrenado/exportado.
 
+## Plan hacia ~10 clases y sustitución de CLIP
+
+Ver [`PLAN_sustitucion_clip.md`](PLAN_sustitucion_clip.md) (2026-09-01): cómo pasar de
+las 4 categorías actuales a ~10 clases canónicas agregando señal de **zona del hogar**
+y **objeto de contexto** (no un CLIP más grande — ya se descartó, ver `vlm/README.md`),
+degradando CLIP a señal opcional, y cómo medir cada fase. El vocabulario canónico es
+el mismo que el del ETL de [`dataset_events/`](../dataset_events/README.md).
+
 ## Por qué existe este módulo
 
 `vlm/` (CLIP, zero-shot o linear probe) clasifica actividad **frame a

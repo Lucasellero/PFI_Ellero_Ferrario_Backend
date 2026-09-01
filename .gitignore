@@ -26,6 +26,14 @@ videos/CAUCAFall/CAUCAFall/**/*.txt
 videos/CAUCAFall/*.xlsx
 videos/CAUCAFall/*.jpeg
 
+# Dataset de eventos CASAS (labeled_data.zip): ~1.2 GB de CSV crudos.
+# Versionar solo el ETL y activity_map.py; los eventos derivados se regeneran
+# con dataset_events/etl.py. Se versiona events/_manifest.json (resumen chico).
+dataset_events/labeled/
+dataset_events/events/*.jsonl
+dataset_events/events/*.parquet
+dataset_events/*.db
+
 # Cache de features derivado del dataset (se regenera con evaluate_posture.py)
 vision/posture_features.csv
 vision/fall_calibration.csv

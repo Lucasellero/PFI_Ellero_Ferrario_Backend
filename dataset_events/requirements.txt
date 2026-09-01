@@ -1,0 +1,7 @@
+# etl.py: solo stdlib + el esquema compartido
+pydantic>=2.9
+
+# build_table.py: capa analítica (tabla tidy + timeline + reporte de calidad)
+pandas>=2.2
+pyarrow>=15
+tabulate>=0.9
