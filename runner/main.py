@@ -63,6 +63,30 @@ def _load_skeleton(log: logging.Logger):
         return None
 
 
+def _load_fall_temporal(log: logging.Logger):
+    """Carga el clasificador temporal de caída una sola vez (ver
+    fusion/src/fall_temporal.py). Es la segunda etapa del evento de caída,
+    igual que la confirmación CLIP: degrada a None (CameraWorker sigue usando
+    la confirmación CLIP) si fusion/ no lo tiene entrenado/exportado."""
+    try:
+        from fusion.src.fall_temporal import FallTemporalClassifier
+        log.info("Cargando clasificador temporal de caída (ONNX)…")
+        clf = FallTemporalClassifier(quantized=True)
+        log.info("Clasificador temporal de caída listo.")
+        return clf
+    except FileNotFoundError as e:
+        log.warning(
+            "Modelo temporal de caída no encontrado (%s) — ejecutá "
+            "fusion/extract_falls.py + fusion/train_fall_temporal.py + "
+            "fusion/export_fall_temporal_onnx.py primero. Se sigue con confirmación CLIP.",
+            e,
+        )
+        return None
+    except Exception as e:
+        log.warning("No se pudo cargar el clasificador temporal de caída: %s", e)
+        return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Runner multi-cámara de monitoreo")
     parser.add_argument(
@@ -89,6 +113,7 @@ def main() -> None:
     # workers. ONNX Runtime es thread-safe para inferencia concurrente.
     clip = _load_clip(logger)
     skeleton = _load_skeleton(logger)
+    fall_temporal = _load_fall_temporal(logger)
 
     stop_event = threading.Event()
 
@@ -107,6 +132,7 @@ def main() -> None:
             stop_event=stop_event,
             clip_classifier=clip,
             skeleton_classifier=skeleton,
+            fall_temporal_classifier=fall_temporal,
             skeleton_weight=config.skeleton_weight,
             clip_interval_s=config.clip_interval_s,
             clip_min_confidence=config.clip_min_confidence,
@@ -119,10 +145,11 @@ def main() -> None:
     ]
 
     logger.info(
-        "=== Iniciando %d cámara(s) | CLIP: %s | esqueleto: %s | intervalo: %.0fs | gate de movimiento: %s — Ctrl+C para detener ===",
+        "=== Iniciando %d cámara(s) | CLIP: %s | esqueleto: %s | caída temporal: %s | intervalo: %.0fs | gate de movimiento: %s — Ctrl+C para detener ===",
         len(workers),
         "activo" if clip else "inactivo",
         "activo" if skeleton else "inactivo",
+        "activo" if fall_temporal else "inactivo (confirmación CLIP)",
         config.clip_interval_s,
         "activo" if config.motion_gate_enabled else "inactivo",
     )

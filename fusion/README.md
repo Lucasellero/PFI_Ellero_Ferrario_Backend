@@ -20,6 +20,25 @@ falta más dato de holdout para fijarlo con más confianza. Integrado en el runn
 vivo desde el commit `e57542e` (`runner/camera_worker.py` + `main.py`), con
 fallback automático a CLIP solo si el modelo de esqueleto no está entrenado/exportado.
 
+## Clasificador temporal de caída (`fall_temporal.py`) — resumen (2026-09-01)
+
+> Segunda deliverable de este módulo, aparte de la fusión de actividad: reemplaza la
+> heurística de umbrales de caída de `vision/` por un GRU entrenado. Detalle completo
+> en la sección "Clasificador temporal de caída" más abajo.
+
+- **Clasificador solo, out-of-fold** (GroupKFold por video, sin leakage): recall
+  96–99 % de las caídas, FP 2.8 % de las ventanas `normal`.
+- **Como 2ª etapa** (`vision/evaluate_falls.py --temporal`, 5 datasets, 158 caídas /
+  292 clips): recall end-to-end **133/158 (84.2 %) — igual que geométrico solo, no
+  cae** — y **FP de alerta dura 185 → 91**.
+- **Donde hay ventana de esqueleto que clasificar** (todas las caídas reales + ~la
+  mitad de los FP): rechaza **94/94 FP (100 %)**, pierde **1/113 caídas**.
+- Los ~74 FP residuales (casi todos de `ToyotaSmarthome_FP`) son eventos **sin
+  ventana**: `yolo11n-pose` no detecta a la persona en sillón/cámara ancha (límite ya
+  documentado en `vision/README.md`). En producción caen a la confirmación CLIP.
+- Umbral congelado: `_FALL_TEMPORAL_REJECT = 0.15` (`runner/camera_worker.py`).
+  Artefacto: `fusion/models/fall_temporal_int8.onnx`.
+
 ## Plan hacia ~10 clases y sustitución de CLIP
 
 Ver [`PLAN_sustitucion_clip.md`](PLAN_sustitucion_clip.md) (2026-09-01): cómo pasar de
@@ -60,12 +79,16 @@ fusion/
 │   ├── labels.py              # espacio de clases (31 de vlm/ + Standing) y su mapeo a categoría
 │   ├── temporal_model.py      # GRU (PyTorch, solo dev/entrenamiento)
 │   ├── temporal_classifier.py # inferencia ONNX Runtime (Pi, sin PyTorch)
-│   └── fusion.py              # ScoreFuser + HybridActivityClassifier
+│   ├── fusion.py              # ScoreFuser + HybridActivityClassifier
+│   └── fall_temporal.py       # FallTemporalClassifier (2ª etapa del evento de caída, ver sección abajo)
 ├── extract_dataset.py         # cachea ventanas de esqueleto + embeddings CLIP de un dataset externo
-├── train_temporal_classifier.py  # entrena el GRU
-├── export_temporal_onnx.py       # exporta el GRU a ONNX INT8
+├── train_temporal_classifier.py  # entrena el GRU de actividad
+├── export_temporal_onnx.py       # exporta el GRU de actividad a ONNX INT8
 ├── train_fusion_combiner.py      # entrena el combinador "mlp" (opcional, ver ScoreFuser)
 ├── evaluate_hybrid.py             # compara CLIP solo / esqueleto solo / híbrido
+├── extract_falls.py              # ventanas etiquetadas normal/caída desde videos/**/Fall.csv (+ hard-negative mining)
+├── train_fall_temporal.py       # entrena el GRU de caída (augmentación de oclusión, GroupKFold por video)
+├── export_fall_temporal_onnx.py # exporta el GRU de caída a ONNX INT8
 ├── requirements.txt            # Pi: onnxruntime + numpy
 └── requirements-train.txt      # dev: torch, sklearn, ultralytics, opencv
 ```
@@ -361,6 +384,128 @@ dataset) y las clases están desbalanceadas (`Walk` 55 videos,
 `Drink.Frombottle` solo 2) — un número más sólido para el informe pediría
 más datos por clase, no algo resoluble con lo que hay hoy en `videos/`.
 
+## Clasificador temporal de caída (`fall_temporal.py`)
+
+### Por qué
+
+El informe propone (Sec. 2.2.7) detectar caídas con la heurística geométrica de
+Giri et al. (2025): pico de velocidad vertical de la cadera + aspect ratio del
+bounding box, con confirmación CLIP zero-shot encima (`vlm/src/fall_confirmation.py`).
+`vision/README.md` documenta el techo de ese enfoque: **encuadre parcial** (el bbox
+recortado contra el borde ensancha el aspect ratio y hace saltar `hip_y` → firma
+falsa de caída) y **firma geométrica ambigua** (sentarse en un sillón bajo genera la
+misma firma; barrido exhaustivo de 182 combinaciones de umbrales → ninguna lo
+resuelve).
+
+Este clasificador reemplaza la **decisión** de caída (no el trigger): la heurística
+geométrica de `vision/` sigue siendo el disparador barato por frame, y cuando
+dispara, en vez de mirar la apariencia de un frame recortado (CLIP), se mira la
+**forma del movimiento** de los últimos ~2 s sobre la misma ventana de keypoints que
+ya alimenta la fusión de actividad. Es el mismo salto metodológico que ya se hizo en
+`vlm/` (zero-shot → linear probe) y en la fusión de actividad de este módulo
+(frame-a-frame → GRU temporal).
+
+Respaldo en la literatura: Benabdennour et al. 2026 (YOLOv11-Pose → Transformer,
+97.7 % F1, ya citado en `vision/README.md`); VIRA-GCN / PointOut (augmentación de
+oclusión sintética para robustez del esqueleto); ConvLSTM y LSTM 3-etapas
+Normal/Warning/Fall (99.44 % en Raspberry Pi).
+
+### Diseño
+
+- **Clases**: binario `normal` / `caida`. Se probó el esquema de 3 etapas
+  (`normal` / `caida_en_curso` / `caido`), pero los datasets de caída disponibles
+  (`GMDCSA-24`, `CAUCAFall`) están recortados al acto de caer — solo 165 ventanas
+  `caido` vs. 3676 `caida_en_curso` — muy poco para una 3ª clase. `extract_falls.py`
+  igual emite las etiquetas finas al `.npz`; `train_fall_temporal.py` las colapsa.
+- **Modelo**: reusa `GRUActivityClassifier` (`src/temporal_model.py`) con
+  `num_classes=2` — ~48 k parámetros, ONNX INT8, misma normalización horneada en el
+  grafo. La inferencia (`FallTemporalClassifier`) reusa `SkeletonSequenceBuffer` /
+  `frame_features`, igual que el clasificador de actividad — no hay segundo modelo
+  de pose ni inferencia por frame, solo una pasada de GRU cuando la geometría
+  dispara.
+- **Datos** (`extract_falls.py`, todos locales): `GMDCSA-24`, `CAUCAFall`, `URFD`
+  con `Fall.csv` → ventanas positivas; `ToyotaSmarthome_FP` (4 clips largos anotados
+  `NoFall` de punta a punta, los FP que encontró `vision/` validando inmovilidad) →
+  negativos duros. El parseo del CSV reusa `vision/evaluate_falls.py::parse_classes`.
+- **Augmentación de oclusión/truncamiento** (`train_fall_temporal.py`, solo en
+  train): *keypoint dropout* (PointOut — pone a 0 posición + confianza de un
+  subconjunto aleatorio de keypoints) y *truncamiento de encuadre* (VIRA-GCN —
+  elimina piernas o cabeza en toda la ventana y ajusta los escalares que el recorte
+  del bbox distorsiona: aspect ratio más ancho, bbox más bajo). Objetivo: que el
+  modelo aprenda "torso visible + este movimiento = caída" en vez de romperse cuando
+  la persona sale de cuadro.
+- **Hard-negative mining** (`extract_falls.py --mine-hard-negatives`): el muestreo
+  aleatorio de ventanas `normal` no le muestra al modelo el caso que tiene que
+  aprender a rechazar — la geometría dispara justo en el instante *más* parecido a
+  una caída (bbox colapsa + pico de velocidad al dejarse caer en un sillón). El
+  mining corre la heurística geométrica en paralelo a la extracción y agrega como
+  `normal` la ventana en cada instante donde dispara dentro de un tramo no-caída
+  (126 de `ToyotaSmarthome_FP`), sobre-representadas ×6 en el entrenamiento
+  (`--hard-neg-oversample`).
+- **Métrica** (`train_fall_temporal.py`, GroupKFold por video, out-of-fold): recall
+  *por video de caída* (¿alguna ventana `caida` del video se predijo como caída?) y
+  FP (ventanas `normal` predichas como caída), alineada con `evaluate_falls.py`, no
+  accuracy por ventana.
+
+### Integración con `runner/`
+
+`FallTemporalClassifier` se carga una vez en `runner/main.py` y se pasa a cada
+`CameraWorker`. En `_confirm_fall_event` (reemplaza a `_confirm_fall`): cuando la
+heurística geométrica de `FallImmobilityDetector` dispara un evento `fall` de
+evidencia completa, se corre el temporal sobre la ventana de esqueleto del momento.
+
+- `fall_score ≥ _FALL_TEMPORAL_CONFIRM` (0.45) → confirma.
+- `fall_score ≤ _FALL_TEMPORAL_REJECT` (0.15) → descarta.
+- En el medio → desempate con CLIP si está disponible.
+- Sin ventana de esqueleto (cobertura insuficiente, típico en la escena de sillón /
+  cámara ancha donde `yolo11n-pose` no detecta bien) → cae a la confirmación CLIP.
+
+Las caídas de evidencia **parcial** (ver `vision/README.md`, Fase 0) nunca pasan por
+el temporal: van directo a `severity: "sospecha"` y escalan por inmovilidad.
+`FallImmobilityDetector` no cambia su heurística — sigue siendo el trigger y se puede
+seguir calibrando solo con `evaluate_falls.py`.
+
+### Resultados (2026-09-01)
+
+Modelo con hard-negative mining, `τ = _FALL_TEMPORAL_REJECT = 0.15`.
+
+**Clasificador solo, out-of-fold** (`train_fall_temporal.py`, GroupKFold por video):
+recall 96 % de las caídas, FP 2.8 % de las 10 362 ventanas `normal`.
+
+**Como 2ª etapa** (`vision/evaluate_falls.py --temporal --fps-cap 10`, 5 datasets,
+158 caídas anotadas / 292 clips):
+
+| Config | Recall | FP alerta dura | FP "sospecha" (encuadre parcial) |
+|---|---|---|---|
+| Geométrico solo (propuesta original, sin CLIP) | 133/158 (84.2 %) | 185 | 71 |
+| **+ clasificador temporal** | **133/158 (84.2 %)** | **91** | 71 |
+| *Referencia histórica: geométrico + CLIP probe (otro split)* | *84.8 %* | *~81 en ToyotaSmarthome_FP* | *—* |
+
+Separando por si el modelo **puede** actuar (hay ventana de esqueleto que clasificar):
+
+| | FP | rechazados | Caídas reales | rechazadas de más |
+|---|---|---|---|---|
+| Con ventana de esqueleto | 94 | **94 (100 %)** | 113 | 1 |
+| Sin ventana (`yolo11n-pose` no detecta a la persona) | 91 | 0 | 34 | 0 |
+
+**Conclusión honesta:** donde el modelo tiene entrada es un discriminador casi
+perfecto (100 % de los FP, 1/113 caídas perdidas). Los ~74 FP residuales — casi todos
+de `ToyotaSmarthome_FP` — son eventos **sin ventana de esqueleto**: es el mismo
+bloqueante ya documentado en `vision/README.md` (`yolo11n-pose` no detecta a una
+persona acostada en un sillón desde cámara ancha/elevada, 94.5 % de frames sin
+detección). No es una falla del clasificador temporal: no hay esqueleto que
+clasificar. En producción esos eventos caen a la confirmación CLIP, así que el
+sistema desplegado = temporal (para lo que puede) + CLIP (para el resto).
+
+**Salvedades para el informe:**
+- El recall end-to-end (84 %) lo limita el **trigger geométrico** (dispara en ~86 %
+  de las caídas); el temporal es un veto, no puede recuperar lo que la geometría no
+  marcó. El 96–99 % es del clasificador aislado.
+- Contra la referencia CLIP: en el caso duro de cámara ancha quedan **parejos**
+  (~74 vs. ~81), no mejor — el cuello de botella ahí es el detector de pose.
+- Varianza entre corridas de entrenamiento moderada — por eso `train_fall_temporal.py`
+  fija `--seed`.
+
 ## Uso
 
 ```bash
@@ -382,6 +527,22 @@ python train_fusion_combiner.py --features dataset_features.npz
 # 5. Comparar los tres enfoques — usar un cache de videos NO vistos en 1-4
 python extract_dataset.py <carpeta_validacion> -o val_features.npz
 python evaluate_hybrid.py val_features.npz --skeleton-weight-sweep
+```
+
+### Clasificador temporal de caída
+
+```bash
+cd fusion/
+# 1. Ventanas etiquetadas + hard negatives desde videos/**/Fall.csv
+python extract_falls.py ../videos --fps-cap 8 --max-normal-per-video 250 \
+    --post-fall-s 4.0 --mine-hard-negatives -o fall_windows.npz
+# 2. Entrenar (augmentación de oclusión, hard negatives ×6, semilla fija)
+python train_fall_temporal.py --features fall_windows.npz --hard-neg-oversample 6 --seed 0
+# 3. Exportar a ONNX INT8
+python export_fall_temporal_onnx.py
+# 4. Evaluar end-to-end (desde vision/)
+cd ../vision && python evaluate_falls.py --temporal --fps-cap 10
+#   opcional: --dump-scores scores.csv para barrer el umbral offline
 ```
 
 En el Pi, `pip install -r requirements.txt` (sin PyTorch/Ultralytics —

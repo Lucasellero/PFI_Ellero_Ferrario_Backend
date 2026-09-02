@@ -41,6 +41,22 @@ _CLIP_SAMPLE_SPACING_S = 1.0
 # clip_min_confidence.
 _EATING_CONFIRM_THRESHOLD = 0.55
 
+# Confirmación de caída con el clasificador temporal (fusion/src/fall_temporal.py).
+# fall_score = P(caida). Por encima de _CONFIRM se confirma; por debajo de
+# _REJECT se descarta; en el medio, si hay CLIP se usa como desempate, si no se
+# emite con confirmed=False (no se descarta una caída geométrica por una lectura
+# ambigua). Calibrado sobre el volcado de scores de vision/evaluate_falls.py
+# --temporal --dump-scores (432 eventos, 5 datasets, modelo con hard-negative
+# mining): los FP que llegan a tener ventana de esqueleto puntúan <=0.35
+# (mediana ~0), las caídas reales >0.35 (mediana ~1.0). τ=0.15 mantiene el
+# recall end-to-end (133/158) y rechaza 94/94 de los FP evaluables (1/113
+# caídas reales rechazada de más). Los FP que igual pasan (~74, casi todos de
+# ToyotaSmarthome_FP) son eventos SIN ventana: YOLO11n-pose no detecta a la
+# persona en esa escena (sillón, cámara ancha/elevada — límite conocido, ver
+# vision/README.md); esos caen a la confirmación CLIP de más abajo.
+_FALL_TEMPORAL_CONFIRM = 0.45
+_FALL_TEMPORAL_REJECT = 0.15
+
 # ClipActivityClassifier se importa como paquete desde la raíz del proyecto
 # (disponible porque python -m runner agrega el root al sys.path).
 try:
@@ -87,6 +103,7 @@ class CameraWorker(threading.Thread):
         stop_event: threading.Event,
         clip_classifier: Optional["ClipActivityClassifier"] = None,
         skeleton_classifier=None,
+        fall_temporal_classifier=None,
         skeleton_weight: float = 0.5,
         clip_interval_s: float = 10.0,
         clip_min_confidence: float = 0.4,
@@ -116,11 +133,22 @@ class CameraWorker(threading.Thread):
         # (paquete no importable o modelo no exportado), self._skeleton_buffer
         # queda None y _hybrid degrada a mode="clip_only" — mismo
         # comportamiento que antes de este enganche.
+        # Clasificador temporal de caída (ver fusion/src/fall_temporal.py):
+        # segunda etapa del evento de caída, en reemplazo de la confirmación
+        # CLIP cuando está disponible. Necesita el buffer de esqueleto igual
+        # que la fusión de actividad — se crea abajo si hace falta para
+        # cualquiera de los dos.
+        self._fall_temporal = fall_temporal_classifier if _SKELETON_AVAILABLE else None
+
         self._skeleton_buffer = None
         self._hybrid = None
+        need_buffer = _SKELETON_AVAILABLE and (
+            (self._clip is not None and skeleton_classifier is not None) or self._fall_temporal is not None
+        )
+        if need_buffer:
+            self._skeleton_buffer = SkeletonSequenceBuffer()
         if self._clip is not None:
             if _SKELETON_AVAILABLE and skeleton_classifier is not None:
-                self._skeleton_buffer = SkeletonSequenceBuffer()
                 self._hybrid = HybridActivityClassifier(
                     mode="hybrid",
                     skeleton_classifier=skeleton_classifier,
@@ -227,7 +255,10 @@ class CameraWorker(threading.Thread):
                     if detector.last_detection is not None:
                         kpts, box = detector.last_detection
                         h, w = frame.image.shape[:2]
-                        ps = build_pose_sample(kpts, box, w, h, frame.timestamp_s)
+                        ps = build_pose_sample(
+                            kpts, box, w, h, frame.timestamp_s,
+                            kpts_conf=detector.last_detection_conf,
+                        )
                         feat = frame_features(
                             kpts, detector.last_detection_conf, box,
                             ps.aspect_ratio, ps.torso_angle_deg, ps.hip_y, ps.bbox_height_frac,
@@ -253,13 +284,26 @@ class CameraWorker(threading.Thread):
                     if self._motion is not None:
                         write_motion_state(self._config.id, awake=True)
                 for raw in raw_events:
-                    if raw["event_type"] == "fall" and self._fall_confirm is not None:
-                        confirmed, margin = self._confirm_fall(frame, detector)
-                        raw["metadata"]["clip_confirmation_margin"] = round(margin, 4)
-                        if not confirmed:
+                    if raw["event_type"] == "fall":
+                        # Evidencia parcial (persona fuera de cuadro / torso no
+                        # visible): la firma geométrica es poco confiable y un
+                        # recorte truncado hace que CLIP tampoco sirva. No se
+                        # descarta ni se confirma con CLIP — se emite como
+                        # sospecha (severity baja, confirmed=False) y el
+                        # detector la escala a severidad alta si la persona
+                        # queda inmóvil (evento immobility trigger=post_fall_sospecha).
+                        if raw["metadata"].get("evidence") == "partial":
+                            raw["metadata"]["severity"] = "sospecha"
+                            raw["metadata"]["confirmed"] = False
                             self._log.info(
-                                "[%s] caída descartada por CLIP @ %.2fs (margin=%.4f)",
-                                self._config.id, raw["video_timestamp_s"], margin,
+                                "[%s] caída de evidencia parcial @ %.2fs — se emite como sospecha "
+                                "(escala por inmovilidad si la persona queda quieta)",
+                                self._config.id, raw["video_timestamp_s"],
+                            )
+                        elif not self._confirm_fall_event(raw, frame, detector):
+                            self._log.info(
+                                "[%s] caída descartada @ %.2fs  meta=%s",
+                                self._config.id, raw["video_timestamp_s"], raw["metadata"],
                             )
                             continue
 
@@ -333,6 +377,52 @@ class CameraWorker(threading.Thread):
         _, box = detector.last_detection
         crop = crop_to_person(frame.image, box)
         return self._fall_confirm.confirm(crop)
+
+    def _confirm_fall_event(self, raw: dict, frame, detector) -> bool:
+        """Segunda etapa de un evento de caída de evidencia completa.
+
+        Prioridad: clasificador temporal de esqueleto (mira la *forma del
+        movimiento*, la señal que distingue una caída de sentarse/acostarse a
+        propósito) → si no está disponible o la ventana no tiene cobertura
+        suficiente, confirmación CLIP (apariencia de un frame) → si tampoco,
+        se confirma por defecto. CLIP también actúa de desempate cuando el
+        temporal queda en zona incierta. Escribe en `raw["metadata"]` lo que
+        cada etapa haya evaluado. Devuelve True si el evento se mantiene."""
+        meta = raw["metadata"]
+        window = (
+            self._skeleton_buffer.build_window(frame.timestamp_s)
+            if self._skeleton_buffer is not None else None
+        )
+
+        temporal_verdict: Optional[bool] = None  # None = indeciso / no evaluado
+        if self._fall_temporal is not None and window is not None:
+            res = self._fall_temporal.classify(window)
+            meta["fall_temporal_label"] = res["label"]
+            meta["fall_temporal_score"] = round(res["fall_score"], 4)
+            if res["fall_score"] >= _FALL_TEMPORAL_CONFIRM:
+                temporal_verdict = True
+            elif res["fall_score"] <= _FALL_TEMPORAL_REJECT:
+                temporal_verdict = False
+
+        if temporal_verdict is True:
+            meta["confirmed"] = True
+            return True
+        if temporal_verdict is False:
+            meta["confirmed"] = False
+            return False
+
+        # Temporal indeciso o ausente → CLIP (desempate / camino previo).
+        if self._fall_confirm is not None:
+            confirmed, margin = self._confirm_fall(frame, detector)
+            meta["clip_confirmation_margin"] = round(margin, 4)
+            meta["confirmed"] = confirmed
+            return confirmed
+
+        # Sin CLIP: si el temporal corrió pero quedó en zona incierta, se
+        # mantiene el evento pero marcado confirmed=False; si no corrió nada,
+        # se confirma por defecto (comportamiento previo de _confirm_fall).
+        meta["confirmed"] = "fall_temporal_label" not in meta
+        return True
 
     def _clip_tick(self, frame, detector, store: EventStore) -> None:
         """Muestreo CLIP por ventanas.

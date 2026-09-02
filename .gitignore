@@ -57,5 +57,7 @@ vlm/models_*/
 fusion/models/
 fusion/dataset_features.npz
 fusion/*_features.npz
+fusion/fall_windows.npz
+fusion/fall_windows_cache.pkl
 *.onnx
 *.onnx.data

@@ -244,6 +244,16 @@ comandos) en su README.
       validar la dirección del efecto y el `skeleton_weight` del default
       (0.5), no un número definitivo de matriz de confusión completa para
       el informe.
+      *Actualización 2026-09-01:* `fusion/` sumó un segundo deliverable — un
+      **clasificador temporal de caída** (mismo GRU, binario `normal`/`caida`,
+      augmentación de oclusión + hard-negative mining) que reemplaza el filtro
+      CLIP como 2ª etapa del evento de caída de `vision/`. End-to-end
+      (`evaluate_falls.py --temporal`, 5 datasets): recall 133/158 (= geométrico
+      solo), FP de alerta dura 185→91; donde hay ventana de esqueleto rechaza
+      94/94 FP. Ver "Clasificador temporal de caída" en `fusion/README.md` y
+      "Actualización 2026-09-01" en `vision/README.md`. Junto con eso, `vision/`
+      sumó la guarda de encuadre (evento `fall` con `evidence: full|partial`,
+      los `partial` van a sospecha + escalada por inmovilidad).
 - [ ] `baseline/`: clustering dinámico + detección de desvíos (Snoun et al.
       2024).
 - [ ] `evaluation/`: exportar video anotado para inspección visual.

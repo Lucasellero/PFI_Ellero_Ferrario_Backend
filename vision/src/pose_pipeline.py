@@ -78,6 +78,17 @@ FALL_FLOOR_HIP_Y = 0.75               # + hip_y (posición absoluta en el frame)
 FALL_BASELINE_WINDOW_S = 2.0          # ventana antes del pico de velocidad para estimar la altura "de pie" de referencia
 FALL_COOLDOWN_S = 3.0                 # tras confirmar una caída, no reportar otra hasta pasado esto
 MIN_KEYPOINT_CONFIDENCE = 0.2         # confianza promedio mínima de keypoints para no descartar el frame
+
+# Calidad de encuadre (ver "evidence" en el evento de caída y vision/README.md):
+# cuando la persona no entra entera en el frame, el bbox se recorta contra el
+# borde => aspect_ratio ensanchado artificialmente + hip_y saltando de golpe =>
+# la heurística de dos fases lo lee como caída. Un evento así no se descarta,
+# pero se marca `evidence="partial"` para que el runner no lo confirme con CLIP
+# (recorte truncado => CLIP poco confiable) y en cambio lo escale por
+# inmovilidad si la persona queda quieta.
+FRAME_EDGE_MARGIN_FRAC = 0.012        # el bbox a menos de esta fracción del borde superior/izq/der => "toca el borde" (el borde inferior no cuenta: los pies tocándolo es encuadre normal de alguien parado)
+TORSO_KEYPOINT_MIN_CONF = 0.5         # confianza mínima de hombros+cadera (COCO 5,6,11,12) para considerar el torso visible
+IMMOBILITY_WINDOW_POSTFALL_S = 45.0   # tras una caída de evidencia parcial, cuántos segundos de inmovilidad escalan a evento de severidad alta (ventana corta: es una posible emergencia, no sedentarismo)
 IMMOBILITY_WINDOW_S = 180.0            # segundos de movimiento casi nulo => evento de inmovilidad (sedentarismo sostenido, no un instante)
 IMMOBILITY_MOVEMENT_THRESHOLD = 0.02   # desplazamiento normalizado de keypoints POR SEGUNDO (no por frame, ver _smoothed_displacement_rate) => "se está moviendo"
 IMMOBILITY_SAMPLE_WINDOW_S = 2.0       # ventana para promediar el desplazamiento: un solo frame ruidoso (dar vuelta una hoja) no debe resetear la cuenta
@@ -93,6 +104,15 @@ class PoseSample:
     aspect_ratio: float
     torso_angle_deg: float
     keypoints: np.ndarray      # normalizados a [0, 1] por ancho/alto del frame
+    bbox_touches_edge: bool = False   # el bbox llega al borde superior/izq/der del frame => persona parcialmente fuera de cuadro
+    torso_visible: bool = True        # hombros + cadera detectados con confianza suficiente (ver TORSO_KEYPOINT_MIN_CONF)
+
+    @property
+    def framing_ok(self) -> bool:
+        """Encuadre confiable para la heurística geométrica: persona entera en
+        cuadro y torso visible. Si es False, un evento de caída se marca
+        `evidence="partial"` (ver FallImmobilityDetector._detect_fall)."""
+        return not self.bbox_touches_edge and self.torso_visible
 
 
 def detect_person(model: YOLO, image: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray | None] | None:
@@ -132,7 +152,14 @@ def detect_person(model: YOLO, image: np.ndarray) -> tuple[np.ndarray, np.ndarra
     return kpts, box, kpts_conf
 
 
-def build_pose_sample(kpts: np.ndarray, box: np.ndarray, w: int, h: int, timestamp_s: float) -> PoseSample:
+def build_pose_sample(
+    kpts: np.ndarray,
+    box: np.ndarray,
+    w: int,
+    h: int,
+    timestamp_s: float,
+    kpts_conf: np.ndarray | None = None,
+) -> PoseSample:
     x1, y1, x2, y2 = box
     bw, bh = max(x2 - x1, 1e-6), max(y2 - y1, 1e-6)
     # float(...) porque box/kpts vienen de numpy (float32), que no es
@@ -144,6 +171,18 @@ def build_pose_sample(kpts: np.ndarray, box: np.ndarray, w: int, h: int, timesta
     dx, dy = shoulder[0] - hip[0], shoulder[1] - hip[1]
     torso_angle_deg = float(math.degrees(math.atan2(abs(dx), abs(dy) + 1e-6)))
 
+    # El borde inferior no cuenta: los pies de alguien parado suelen tocarlo y
+    # eso es encuadre normal. Recorte por arriba/izquierda/derecha sí trunca el
+    # cuerpo y rompe la premisa geométrica de la heurística.
+    mx, my = FRAME_EDGE_MARGIN_FRAC * w, FRAME_EDGE_MARGIN_FRAC * h
+    bbox_touches_edge = bool(x1 <= mx or y1 <= my or x2 >= w - mx)
+
+    torso_visible = True
+    if kpts_conf is not None:
+        torso_visible = bool(
+            np.all(np.asarray(kpts_conf)[[L_SHOULDER, R_SHOULDER, L_HIP, R_HIP]] >= TORSO_KEYPOINT_MIN_CONF)
+        )
+
     return PoseSample(
         timestamp_s=timestamp_s,
         hip_y=float(hip[1] / h),
@@ -151,6 +190,8 @@ def build_pose_sample(kpts: np.ndarray, box: np.ndarray, w: int, h: int, timesta
         aspect_ratio=aspect_ratio,
         torso_angle_deg=torso_angle_deg,
         keypoints=kpts / np.array([w, h]),
+        bbox_touches_edge=bbox_touches_edge,
+        torso_visible=torso_visible,
     )
 
 
@@ -193,7 +234,13 @@ class FallImmobilityDetector:
     dataset propio de validación.
     """
 
-    def __init__(self, model_path: str = "yolo11n-pose.pt", history_seconds: float = 2.5, device: str | None = None):
+    def __init__(
+        self,
+        model_path: str = "yolo11n-pose.pt",
+        history_seconds: float = 2.5,
+        device: str | None = None,
+        postfall_window_s: float = IMMOBILITY_WINDOW_POSTFALL_S,
+    ):
         self._model = YOLO(model_path)
         if device is None:
             import torch
@@ -211,6 +258,14 @@ class FallImmobilityDetector:
         self._baseline_height: float | None = None
         self._heights_history: deque[tuple[float, float]] = deque()  # (t, bbox_height_frac), ventana propia para estimar altura "de pie"
         self._fall_cooldown_until: float = float("-inf")
+        # Vigilancia post-caída: tras una caída de evidencia parcial (persona
+        # parcialmente fuera de cuadro, ver _detect_fall), se arma un contador
+        # de inmovilidad con ventana corta (postfall_window_s) que escala a un
+        # evento de severidad alta si la persona queda quieta — y se cancela si
+        # se levanta. Independiente de _track_immobility (sedentarismo, 180s).
+        self._postfall_window_s = postfall_window_s
+        self._postfall_since: float | None = None
+        self._postfall_reported = False
         self.last_detection: tuple[np.ndarray, np.ndarray] | None = None
         # Confianza por keypoint de la última detección, separada de
         # last_detection para no romper los call sites que hacen
@@ -229,7 +284,7 @@ class FallImmobilityDetector:
         self.last_detection = (kpts, box)
         self.last_detection_conf = kpts_conf
 
-        sample = build_pose_sample(kpts, box, w, h, timestamp_s)
+        sample = build_pose_sample(kpts, box, w, h, timestamp_s, kpts_conf=kpts_conf)
         self._history.append(sample)
         self._trim_history(sample.timestamp_s)
         self._immobility_history.append(sample)
@@ -240,16 +295,30 @@ class FallImmobilityDetector:
             self._heights_history.popleft()
 
         if self._detect_fall(sample):
+            # Evidencia del encuadre en el momento del aterrizaje: si la persona
+            # está parcialmente fuera de cuadro o sin torso visible, la firma
+            # geométrica (aspect_ratio / hip_y) es poco confiable. El evento NO
+            # se descarta — se marca para que el runner lo trate como sospecha
+            # (sin confirmación CLIP sobre un recorte truncado) y lo escale por
+            # inmovilidad si la persona queda quieta.
+            evidence = "full" if sample.framing_ok else "partial"
             events.append({
                 "event_type": "fall",
                 "video_timestamp_s": sample.timestamp_s,
                 "metadata": {
                     "aspect_ratio": sample.aspect_ratio,
                     "torso_angle_deg": sample.torso_angle_deg,
+                    "evidence": evidence,
+                    "bbox_touches_edge": sample.bbox_touches_edge,
+                    "torso_visible": sample.torso_visible,
                 },
             })
+            if evidence == "partial":
+                self._postfall_since = sample.timestamp_s
+                self._postfall_reported = False
 
         events.extend(self._track_immobility(sample))
+        events.extend(self._track_postfall(sample))
         return events
 
     def _trim_history(self, now: float) -> None:
@@ -372,6 +441,47 @@ class FallImmobilityDetector:
                         },
                     })
         return events
+
+    def _track_postfall(self, sample: PoseSample) -> list[dict]:
+        """Vigilancia tras una caída de evidencia parcial (ver process_frame).
+
+        La heurística geométrica no pudo confirmar la caída con confianza
+        (persona parcialmente fuera de cuadro), así que en vez de descartarla
+        se observa qué pasa después: si la persona queda inmóvil
+        `_postfall_window_s` segundos (ventana corta, ~45s: es una posible
+        emergencia, no sedentarismo), se emite un evento de severidad alta. Si
+        se mueve antes (se levantó), se cancela sin alerta. Esto resuelve la
+        tensión "no descartar una caída donde solo se ve el torso" sin inundar
+        de falsos positivos: alguien que pasa caminando por el borde del cuadro
+        sigue moviéndose y nunca escala.
+
+        Reusa `_smoothed_displacement_rate` / `self._immobility_history` (mismo
+        criterio y tolerancia a huecos de 15s que `_track_immobility`).
+        """
+        if self._postfall_since is None:
+            return []
+
+        rate = self._smoothed_displacement_rate(sample)
+        if rate is not None and rate > IMMOBILITY_MOVEMENT_THRESHOLD:
+            # Se movió: se levantó (o nunca cayó). Cancelar la vigilancia.
+            self._postfall_since = None
+            self._postfall_reported = False
+            return []
+
+        elapsed = sample.timestamp_s - self._postfall_since
+        if elapsed > self._postfall_window_s and not self._postfall_reported:
+            self._postfall_reported = True
+            return [{
+                "event_type": "immobility",
+                "video_timestamp_s": sample.timestamp_s,
+                "metadata": {
+                    "duration_s": elapsed,
+                    "posture": self._majority_posture(),
+                    "severity": "alta",
+                    "trigger": "post_fall_sospecha",
+                },
+            }]
+        return []
 
     def _smoothed_displacement_rate(self, sample: PoseSample) -> float | None:
         """Desplazamiento de keypoints entre `sample` y la muestra más cercana

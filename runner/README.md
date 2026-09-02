@@ -209,24 +209,45 @@ clasificación de actividad, en vez de depender solo de CLIP.
   carpetas" en `vlm/README.md`). Para clips cortos en loop, considerar bajar
   `clip_interval_s` a algo cercano a la duración real del clip.
 
-## Confirmación de caídas con CLIP
+## Confirmación de caídas (`_confirm_fall_event`)
 
 El detector geométrico de `vision/` (velocidad vertical + aspect ratio) no
 distingue una caída real de sentarse/acostarse a propósito en algunos setups
 de cámara (bbox ancho y bajo genera la misma firma geométrica que una caída
 — ver "Detección de caída como evento" en `vision/README.md` para el
-detalle y por qué recalibrar los umbrales geométricos no alcanza). Como
-segunda etapa, cuando `FallImmobilityDetector` dispara un evento `fall`, el
-worker le pregunta a CLIP zero-shot (`vlm/src/fall_confirmation.py`,
-reusando el mismo encoder ONNX que la clasificación de actividad, sin cargar
-un segundo modelo) si el recorte de la persona en ese frame se parece más a
-una caída accidental o a una postura voluntaria — si no se confirma, el
-evento se descarta y solo queda logueado, no se guarda en `events/`.
-Calibrado sobre 445 eventos geométricos de 183 clips
-(`vision/calibrate_fall_confirmation.py`): retiene 82.0% del recall
-geométrico y elimina 67% de los falsos positivos totales (70% en el setup de
-cámara más afectado). El margen de confirmación queda en el `metadata` del
-evento (`clip_confirmation_margin`) cuando se confirma.
+detalle y por qué recalibrar los umbrales geométricos no alcanza). Cuando
+`FallImmobilityDetector` dispara un evento `fall`, el worker decide en 2ª
+etapa según la **evidencia de encuadre** que trae el evento (Fase 0, ver
+`vision/README.md`):
+
+- **`evidence == "partial"`** (persona parcialmente fuera de cuadro): la firma
+  geométrica y un recorte truncado para CLIP son poco confiables. El evento
+  **no se descarta ni se confirma** — se emite con `severity: "sospecha"` /
+  `confirmed: False`, y `vision/` lo escala por inmovilidad si la persona
+  queda quieta (evento `immobility` con `trigger: "post_fall_sospecha"`).
+
+- **`evidence == "full"`** → `_confirm_fall_event`, en este orden:
+  1. **Clasificador temporal** (`fusion/src/fall_temporal.py`, GRU entrenado
+     sobre la ventana de keypoints — ver `fusion/README.md`): mira la *forma
+     del movimiento* de los últimos ~2 s. `fall_score ≥ 0.45` confirma,
+     `≤ 0.15` descarta, en el medio → paso 2.
+  2. **CLIP zero-shot/probe** (`vlm/src/fall_confirmation.py`, reusa el mismo
+     encoder ONNX que la clasificación de actividad): compara el recorte de
+     la persona contra "caída accidental" vs. "postura voluntaria". Se usa de
+     desempate del temporal, o como filtro principal si el temporal no está
+     disponible **o no pudo armar ventana de esqueleto** (típico en la escena
+     de sillón/cámara ancha donde `yolo11n-pose` no detecta a la persona).
+  3. Sin ninguna de las dos → se confirma por defecto.
+
+  Un evento no confirmado se descarta (solo queda logueado). El `metadata`
+  guarda `fall_temporal_score` y/o `clip_confirmation_margin` y `confirmed`.
+
+Números: el filtro CLIP solo, calibrado sobre 445 eventos de 183 clips
+(`vision/calibrate_fall_confirmation.py`), retiene 82.0% del recall y elimina
+67% de los FP. El pipeline con el temporal como 2ª etapa
+(`vision/evaluate_falls.py --temporal`, 5 datasets): recall end-to-end igual
+que geométrico solo (133/158), FP de alerta dura 185 → 91 — ver
+`fusion/README.md` para el desglose.
 
 ## Gate de movimiento
 
@@ -297,17 +318,23 @@ heartbeat mientras está despierta. `dashboard/` expone ese estado en
 `/api/motion` y el dashboard no muestra nada para ella, en vez de asumir un
 estado que no corresponde.
 
-## CLIP es opcional
+## CLIP y clasificador temporal de caída son opcionales
 
 Si `vlm/` no está disponible (no se pudo importar) o no se generaron los
 modelos ONNX (`vlm/export_onnx.py`), el runner sigue funcionando solo con
 pose estimation — loggea una advertencia y no clasifica actividad ni
-confirma caídas (quedan solo con la heurística geométrica). La confirmación
-de caídas además necesita `fall_confirmation_features.npy` específicamente
-(mismo `export_onnx.py`); si CLIP está disponible pero ese archivo no, el
-runner clasifica actividad normalmente y cae al comportamiento puramente
-geométrico solo para caídas. Ver `../vlm/README.md` para generar los
-modelos.
+confirma caídas con CLIP. La confirmación CLIP de caídas además necesita
+`fall_confirmation_features.npy` / `fall_confirmation_probe.npz` (mismo
+`export_onnx.py`).
+
+El **clasificador temporal de caída** (`fusion/models/fall_temporal_int8.onnx`,
+generado por `fusion/train_fall_temporal.py` + `export_fall_temporal_onnx.py`)
+es la 2ª etapa preferida cuando está presente; si no, `_confirm_fall_event`
+cae directamente a CLIP. Si tampoco hay CLIP, cada evento `fall` de evidencia
+completa se emite tal cual sale de la heurística geométrica (los de evidencia
+parcial siguen yendo a sospecha + escalada por inmovilidad, eso no depende de
+ningún modelo). Ver `../fusion/README.md` y `../vlm/README.md` para generar
+los modelos.
 
 El esqueleto de `fusion/` (ver "Fusión con esqueleto" arriba) es opcional de
 la misma manera: sin él, la clasificación de actividad sigue siendo CLIP

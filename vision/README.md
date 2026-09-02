@@ -26,6 +26,38 @@
   ninguna detección) — limita la rama "acostado" de inmovilidad en ese ángulo de
   cámara específico. Es un límite del modelo de pose, no de la lógica del detector.
 
+## Actualización 2026-09-01 — guardas de encuadre + clasificador temporal de caída
+
+Iteración para subir precisión (feedback post-presentación). CPU-only en la Pi 5.
+Dos cambios, ambos **encima** de la heurística geométrica (que no se toca):
+
+1. **Guardas de encuadre (Fase 0, en este módulo).** Cada evento `fall` lleva
+   `evidence: "full" | "partial"` según `PoseSample.framing_ok` (bbox no toca el
+   borde superior/izq/der **y** hombros+cadera visibles con confianza). Un evento
+   `partial` — la persona parcialmente fuera de cuadro, donde el aspect ratio y
+   `hip_y` son poco confiables — **no se descarta ni se confirma con CLIP** (recorte
+   truncado): se emite como `severity: "sospecha"` y `_track_postfall` lo escala a
+   `severity: "alta"` (`trigger: "post_fall_sospecha"`) si la persona queda inmóvil
+   `IMMOBILITY_WINDOW_POSTFALL_S` = 45 s. Alguien que pasa caminando por el borde
+   sigue moviéndose y nunca escala. En `evaluate_falls.py` los eventos `partial`
+   **recuperan +10–12 caídas reales** de "solo se ve el torso" que la geometría
+   "full" perdía. Detalle en "Detección de caída como evento" abajo.
+
+2. **Clasificador temporal de caída (vive en `fusion/`, ver `fusion/README.md`).**
+   Reemplaza la *decisión* de caída basada en umbrales por un GRU entrenado sobre la
+   ventana de keypoints (augmentación de oclusión + hard-negative mining). Es la 2ª
+   etapa del evento en `runner/camera_worker.py::_confirm_fall_event`, en reemplazo
+   de la confirmación CLIP (CLIP queda de fallback para eventos sin ventana de
+   esqueleto). `evaluate_falls.py --temporal` lo corre como 2ª etapa.
+
+**Resultado end-to-end** (`evaluate_falls.py --temporal --fps-cap 10`, 5 datasets,
+158 caídas / 292 clips): recall **133/158 (84.2 %) — igual que geométrico solo** —
+y **FP de alerta dura 185 → 91**. Donde hay ventana de esqueleto rechaza **94/94 FP
+(100 %)** y pierde **1/113 caídas**; los ~74 FP residuales de `ToyotaSmarthome_FP`
+son eventos **sin ventana** (el bloqueante de `yolo11n-pose` de arriba — no hay
+esqueleto que clasificar) y en producción caen a CLIP. El detector geométrico y su
+calibración (`FALL_VERTICAL_VELOCITY=0.12`, `FALL_ASPECT_RATIO=1.4`) **no cambian**.
+
 ## Estructura
 
 ```
@@ -261,9 +293,50 @@ decisiones de acá (la señal principal es la caída vertical de la cadera,
 ventana temporal de ~2s) y aporta dos ideas aplicables sin entrenar nada:
 filtrar detecciones con confianza de keypoints baja, y elegir la persona
 del bounding box más grande si hay más de una en el frame — ambas ya
-incorporadas a `detect_person()`. Un enfoque tipo Transformer entrenado
-queda fuera de alcance por ahora (necesita miles de videos etiquetados que
-no tenemos).
+incorporadas a `detect_person()`.
+
+**Actualización 2026-09-01 — el "trabajo futuro" de arriba está hecho, en dos
+partes:**
+
+*Parte 1 — guardas de encuadre (Fase 0, este módulo).* `build_pose_sample()`
+calcula por frame `bbox_touches_edge` (el bbox llega a `FRAME_EDGE_MARGIN_FRAC`
+del borde superior/izq/der — el inferior no cuenta, los pies de alguien parado lo
+tocan normalmente) y `torso_visible` (hombros+cadera COCO 5,6,11,12 con confianza
+≥ `TORSO_KEYPOINT_MIN_CONF`). `PoseSample.framing_ok` combina ambos. Cuando
+`_detect_fall` dispara, el evento lleva `metadata.evidence`: `"full"` si
+`framing_ok`, `"partial"` si no. Un evento `partial` es una caída donde la firma
+geométrica es poco confiable (persona truncada contra el borde) — **no se
+descarta**: `runner/camera_worker.py` lo emite como `severity: "sospecha"` /
+`confirmed: False` sin pasarlo por CLIP (recorte truncado → CLIP no sirve), y
+`_track_postfall` en este módulo lo escala a un evento `immobility` de
+`severity: "alta"` (`trigger: "post_fall_sospecha"`) si la persona queda inmóvil
+`IMMOBILITY_WINDOW_POSTFALL_S` = 45 s (ventana corta: posible emergencia, no
+sedentarismo), o lo cancela si se mueve. Reusa `_smoothed_displacement_rate` /
+`_immobility_history`. `evaluate_falls.py` reporta recall/FP desglosado por
+`evidence`: los eventos `partial` **recuperan +10–12 caídas reales** de "solo se
+ve el torso" que la geometría "full" perdía, a costa de FP que son sospechas, no
+alertas duras.
+
+*Parte 2 — clasificador temporal entrenado (vive en `fusion/`).* En vez del
+filtro CLIP zero-shot/probe, cuando la geometría dispara un evento de evidencia
+completa se consulta un GRU entrenado sobre la ventana de keypoints
+(`fusion/src/fall_temporal.py`, ver `fusion/README.md` para diseño, augmentación
+de oclusión, hard-negative mining y números). Es exactamente el "enfoque tipo
+Transformer entrenado" que este README daba por fuera de alcance — resultó viable
+con los datasets locales (`GMDCSA-24` + `CAUCAFall` + `URFD` + `ToyotaSmarthome_FP`
+como negativos duros) porque el modelo (GRU ~48 k params) es mucho más chico que
+el de Benabdennour y la ventana de keypoints ya la produce `fusion/`.
+
+`evaluate_falls.py --temporal` corre el pipeline completo (geometría + veto
+temporal). Sobre 5 datasets (158 caídas / 292 clips): recall **133/158 (84.2 %),
+igual que geométrico solo**, FP de alerta dura **185 → 91**. Donde hay ventana de
+esqueleto que clasificar el temporal rechaza **94/94 FP** y pierde **1/113
+caídas**; los ~74 FP residuales de `ToyotaSmarthome_FP` son eventos **sin ventana**
+— el mismo bloqueante de `yolo11n-pose` documentado arriba (persona en sillón
+desde cámara ancha, 94.5 % de frames sin detección) — y en producción caen a la
+confirmación CLIP. `FallImmobilityDetector` y sus umbrales geométricos **no
+cambian**: sigue siendo el trigger y se calibra/evalúa solo con `evaluate_falls.py`
+(sin `--temporal`).
 
 ### 3. Inmovilidad prolongada — calibrada para el caso sedentario, sin validar para el caso post-caída
 

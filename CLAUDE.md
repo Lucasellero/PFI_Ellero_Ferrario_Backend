@@ -38,6 +38,17 @@ Claude. Antes de citar un número de un `.log` suelto, verificar con
   geométricos eliminados en validación end-to-end. Pendiente documentado (no bug): en
   3 de 4 clips largos de `ToyotaSmarthome_FP` la inmovilidad no se dispara porque la
   persona nunca está 180s realmente quieta en el clip completo.
+  **Actualización 2026-09-01** (ver "Actualización 2026-09-01" en `vision/README.md` y
+  la sección "Clasificador temporal de caída" en `fusion/README.md`): se sumó (a) una
+  guarda de encuadre — evento `fall` con `evidence: full|partial`, los `partial`
+  ("solo se ve el torso") no se descartan, van a sospecha + escalada por inmovilidad,
+  y recuperan +10-12 caídas reales; (b) un clasificador temporal entrenado (GRU en
+  `fusion/`, augmentación de oclusión + hard-negative mining) que reemplaza al filtro
+  CLIP como 2ª etapa. End-to-end (`evaluate_falls.py --temporal`, 5 datasets): recall
+  133/158 (84.2%, = geométrico solo), FP de alerta dura 185→91. Donde hay ventana de
+  esqueleto rechaza 94/94 FP; los ~74 FP residuales de `ToyotaSmarthome_FP` son
+  eventos sin ventana (el bloqueante de `yolo11n-pose` de abajo) → caen a CLIP. Los
+  umbrales geométricos NO cambiaron.
 - **Inmovilidad/sedentarismo**: bug de historial corregido en `9356c15` (ventana de
   2.5s de la velocidad de caída se compartía indebidamente con el tracking de
   inmovilidad). Bloqueante identificado y no resuelto: `yolo11n-pose` no detecta bien
