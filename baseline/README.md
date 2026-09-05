@@ -2,31 +2,503 @@
 
 ## Qué hace
 
-Consume eventos ya almacenados (`../events/store.py`) y construye una línea
-base de comportamiento mediante clustering dinámico (ver Sec. 2.1.7 y 2.2.5
-del informe, enfoque de Snoun et al. 2024 — clustering con ventana móvil y
-"behavioral drift"), para luego detectar desvíos significativos respecto al
+Consume eventos ya almacenados y construye una línea base de comportamiento mediante clustering
+dinámico (ver Sec. 2.1.7 y 2.2.5 del informe, enfoque de Snoun et al. 2024 — clustering con
+ventana móvil y "behavioral drift"), para luego detectar desvíos significativos respecto al
 patrón habitual.
 
-## Entrada
+**Nota de honestidad académica**: el texto completo de Snoun et al. 2024 ("A Deep Learning Based
+System For a Long-term Elderly Behavioral Drift Detection", SN Computer Science) está detrás de
+un paywall — solo se pudo confirmar el enfoque a nivel de abstract (clustering dinámico iterativo
+con ventana móvil, comparando cada día observado contra el patrón de rutina del período anterior
+vía un score de similitud). Lo que implementa este módulo es una **interpretación propia fiel a
+ese enfoque documentado**, no una reproducción de sus fórmulas exactas (no publicadas en acceso
+abierto). Aclarar esto en el informe si se cita este módulo como implementación de ese paper.
 
-`events.db` vía `EventStore.all()`. **No depende del código interno de
-`vision/` ni `vlm/`**, solo del esquema de eventos.
+## Fuente de datos (2026-09-05)
 
-## Cómo desarrollarlo en paralelo sin esperar a vision/vlm
+Se desarrolló y validó directamente contra
+[`dataset_events/`](../dataset_events/README.md) (CASAS, 319k eventos reales, 80 residentes) —
+no contra eventos sintéticos ni contra la salida de `vision/`/`vlm/` todavía. Motivo: al momento
+de esta iteración, mejorar la clasificación de actividad de la cámara (más de las 4 categorías
+actuales, ver [`fusion/PLAN_sustitucion_clip.md`](../fusion/PLAN_sustitucion_clip.md)) estaba
+bloqueado porque el dataset de video grande necesario para medirlo no estaba disponible en la
+máquina de desarrollo — así que se adelantó `baseline/`, que no tenía ese bloqueo.
 
-Generar eventos sintéticos que respeten `MonitoringEvent` (por ejemplo,
-actividades simuladas distribuidas a lo largo de varios "días" de video
-ficticios, con algún día con un patrón anómalo a propósito) para probar el
-clustering antes de que el pipeline de visión esté terminado. Insertarlos con
-`EventStore.add()` igual que lo haría `vision/`/`vlm/` en producción.
+El diseño es agnóstico de la fuente por construcción (ver "Diseño" abajo): el mismo código sirve
+el día de mañana con eventos reales de cámara (cuando tenga más de 4 clases), sin reescritura,
+solo cambiando el adapter de entrada — el objetivo de comparación "desvíos detectables con
+sensores vs. solo con cámara" que plantea `fusion/PLAN_sustitucion_clip.md` sigue pendiente hasta
+que exista esa fuente alternativa.
 
-## Salida
+Usa la clase **canónica** de CASAS (`actividad`, 19 clases — `dataset_events/activity_map.py`),
+no la gruesa: es lo que `dataset_events/README.md` ya documenta como el nivel que debe consumir
+este módulo.
 
-Por definir con más detalle al empezar esta etapa. Como mínimo: un score de
-desvío/anomalía por ventana temporal, comparando la actividad observada
-contra los clusters que representan el comportamiento habitual del "video_id"
-(en esta fase local, cada `video_id` hace de proxy de un residente/día).
+## Diseño
+
+### 1. Vector de "día" (`src/features.py`)
+
+Por `(hogar, fecha)`: para cada una de las 19 clases canónicas, duración total en minutos y
+cantidad de eventos → vector de 38 dims (`build_day_vectors()`). Los días con menos de
+`COBERTURA_MIN_HORAS` (4h) de actividad etiquetada se marcan `cobertura_baja` y se excluyen tanto
+de construir la rutina como de evaluarse — no se inventa actividad en huecos sin dato (mismo
+criterio que el `sin_dato` del ETL de `dataset_events/build_table.py`).
+
+Simplificación consciente: la duración de un evento se atribuye entera al día de su inicio, aunque
+cruce la medianoche (ej. dormir 23:40→07:00 cuenta todo para el día de las 23:40) — no se
+descompuso por franja horaria en esta primera iteración porque los tres escenarios de validación
+(medicación, baño nocturno, salir de casa) ya se resuelven con duración/conteo por clase sin esa
+finura (`bano_nocturno` ya es una clase canónica separada de `bano` en el ETL, la sensibilidad
+horaria de esa distinción específica viene resuelta de antes).
+
+### 2. Clustering dinámico multivariado (`src/dynamic_clustering.py`)
+
+Por residente, día a día, causal (nunca mira el futuro):
+
+1. **Ventana móvil**: los `window_days` días previos (default 30) del mismo residente, sin
+   incluir el día evaluado.
+2. **Reclustering iterativo**: `KMeans(k)` (default `k=2`) sobre esa ventana — se reajusta en
+   cada paso, así que si la rutina cambia de forma sostenida los clusters de referencia se corren
+   solos con la ventana en vez de comparar para siempre contra un patrón fijo.
+3. **Distancia** del día evaluado (features estandarizadas con `StandardScaler` ajustado sobre la
+   misma ventana) al centroide más cercano.
+4. **z-score contra el historial propio del residente** (cada persona tiene volumen/rutina de
+   base muy distinto, la distancia cruda no es comparable entre hogares).
+5. `z_score > threshold_z` (default 2.5) → posible desvío. Guarda además qué 3 dimensiones más
+   contribuyeron a la distancia (`top_contribuyentes`), para poder decir *qué* cambió.
+
+### 3. Desvío por clase individual (`src/class_deviations.py`) — agregado tras medir
+
+**Hallazgo real durante la validación** (ver "Estado" abajo): el detector multivariado nunca
+marcaba el escenario "sin medicación" en ningún punto del barrido, aunque `medicacion_n`/
+`medicacion_min` sí aparecían como el contribuyente principal de la distancia. Causa: con 38
+dimensiones, un cambio real pero concentrado en una sola clase de bajo volumen diario (minutos de
+medicación son chicos frente a `trabajo`/`ver_tv`/`dormir`) queda diluido por el ruido cotidiano
+normal de las otras 37 clases — el "día completo" no se ve tan distinto en agregado.
+
+Se agregó un segundo detector, complementario (no reemplaza al multivariado): evalúa cada clase
+de `TRACKED_CLASSES` (`medicacion`, `salir_casa`, `bano_nocturno` — las 3 clínicamente relevantes
+de los escenarios de validación) **por separado**, contra su propia mediana/MAD histórica en la
+misma ventana móvil, marcando `ausencia` (hoy en 0, cuando históricamente ocurre casi todos los
+días), `ausencia_sostenida` (varios días seguidos en 0) o `exceso` (muy por encima de lo habitual).
+
+Se probó primero con un conjunto más amplio de clases (sumando `comer`/`beber`/`dormir`) y un
+umbral más laxo — dio 93% de recall pero **52% de falsos positivos**, inaceptable. Causa
+diagnosticada: el conteo de eventos de clases como `dormir` es ruidoso por el corte de día
+(un evento que cruza la medianoche puede contarse como 0 eventos en el día calendario que
+"debería" tenerlo) — genera ausencias falsas que no son un desvío real. Se acotó `TRACKED_CLASSES`
+a las 3 clases realmente necesarias y se subió `frac_historica_min` hasta bajar el FP a un rango
+razonable (ver barrido en "Estado").
+
+Un día cuenta como desvío si **cualquiera de los dos detectores** lo marca (`evaluate_deviations.py`,
+columna `combinado`).
+
+### 4. Qué no se toca en esta iteración
+
+- `events/schema.py` no se modifica — `baseline/` no escribe eventos de vuelta al store de
+  `MonitoringEvent` todavía. La salida vive en sus propios artefactos
+  (`baseline/synthetic_eval/*.parquet`, `grid_results.csv`), no como un nuevo `EventType`. Se
+  evita tocar el contrato compartido antes de validar el enfoque.
+
+## Validación: desvíos sintéticos (no hay ground truth real de "día anómalo" en CASAS)
+
+Mismo patrón que ya usa el resto del proyecto para medir sin dataset etiquetado de antemano
+(hard-negative mining en `fusion/extract_falls.py`, grid search en
+`vision/recalibrate_fall_thresholds.py`): perturbar copias de datos reales de forma controlada y
+medir recall/FP contra esas perturbaciones.
+
+- **`inject_synthetic_deviations.py`**: sobre los 7 hogares recomendados por
+  `dataset_events/README.md` (`hh113`, `hh115`, `hh117`, `hh120`, `hh109`, `hh101`, `mn83`),
+  genera 3 escenarios sobre días reales elegidos al azar — `sin_medicacion` (medicación puesta a
+  0), `bano_nocturno_excesivo` (conteo subido bien por encima del histórico), `semana_sin_salir`
+  (7 días consecutivos con `salir_casa`/`entrar_casa` en 0) — más una muestra de 20 días reales
+  sin tocar por hogar (`real_sin_tocar`) como negativos. Los días perturbados nunca contaminan la
+  ventana de referencia de otros días (`exclude_from_reference` en ambos detectores) ni el
+  historial de z-score del residente — se evalúan contra la rutina real, no una rutina ya
+  corrompida por la propia inyección.
+- **`evaluate_deviations.py`**: corre ambos detectores sobre ese set, barre
+  `(window_days ∈ {14,21,30}, k ∈ {2,3,4}, threshold_z ∈ {2.0,2.5,3.0,3.5})`, reporta recall/FP
+  del multivariado solo, del detector por clase solo, y del combinado — mismo framing recall/FP
+  que `vision/evaluate_falls.py`.
+
+## Estado (2026-09-05)
+
+Implementado y validado con desvíos sintéticos sobre CASAS. 202 días evaluados (59 positivos —
+6 `sin_medicacion`, 7 `bano_nocturno_excesivo`, 49 días de `semana_sin_salir`, repartidos en 7
+semanas — y 121 negativos `real_sin_tocar`; 22 quedaron sin score por historial insuficiente).
+
+**Mejor combinación del barrido** (`window_days=30, k=2, threshold_z=2.5`, defaults actuales de
+`DriftConfig`; `min_window_days=7` — período de silencio de 7-10 días decidido con el usuario,
+ver "Período de aprendizaje" abajo):
+
+| Detector | Recall global | FP | `sin_medicacion` | `bano_nocturno_excesivo` | `semana_sin_salir` |
+|---|---|---|---|---|---|
+| Multivariado solo | 16.7% | 2.3% | 0% | 28.6% | 16.3% |
+| Por clase solo | 76.7% | 9.2% | 75.0% | 14.3% | 85.7% |
+| **Combinado** | **86.7%** | **11.5%** | **75.0%** | **42.9%** | **93.9%** |
+
+(Con `min_window_days=14` el combinado daba 89.8%/10.7% — el recorte a 7 días de silencio pierde
+~3pp de recall a cambio de que el sistema empiece a opinar antes sobre una persona nueva.)
+
+Lecturas honestas:
+
+- El detector multivariado por sí solo es débil para estos 3 escenarios — captura mejor cambios
+  repartidos en varias clases a la vez ("la rutina en general se ve distinta"), no ausencias/
+  excesos concentrados en una sola clase. Sigue siendo la pieza que cubriría desvíos que el
+  detector por clase no está mirando (cambios de horario generalizados, redistribución de tiempo
+  entre actividades sin que ninguna llegue a 0 o exceso).
+- El detector por clase es el que hace la mayor parte del trabajo en estos 3 escenarios — por
+  diseño: son justo el tipo de señal sparse/concentrada para la que se creó.
+- `bano_nocturno_excesivo` es el más flojo (50% combinado) — **solo 7 muestras**, no alcanza para
+  confiar en el número; además la métrica de exceso depende del MAD histórico de una clase que
+  ya es esporádica de por sí (varios residentes tienen 0 baños nocturnos la mayoría de las
+  noches), lo que hace más ruidoso detectar "más de lo normal" cuando "lo normal" ya es cero la
+  mayoría de los días.
+- FP del 10.7% sobre días reales sin tocar: aceptable como punto de partida, pero no bajo — antes
+  de producción convendría una segunda vuelta de calibración con más días negativos (acá solo 121)
+  y, si se define el sesgo hacia menos FP que ya rige la calibración de caídas del proyecto, un
+  barrido más fino alrededor de `threshold_z`/`excess_k` priorizando bajar FP sobre subir recall.
+
+Ver `synthetic_eval/grid_results.csv` (no versionado, se regenera con `evaluate_deviations.py`)
+para el barrido completo.
+
+**Nota**: estos números son del estado con 3 escenarios (`medicacion`/`bano_nocturno`/
+`salir_casa`); la sección "Frecuencia/omisión de eventos" más abajo los actualiza al sumar
+`comer`/`deficit` y recalibrar — usar esa tabla como la vigente, esta queda como registro de cómo
+se llegó ahí.
+
+## Período de aprendizaje (arranque en frío)
+
+Todo lo de arriba se validó contra CASAS, que ya tiene meses de historial por residente. Una
+persona nueva monitoreada por cámara real arranca sin ningún historial — el sistema no puede (ni
+debe) opinar sobre "lo normal" de alguien que recién empieza a ver. Decisión de producto (con el
+usuario, 2026-09-05): **7-10 días de silencio total** antes de que cualquier detector empiece a
+emitir desvíos — es lo que fija `min_window_days` en `DriftConfig`/`ClassDeviationConfig` (7).
+Acortar el período de silencio de 14 a 7 días le cuesta al sistema ~3pp de recall combinado
+(89.8%→86.7%, ver tabla de arriba) a cambio de empezar a opinar antes — trade-off aceptado.
+
+`timing_deviations.py` usa una ventana en **cantidad de eventos** (`window_events`/
+`min_eventos_historial`), no en días — no hay una traducción exacta a "7-10 días" porque cada
+clase ocurre con frecuencia distinta (medicación ~2/día, beber varias veces/día). Pendiente
+alinear este detector al mismo criterio de período de silencio en días cuando se calibre en serio
+(ver "Horario habitual" abajo, estado parcial).
+
+## Horario habitual (`src/timing_deviations.py`) — estado parcial, en curso
+
+Detector adicional (2026-09-05, agregado a pedido del usuario): además de cuánto/cuántas veces y
+la forma general del día, mira **a qué hora** ocurre cada actividad, aprendiendo el horario
+habitual de cada `(hogar, actividad)` de su propio historial (clustering circular de horarios en
+hasta `k_time_slots` franjas, para no promediar desayuno+almuerzo+cena como si fueran una sola
+franja). No perturba nada del dataset real — el único "toqueteo" (correrle el horario a una copia
+de eventos) es, igual que en los otros dos detectores, un banco de pruebas para medir si el
+mecanismo funciona, no la lógica de producción.
+
+**Hallazgo real** (`evaluate_timing_deviations.py`, corriendo horarios ±3h sobre eventos reales de
+7 hogares): la señal es fuerte para actividades con horario genuinamente disciplinado y floja para
+las que naturalmente ocurren "a cualquier hora":
+
+| Clase | Recall | FP |
+|---|---|---|
+| `medicacion` | **55.6%** | **2.1%** |
+| `comer` | 42.9% | 21.4% |
+| `dormir` | 38.1% | 23.2% |
+| `salir_casa` | 38.1% | 12.5% |
+| `beber` | 16.7% | 6.3% |
+
+Mezclando las 5 clases parejo, el mejor punto del barrido combinado da solo 38% de recall con
+11-15% FP — muy por debajo de lo que se ve por clase. Pendiente (próxima sesión): acotar
+`DEFAULT_TRACKED_CLASSES` a las clases donde el horario realmente importa (`medicacion` es la más
+clara; `comer`/`dormir`/`salir_casa` con calibración por-clase en vez de parámetros compartidos)
+en vez de un único conjunto de parámetros para las 5 — mismo criterio que ya se aplicó en
+`class_deviations.py` para acotar `TRACKED_CLASSES`.
+
+## Frecuencia/omisión de eventos (`src/class_deviations.py`, extendido 2026-09-05)
+
+Se agregó un tercer tipo al detector por clase, simétrico a `exceso`: **`deficit`** — la clase
+ocurrió hoy, pero bastante menos veces de lo habitual (`0 < hoy < mediana - excess_k * sigma`),
+distinto de `ausencia` (=0). Pensado para "se saltó una comida" sin dejar de comer nada en todo el
+día: CASAS fusiona desayuno+almuerzo+cena en una sola clase `comer` (~3 eventos/día típico), así
+que un día con `comer_n=1` no es `ausencia` y probablemente tampoco mueve lo suficiente la
+duración total para que `dynamic_clustering.py` lo note (mismo problema de dilución que ya se
+había diagnosticado con `medicacion`).
+
+Se sumó `comer` a `TRACKED_CLASSES` (antes solo `medicacion`, `salir_casa`, `bano_nocturno`) y se
+agregó el escenario **`comida_salteada`** a `inject_synthetic_deviations.py` (baja `comer_n` a un
+valor bajo, no a 0, manteniendo proporcional la duración por evento). Se recalibró
+`(frac_historica_min, excess_k, dias_consecutivos_ausencia)` con esta clase sumada — el barrido
+ahora vive en `evaluate_deviations.py` (antes se corría a mano fuera del repo).
+
+**Resultado** (`frac_historica_min=0.9, excess_k=4.0, dias_consecutivos_ausencia=2`, defaults
+actuales de `ClassDeviationConfig`), sobre 200 días (73 positivos, 127 negativos — incluye el
+escenario `comida_camara_ausente` sumado más abajo en "Vocabulario de cámara", que también corre
+en modo sensor):
+
+| Detector | Recall global | FP | `sin_medicacion` | `bano_nocturno_excesivo` | `comida_salteada` | `comida_camara_ausente` | `semana_sin_salir` |
+|---|---|---|---|---|---|---|---|
+| Multivariado solo | 12.3% | 1.6% | 0% | 42.9% | 14.3% | 20.0% | 8.2% |
+| Por clase solo | 72.6% | 5.5% | 100% | 14.3% | 14.3% | 80.0% | 85.7% |
+| **Combinado** | **78.1%** | **7.1%** | **100%** | **57.1%** | **28.6%** | **80.0%** | **85.7%** |
+
+Mejora el FP (7.1% vs. 8.8% antes de sumar `comida_camara_ausente`) — el recall global bajó un
+poco (78.1% vs. 85.1%) porque este escenario nuevo es más difícil en promedio, no porque haya
+empeorado la calibración de los demás (compararlos escenario por escenario contra la versión
+anterior, arriba en el historial de commits, confirma que ninguno empeoró). `comida_salteada`
+sigue siendo el más débil (28.6%, 7 casos de prueba, no alcanza para un número definitivo).
+
+## Tendencia gradual (`src/trend_deviations.py`, nuevo 2026-09-05)
+
+Los 3 detectores anteriores comparan **un punto en el tiempo** (un día, un evento) contra su
+historial reciente — ninguno detecta un cambio **lento y sostenido a lo largo de semanas**, que es
+el caso clínico que más enfatiza el informe (Sec. 2.1.2). Este detector agrega los vectores-día a
+nivel de semana ISO y compara la mediana de un bloque de `n_semanas_recientes` (default 3) contra
+la mediana del bloque de `n_semanas_base` (default 8) inmediatamente anterior — mismo criterio
+robusto (mediana + MAD) que `class_deviations.py`, aplicado a semanas en vez de días. No asume de
+antemano qué dirección (`sube`/`baja`) es clínicamente mala por clase — queda para una capa de
+mensajes futura.
+
+`TRACKED_CLASSES` por defecto: `salir_casa`, `visitas`, `dormir`, `descansar` — las primeras tres
+por señal directa de mobilidad/aislamiento/sueño; `visitas` se sumó de forma oportunista para
+cubrir aislamiento social (no era una prioridad en sí misma, pero cuesta ~0 agregarla al mismo
+detector).
+
+**Solo se pudo validar sobre 3 hogares** (`hh113` ~70 semanas, `hh115` ~43, `hh117` ~34) — los
+otros 4 hogares recomendados por `dataset_events/README.md` solo tienen ~9 semanas de historial,
+insuficiente para separar un bloque base de 8 + reciente de 3 con margen.
+
+**Validación** (`inject_gradual_trend.py`): sobre cada `(hogar, clase)` con historial suficiente,
+se aplica un factor sostenido (×0.4 o ×2.0, al azar) a un bloque real de 3 semanas consecutivas —
+no un día suelto — y se mide si `score_trend_deviations` lo marca en la semana exacta donde
+termina ese bloque.
+
+**Resultado** (12 positivos, 12 negativos — muestra muy chica, un evento por `hogar×clase`,
+**no una calibración robusta, un primer punto de partida**):
+
+| Clase | Detectado |
+|---|---|
+| `dormir` | 3/3 |
+| `salir_casa` | 2/3 |
+| `descansar` | 1/3 |
+| `visitas` | 0/3 |
+
+Recall global 50%, FP 8.3% (mejor punto del barrido: `n_semanas_recientes=3, n_semanas_base=8,
+threshold_z=2.0`). `visitas` no detectó ningún caso — mismo patrón que `beber`/`bano_nocturno` en
+los otros detectores: pocos eventos por semana hacen que la mediana/MAD histórica sea poco
+informativa (a menudo 0). Se mantiene en `TRACKED_CLASSES` documentado como señal floja, no se
+sacó — igual criterio de transparencia que el resto del módulo.
+
+**Bug real encontrado y corregido en el camino**: la primera versión de `exclude_from_reference`
+sacaba los días perturbados de *toda* la base de datos antes de armar las semanas — incluida la
+propia semana que se quería evaluar como "reciente", así que el detector nunca podía ver la señal
+que se le estaba pidiendo detectar (0% de recall en la primera corrida). Corregido para que la
+exclusión solo afecte qué semanas pueden usarse como referencia **base**, nunca la evaluada.
+
+## Vocabulario de cámara (2026-09-05) — reconciliación de dos documentos que no coincidían
+
+Al revisar con el usuario qué desvíos son realmente detectables **sin sensor dedicado, solo con
+cámara**, se encontró que `fusion/PLAN_sustitucion_clip.md` (el plan de subir de 4 a ~10 clases
+de actividad) y `dataset_events/activity_map.py` (el mapeo canónico→grueso que ya usaba este
+módulo) tenían vocabularios distintos y nunca se habían reconciliado:
+
+- `activity_map.py` fusionaba `salir_casa`+`entrar_casa` en un estado **`fuera_casa`** con
+  duración — no tiene sentido: la cámara nunca ve "afuera", solo el instante de cruzar la puerta.
+  **Corregido**: quedan como dos eventos puntuales propios, `salir_casa`/`entrar_casa`.
+- Vocabulario final acordado (9 clases + `otro`, ver `COARSE` en `activity_map.py`): `dormir`,
+  `descanso_sofa`, `ocio_sentado`, `cocina`, `comida_mesa`, `comida`, `aseo`, `salir_casa`,
+  `entrar_casa`. Se sacaron `visitas` (multi-residente fuera de alcance, ver `vision/README.md`)
+  y `tareas_hogar` (no estaba en el vocabulario acordado) — ambas quedan mapeadas a `otro`.
+  `bano_nocturno` se fusiona con `aseo` ("de noche" es derivable del horario del evento, no
+  necesita ser una clase de escena aparte). `moverse` queda fuera de este mapeo (no tiene análogo
+  en los sensores de CASAS, solo existe del lado de `vlm/`).
+- **`comer` → `comida_mesa`, separado de `beber`/`medicacion` → `comida`**: idea del usuario —
+  comer dura más y pasa en una zona fija (la mesa), a diferencia de un trago o una pastilla
+  (gesto breve, cualquier zona). **Depende de la Fase 1 de zonas del hogar
+  (`fusion/PLAN_sustitucion_clip.md`), todavía no implementada** — sin esa señal la cámara no
+  puede confirmar "está en la mesa", así que `comida_mesa` es aspiracional, no algo para producción
+  todavía.
+
+### Por qué importa: `medicacion` no es alcanzable por cámara sola
+
+Los 3 detectores de este módulo estaban calibrados usando `medicacion` como clase canónica de
+CASAS — un sensor separado de comer/beber. Pero **ninguna cámara única puede distinguir tomar una
+pastilla de tomar un trago de agua** (ya documentado en `vlm/README.md`: gesto de <2s, casi
+siempre ocluido). Todo lo detectado como "`sin_medicacion`" en las secciones anteriores es válido
+solo si algún día se suma un sensor dedicado (ej. un pastillero inteligente) — no es lo que la
+cámara puede dar hoy ni con el plan de zonas.
+
+### `features.add_camera_columns()` y `class_deviations.CAMERA_TRACKED_CLASSES`
+
+Se agregó una función que suma las columnas canónicas del vector-día a nivel de clase gruesa
+(prefijo `cam_*`, sin pisar las columnas canónicas — las dos conviven en el mismo DataFrame) y un
+segundo conjunto de clases trackeadas, `CAMERA_TRACKED_CLASSES = ("cam_comida", "cam_comida_mesa",
+"cam_salir_casa", "cam_aseo")`, para poder correr el mismo `class_deviations.py` en modo "sin
+sensor". `evaluate_deviations.py --camera` corre esta variante.
+
+**Dos bugs reales encontrados y corregidos armando esto:**
+1. Las columnas `cam_*` se calculaban una sola vez, antes de inyectar los desvíos sintéticos — un
+   escenario que perturbaba una columna canónica (ej. `semana_sin_salir` sobre `salir_casa_n`) no
+   se reflejaba en su columna `cam_*` correspondiente, que quedaba con el valor viejo. Corregido:
+   `add_camera_columns()` se recalcula recién después de inyectar todos los escenarios, no antes.
+2. El escenario `sin_medicacion` original solo zeroeaba `medicacion`; para la versión cámara se
+   necesitaba un escenario nuevo (`comida_camara_ausente`) que zerea **comer+beber+medicación
+   juntos** — la única forma realista de que la cámara vea "no hubo actividad de comida" (si solo
+   se zerea `medicacion`, la persona sigue comiendo/bebiendo normal y la cámara no nota nada raro).
+
+**Resultado** (`frac_historica_min=0.8, excess_k=4.0, dias_consecutivos_ausencia=2` — elegido
+sobre el mejor punto del barrido priorizando menos FP, mismo criterio de todo el módulo):
+
+| Escenario | Recall modo cámara | Recall modo sensor (referencia) |
+|---|---|---|
+| `semana_sin_salir` | 83.7% | 85.7% |
+| `comida_camara_ausente` (comer+beber+medicación, las 3 a la vez) | 71.4% | 80.0% |
+| `sin_medicacion` (residual, vía `cam_comida` diluido) | 50.0% | 100% |
+| `bano_nocturno_excesivo` | 14.3% | 57.1% |
+| `comida_salteada` | 14.3% | 28.6% |
+| **Global** | **67.1%** | **10.0% FP** |
+
+Lecturas honestas: `semana_sin_salir` casi no pierde nada al pasar a cámara (salir/entrar de casa
+es un evento limpio, no depende de fusionar clases). `comida_camara_ausente` funciona razonable
+como sustituto realista de "sin_medicacion" cuando la ausencia es total (no comió/bebió/medicó
+nada en absoluto). Pero cuando el cambio es más sutil — solo faltó la medicación, o solo una
+comida — la señal se diluye mucho al fusionar clases (50%→ y 14.3% respectivamente) o al fusionar
+`bano_nocturno` con `aseo` (14.3%): es el mismo problema de dilución de siempre, ahora a nivel de
+vocabulario en vez de a nivel de dimensiones del multivariado.
+
+## Cross-validation por hogar (2026-09-05) — número final, reemplaza a los de arriba
+
+Todos los resultados de las secciones anteriores tienen un problema real que el usuario señaló:
+(1) se calibraron sobre solo **7 de los 80 hogares** disponibles en CASAS (los "recomendados" por
+`dataset_events/README.md` por calidad de datos, sin más motivo que eso), y (2) el barrido de
+`ClassDeviationConfig` elegía los parámetros **mirando los mismos datos** con los que después se
+medía el resultado — sesgo optimista clásico, no muy distinto de reportar accuracy de train.
+
+**Corrección aplicada:**
+
+1. **Más hogares**: `inject_synthetic_deviations.py` ahora usa los **80 hogares** del parquet por
+   defecto (antes, los 7 "recomendados" de `dataset_events/README.md`). De los 80, **21 pasan el
+   mínimo de historial** (`MIN_DIAS_POR_HOGAR=60`) — la mayoría de los 80 hogares de CASAS tienen
+   solo semanas de datos (ver "Cobertura por hogar" en `dataset_events/README.md`), no meses. 640
+   etiquetas totales (220 positivas) sobre 4362 días, contra las 200/73 de antes.
+2. **`cross_validate()` en `evaluate_deviations.py` (`--cv N`)**: k-fold **por hogar** (mismo
+   criterio que `GroupKFold` por video en `vision/`/`fusion/`, no k-fold por día — evita que días
+   del mismo hogar terminen repartidos entre entrenamiento y test). En cada fold: el barrido de
+   `ClassDeviationConfig` se corre solo con los hogares de *entrenamiento* del fold, y el resultado
+   se mide solo sobre los hogares de *test* (que nunca influyeron en la elección de parámetros).
+   Las predicciones de test de los 5 folds se juntan (pooled) para un recall/FP "out-of-fold"
+   único, más robusto que promediar tasas de folds de tamaño desigual.
+
+**Resultado** (5 folds, `--cv 5`):
+
+| | Recall (antes, mismo dataset) | **Recall out-of-fold** | FP (antes) | **FP out-of-fold** |
+|---|---|---|---|---|
+| Modo sensor | 78.1% | **71.4%** | 7.1% | **14.2%** |
+| Modo cámara | 67.1% | **70.5%** | 10.0% | **14.3%** |
+
+El FP casi se **duplica** en modo sensor al corregir el sesgo (7.1%→14.2%) — es la cifra real, la
+de antes estaba inflada por calibrar y medir con los mismos hogares. El recall se mantiene
+razonablemente estable en los dos modos. Curiosamente el modo cámara con más hogares mejora un
+poco su recall respecto al número anterior (67.1%→70.5%) — con 21 hogares en vez de 7 hay más
+variedad de patrones reales de "ausencia total de comida", el escenario donde mejor rinde.
+
+**Estabilidad de la calibración entre folds**: los parámetros elegidos en cada fold coinciden
+bastante (`frac_historica_min=0.8, excess_k=3.0` en 3 de 5 folds del modo sensor; `frac_historica_min=0.6,
+excess_k=4.0` en 3 de 5 del modo cámara) — no es una calibración inestable que cambia
+completamente según qué hogares se usen, buena señal de que el método generaliza. Esos valores
+mayoritarios quedaron como default final de `ClassDeviationConfig` (modo sensor) — para modo
+cámara, instanciar `ClassDeviationConfig(frac_historica_min=0.6, excess_k=4.0)` explícitamente
+(no hay un dataclass separado todavía para el modo cámara).
+
+**Por escenario, out-of-fold, modo sensor**: `sin_medicacion` 88.9%, `comida_camara_ausente` 90.0%,
+`semana_sin_salir` 77.6%, `bano_nocturno_excesivo` 52.4%, `comida_salteada` 20.0% (la más floja se
+mantiene floja, consistente con lo ya documentado).
+
+**Lo que sigue sin resolverse**: 14% de FP es alto para un producto real, incluso siendo ahora el
+número honesto — antes de citar esto en el informe como resultado final conviene una vuelta más
+sesgada explícitamente hacia bajar FP (el barrido interno ya prioriza recall dentro del límite de
+FP, pero el límite mismo, `max_fp=0.15`, se puede bajar). `synthetic_eval/grid_results*.csv`
+quedan como el barrido "en la misma data" (útil para explorar el espacio de parámetros), pero
+**el número a citar es el de esta sección**, no los de las tablas anteriores.
+
+## Patrones identificados pero no priorizados (quedan documentados para no perderlos)
+
+- **Secuencia/orden de la rutina** (ej. medicación sin haber desayunado antes) — el más complejo
+  de los cuatro patrones discutidos con el usuario, necesita mining de secuencias, no solo
+  estadística por clase/día o por semana.
+
+## Cómo seguir (para quien retome el código)
+
+Orden recomendado, de mayor a menor impacto — cada uno referencia el detalle en "Pendiente" abajo:
+
+1. **Bajar el FP (14.2%/14.3% hoy, ver "Cross-validation por hogar")**. Es lo primero: un
+   sistema que avisa mal 1 de cada 7 veces no es defendible para el informe ni para un usuario
+   real. Concreto, en `evaluate_deviations.py`:
+   - Correr `--cv 5 --max-fp 0.05` (o 0.08) y ver qué recall queda — documentar el trade-off tal
+     cual salga, no forzar un número.
+   - Agregar separación semana/fin de semana al vector de día (`src/features.py`) antes de
+     recalibrar — es la hipótesis más prometedora sin probar todavía (ver punto 2 de "Pendiente").
+   - Si con eso no alcanza, probar exigir 2 días seguidos de la misma señal antes de alertar
+     (mismo patrón que ya usa `ausencia_sostenida` en `class_deviations.py`).
+2. **Subir la clasificación de actividad de `vlm/`/`fusion/` a las 9 clases que `baseline/` ya
+   espera** (hoy la cámara solo da 4-6) — es el trabajo que deja este módulo con más margen de
+   mejora real, más que seguir afinando `baseline/` en el vacío contra CASAS. Dos piezas, ambas ya
+   diseñadas en `fusion/PLAN_sustitucion_clip.md` pero sin implementar:
+   - **Fase 1 — zonas del hogar**: polígonos por cámara (`cama`, `sofá`, `mesa`, `cocina`, `baño`)
+     para saber *dónde* está la persona, no solo qué gesto hace. Es lo que separaría
+     `descanso_sofa` de `dormir` de `ocio_sentado` (hoy indistinguibles para el esqueleto solo) y
+     lo que haría falta para validar `comida_mesa` de verdad (hoy aspiracional, ver "Vocabulario
+     de cámara"). **Bloqueada** hasta que el dataset de video grande (~2200 clips) esté de vuelta
+     en alguna máquina — sin eso no hay cómo medir si ayuda, solo se puede construir la
+     infraestructura (`cameras.yaml` + lookup punto-en-polígono + enganche en
+     `camera_worker.py`/`keypoint_sequence.py`).
+   - **Fase 2 — contexto de objeto vía YOLO-COCO**: reusar YOLO (variante de detección, no pose)
+     para saber qué mueble/electrodoméstico hay cerca de la persona (`bed`, `couch`,
+     `dining table`, `tv`, `oven`, `refrigerator`, ya los reconoce sin entrenar nada nuevo) — es
+     lo que el usuario pidió acá: que el sistema entienda el contexto (objeto/lugar), no solo el
+     gesto, para deducir la actividad. Menos costoso que Fase 1 (no necesita anotar geometría por
+     cámara), pero se solapa parcialmente con zona (una mesa ya implica "está en la zona mesa") —
+     medir si suma sobre Fase 1 antes de dejarlo en producción, no dar por sentado que ambas
+     aportan por separado.
+   Una vez que cualquiera de las dos esté validada, conectar la salida real de `vlm/`+`fusion/` a
+   `baseline/` deja de estar limitada a 4-6 clases de cámara.
+3. El resto de "Pendiente" abajo, sin un orden estricto — son mejoras incrementales, no
+   bloqueantes.
+
+**Para orientarse rápido en el código**: `src/features.py` (vectores de día) es la base de todo;
+`src/dynamic_clustering.py`, `src/class_deviations.py`, `src/trend_deviations.py` son los 3
+detectores de nivel día/semana (mismo patrón: `Config` dataclass + función `score_*`);
+`src/timing_deviations.py` es aparte (nivel evento, no día). Cada `evaluate_*.py` en la raíz de
+`baseline/` es el arnés de prueba de su detector correspondiente — correrlos es la forma más
+rápida de entender qué mide cada uno sin leer todo el código primero.
+
+## Pendiente
+
+- Integrar con eventos reales de cámara (`vision/`+`vlm/`+`fusion/`) cuando esa clasificación
+  cubra más de 4 categorías — comparar cuántos de estos desvíos se siguen detectando con las
+  clases que da la cámara vs. las que da un sensor (el número que pide
+  `fusion/PLAN_sustitucion_clip.md`, Sec. 5 "Validación end-to-end").
+- Escribir la salida como un `EventType` nuevo en `events/schema.py` (coordinar el cambio, ver
+  README raíz) una vez que el enfoque esté más maduro — hoy queda en artefactos propios de este
+  módulo.
+- Segunda vuelta de calibración con sesgo explícito hacia menos FP (mismo criterio que
+  `vision/README.md` para caídas), y más muestras por escenario — casi todos los escenarios de
+  los 4 detectores tienen entre 3 y 12 casos de prueba, chico para un número definitivo.
+- **Separar rutina de semana vs. fin de semana** en `src/features.py` — hoy el vector de día
+  mezcla ambos como si fueran la misma distribución. Es justo el tipo de contexto (día de la
+  semana) que Snoun et al. 2024 usa explícitamente y que acá no se implementó todavía — candidato
+  más probable para bajar el FP sin sacrificar mucho recall (una diferencia real semana/finde hoy
+  se lee como "desvío" cuando no lo es).
+- `timing_deviations.py`: acotar `DEFAULT_TRACKED_CLASSES` a las clases con horario disciplinado
+  (`medicacion` es la más clara) y calibrar por clase en vez de parámetros compartidos — ver
+  "Horario habitual" arriba, estado parcial.
+- Alinear el período de silencio de `timing_deviations.py` (event-count) y `trend_deviations.py`
+  (semanas: la tendencia necesita ~11 semanas de historial antes de poder evaluarse, mucho más que
+  los 7-10 días de los otros dos detectores) a un criterio único, documentado hacia el usuario
+  final (ej. "todavía aprendiendo tu rutina" vs. "ya puedo detectar tendencias de varias semanas"
+  como dos niveles de madurez distintos, no un solo estado binario).
+- Franjas horarias en el vector de día (hoy solo duración/conteo diario total) si algún desvío
+  futuro necesita distinguir "de mañana" vs "de noche" más allá de lo que ya separa
+  `bano`/`bano_nocturno`.
+- Patrones no priorizados en esta ronda: secuencia/orden de la rutina (ver arriba).
 
 ## Setup
 
@@ -36,8 +508,22 @@ py -m venv .venv && .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## Estado
+## Cómo correrlo
 
-No iniciado — es la etapa siguiente a tener `vision/`/`vlm/` generando
-eventos reales, pero se puede arrancar en paralelo con datos sintéticos (ver
-arriba).
+```bash
+cd baseline
+# día a día: forma general + cuánto/cuántas veces por clase (incluye ausencia/exceso/deficit)
+py -3 inject_synthetic_deviations.py      # genera synthetic_eval/day_vectors_perturbed.parquet + labels.parquet (default: los 80 hogares del parquet)
+py -3 evaluate_deviations.py               # barrido de ClassDeviationConfig "en la misma data" (optimista, ver "Cross-validation por hogar")
+py -3 evaluate_deviations.py --full-grid   # + barrido de DriftConfig (lento, no hace falta salvo recalibrar el multivariado)
+py -3 evaluate_deviations.py --camera      # versión "sin sensor dedicado" (CAMERA_TRACKED_CLASSES, columnas cam_*)
+py -3 evaluate_deviations.py --cv 5        # NÚMERO A CITAR: cross-validation por hogar, modo sensor
+py -3 evaluate_deviations.py --cv 5 --camera  # ídem, modo cámara
+
+# horario habitual por actividad
+py -3 evaluate_timing_deviations.py        # genera e inyecta internamente, no requiere paso previo
+
+# tendencia gradual (semanas)
+py -3 inject_gradual_trend.py              # genera synthetic_eval/day_vectors_trend_perturbed.parquet + labels_trend.parquet
+py -3 evaluate_trend_deviations.py         # barrido, guarda grid_results_trend.csv
+```

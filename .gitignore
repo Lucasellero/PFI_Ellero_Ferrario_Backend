@@ -59,5 +59,8 @@ fusion/dataset_features.npz
 fusion/*_features.npz
 fusion/fall_windows.npz
 fusion/fall_windows_cache.pkl
+
+# Sets de evaluación sintética de baseline/ (se regeneran con inject_*.py / evaluate_*.py)
+baseline/synthetic_eval/
 *.onnx
 *.onnx.data

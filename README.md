@@ -255,7 +255,22 @@ comandos) en su README.
       sumó la guarda de encuadre (evento `fall` con `evidence: full|partial`,
       los `partial` van a sospecha + escalada por inmovilidad).
 - [ ] `baseline/`: clustering dinámico + detección de desvíos (Snoun et al.
-      2024).
+      2024) — implementado y validado con desvíos sintéticos sobre CASAS
+      (319k eventos, 80 hogares), no sobre eventos reales de cámara todavía.
+      Cuatro mecanismos: forma general del día (clustering dinámico), ausencia/
+      exceso/déficit por actividad individual, horario habitual por actividad,
+      y tendencia gradual de varias semanas. *Actualización 2026-09-05:*
+      cross-validation por hogar (21 hogares con historial suficiente, 5-fold,
+      parámetros elegidos con hogares de entrenamiento y medidos en hogares
+      nunca vistos): **71.4% recall / 14.2% FP** (con sensor dedicado para
+      medicación) y **70.5% recall / 14.3% FP** (solo cámara, vocabulario de 9
+      clases reconciliado con `fusion/PLAN_sustitucion_clip.md` — `medicacion`
+      queda fusionada con `comer`/`beber`, indetectable por separado sin
+      sensor). El FP (~14%) sigue alto para producción, ver "Próximos pasos"
+      en `baseline/README.md`. Sigue sin escribir al store de eventos
+      compartido (`events/schema.py`) ni tener ninguna UI que muestre un
+      desvío — el módulo produce el score, falta el último tramo
+      detección→aviso.
 - [ ] `evaluation/`: exportar video anotado para inspección visual.
 - [x] Raspberry Pi 5 configurada, con el proyecto corriendo directamente
       sobre el hardware (stream de cámara real vía `cameras.yaml`, no

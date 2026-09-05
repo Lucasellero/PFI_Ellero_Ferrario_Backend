@@ -136,11 +136,19 @@ Dos niveles, ambos en el `metadata` de cada evento:
   `dormir · bano · bano_nocturno · aseo · cocinar · lavar_platos · comer · beber ·
   medicacion · descansar · ver_tv · leer · telefono · trabajo · salir_casa ·
   entrar_casa · tareas_hogar · visitas · otro`
-- **`actividad_gruesa`** (11 clases): el subconjunto que una **cámara única** puede
-  llegar a producir (ver [`../fusion/PLAN_sustitucion_clip.md`](../fusion/PLAN_sustitucion_clip.md)).
+- **`actividad_gruesa`** (9 clases + `otro`): el subconjunto que una **cámara única** puede
+  llegar a producir (ver [`../fusion/PLAN_sustitucion_clip.md`](../fusion/PLAN_sustitucion_clip.md)
+  y "Vocabulario de cámara" en [`../baseline/README.md`](../baseline/README.md), 2026-09-05).
   Permite medir "desvíos detectables con sensores" vs "solo con cámara".
-  `dormir · descanso_sofa · ocio_sentado · cocina · comida · medicacion→comida ·
-  aseo · bano_nocturno · tareas_hogar · fuera_casa · social · otro`
+  `dormir · descanso_sofa · ocio_sentado · cocina · comida_mesa · comida ·
+  aseo · salir_casa · entrar_casa · otro`
+  — `salir_casa`/`entrar_casa` son eventos puntuales, no el estado `fuera_casa` (versión anterior
+  de este mapeo); `comida_mesa` (comer) vs `comida` (beber/medicación) depende de la Fase 1 de
+  zonas del hogar, todavía no implementada. **Nota**: los `.jsonl`/`.parquet` ya generados
+  (`events/`) tienen `actividad_gruesa` calculada con el mapeo VIEJO (11 clases, con `fuera_casa`)
+  — hace falta re-correr `etl.py` para que el campo persistido refleje el mapeo actual. `baseline/`
+  no depende de este campo persistido: recalcula la versión de cámara en el momento
+  (`features.add_camera_columns()`), así que no se vio afectado por este desfasaje.
 
 Etiquetas que **no** son actividad del residente (`Resperate` = ruido de sensor
 médico, `Staff_Enter`/`Staff_Leave`) se mapean a `descartar` y el ETL las omite
