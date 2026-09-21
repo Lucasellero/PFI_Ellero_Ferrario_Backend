@@ -63,6 +63,31 @@ class ClassDeviationConfig:
     # 14.2% out-of-fold, la cifra real a citar).
     frac_historica_min: float = 0.8
     dias_consecutivos_ausencia: int = 2
+    # 2026-09-20: separar la referencia histórica de un día por si es semana o fin de semana —
+    # hoy la rutina de sábado se compara contra un historial que mezcla martes y sábados, así que
+    # una diferencia semana/finde perfectamente normal (menos actividad un domingo) se lee como
+    # "desvío" cuando no lo es. Idea de Snoun et al. 2024 (contexto: día de semana/feriados), acá
+    # implementada con lo mínimo (solo semana/finde, sin feriados todavía). Si la ventana no tiene
+    # suficientes días del mismo tipo (fin de semana es 2/7 días, ventanas cortas se quedan sin
+    # muestra), cae de vuelta a usar todos los días de la ventana — señal ruidosa es mejor que
+    # ninguna señal.
+    separar_fin_de_semana: bool = True
+    # 2026-09-20: cuántos días seguidos tiene que sostenerse un `exceso`/`deficit` (condición de
+    # un solo día) antes de contar como desvío — default 1 = comportamiento original (dispara con
+    # un solo día). Pensado para filtrar ruido puntual sin tocar `ausencia`, que ya tiene su propia
+    # variante sostenida (`ausencia_sostenida`) y ya mide bien en solitario (ver "Estado" en
+    # README). Se agregó al barrido de `evaluate_deviations.py` en vez de fijarlo a mano — mismo
+    # criterio que `separar_fin_de_semana`: dejar que el cross-validation decida si ayuda.
+    dias_consecutivos_exceso_deficit: int = 1
+    # 2026-09-20: diagnóstico manual de FP concretos (ver "Estado" en README) encontró que ~44%
+    # de los FP de clase eran `ausencia` de UN SOLO día en clases casi-diarias (ej. `bano_nocturno`
+    # con mediana=1 casi todos los días) — si algo pasa el 95% de los días, no pasar 1 de cada 20
+    # es esperable por azar, no un desvío. Con esto en `True`, `ausencia` exige la misma racha que
+    # `ausencia_sostenida` (no dispara con un solo día) — cuesta recall en escenarios de un solo
+    # día real (ej. `sin_medicacion`, hoy 88.9%). Trade-off deliberado, no una mejora gratis: se
+    # sumó al barrido para que el cross-validation lo confirme o lo descarte con datos, en vez de
+    # decidirlo a mano.
+    ausencia_requiere_racha: bool = False
 
 
 def score_class_deviations(
@@ -90,6 +115,7 @@ def score_class_deviations(
         g = g[~g["cobertura_baja"]]
         fechas = g.index.to_list()
         ref_ok = np.array([(hogar, f) not in exclude_from_reference for f in fechas])
+        es_finde = np.array([pd.Timestamp(f).weekday() >= 5 for f in fechas])
 
         for cls in tracked_classes:
             col = f"{cls}{count_col_suffix}"
@@ -97,6 +123,8 @@ def score_class_deviations(
                 continue
             vals = g[col].to_numpy(dtype=float)
             racha_ausencia = 0
+            racha_exceso = 0
+            racha_deficit = 0
 
             for i, fecha in enumerate(fechas):
                 hoy = vals[i]
@@ -105,6 +133,10 @@ def score_class_deviations(
 
                 lo = max(0, i - config.window_days)
                 idx = [j for j in range(lo, i) if ref_ok[j]]
+                if config.separar_fin_de_semana:
+                    idx_mismo_tipo = [j for j in idx if es_finde[j] == es_finde[i]]
+                    if len(idx_mismo_tipo) >= config.min_window_days:
+                        idx = idx_mismo_tipo
                 if len(idx) < config.min_window_days:
                     continue
 
@@ -115,11 +147,13 @@ def score_class_deviations(
                 sigma_robusto = mad * _MAD_TO_STD
 
                 ausencia = era_ausente and frac_presente >= config.frac_historica_min
+                if config.ausencia_requiere_racha:
+                    ausencia = ausencia and racha_ausencia >= config.dias_consecutivos_ausencia
                 ausencia_sostenida = (
                     racha_ausencia >= config.dias_consecutivos_ausencia
                     and frac_presente >= config.frac_historica_min
                 )
-                exceso = (
+                exceso_hoy = (
                     not era_ausente
                     and sigma_robusto > 1e-9
                     and hoy > mediana + config.excess_k * sigma_robusto
@@ -128,11 +162,15 @@ def score_class_deviations(
                 # (ej. `comer_n=1` cuando lo normal son ~3 comidas) — distinto de `ausencia`
                 # (=0) y del techo de dilución que tiene `dynamic_clustering.py` con clases de
                 # bajo volumen (ver "Frecuencia/omisión de eventos" en README).
-                deficit = (
+                deficit_hoy = (
                     not era_ausente
                     and sigma_robusto > 1e-9
                     and hoy < mediana - config.excess_k * sigma_robusto
                 )
+                racha_exceso = racha_exceso + 1 if exceso_hoy else 0
+                racha_deficit = racha_deficit + 1 if deficit_hoy else 0
+                exceso = exceso_hoy and racha_exceso >= config.dias_consecutivos_exceso_deficit
+                deficit = deficit_hoy and racha_deficit >= config.dias_consecutivos_exceso_deficit
 
                 if not (ausencia or ausencia_sostenida or exceso or deficit):
                     continue

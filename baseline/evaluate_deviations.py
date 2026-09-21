@@ -37,6 +37,9 @@ THRESHOLD_GRID = (2.0, 2.5, 3.0, 3.5)
 FRAC_HISTORICA_GRID = (0.6, 0.7, 0.8, 0.9)
 EXCESS_K_GRID = (2.5, 3.0, 4.0, 5.0)
 DIAS_CONSECUTIVOS_GRID = (2, 3)
+SEPARAR_FINDE_GRID = (True, False)
+DIAS_CONSECUTIVOS_EXCESO_DEFICIT_GRID = (1, 2, 3)
+AUSENCIA_REQUIERE_RACHA_GRID = (False, True)
 
 
 def load_synthetic(out_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -74,6 +77,9 @@ def evaluate_class_config(
         "frac_historica_min": class_config.frac_historica_min,
         "excess_k": class_config.excess_k,
         "dias_consecutivos_ausencia": class_config.dias_consecutivos_ausencia,
+        "separar_fin_de_semana": class_config.separar_fin_de_semana,
+        "dias_consecutivos_exceso_deficit": class_config.dias_consecutivos_exceso_deficit,
+        "ausencia_requiere_racha": class_config.ausencia_requiere_racha,
         "n_pos": int(merged["es_positivo"].sum()),
         "n_neg": int((~merged["es_positivo"]).sum()),
         "n_sin_score": len(labels) - len(merged),
@@ -98,6 +104,9 @@ def evaluate_camera(perturbed: pd.DataFrame, labels: pd.DataFrame, class_config:
         "frac_historica_min": class_config.frac_historica_min,
         "excess_k": class_config.excess_k,
         "dias_consecutivos_ausencia": class_config.dias_consecutivos_ausencia,
+        "separar_fin_de_semana": class_config.separar_fin_de_semana,
+        "ausencia_requiere_racha": class_config.ausencia_requiere_racha,
+        "dias_consecutivos_exceso_deficit": class_config.dias_consecutivos_exceso_deficit,
     }
     result.update({f"camara_{k}": v for k, v in _rates(labels, "hit").items()})
     return (result, labels) if return_df else result
@@ -153,9 +162,16 @@ def cross_validate(
         for frac in FRAC_HISTORICA_GRID:
             for excess_k in EXCESS_K_GRID:
                 for dias_cons in DIAS_CONSECUTIVOS_GRID:
-                    cfg = ClassDeviationConfig(frac_historica_min=frac, excess_k=excess_k, dias_consecutivos_ausencia=dias_cons)
-                    r, _ = _eval(train_perturbed, train_labels, cfg)
-                    grid_results.append((r[fp_key], r[recall_key], cfg))
+                    for sep in SEPARAR_FINDE_GRID:
+                        for ded in DIAS_CONSECUTIVOS_EXCESO_DEFICIT_GRID:
+                            for req in AUSENCIA_REQUIERE_RACHA_GRID:
+                                cfg = ClassDeviationConfig(
+                                    frac_historica_min=frac, excess_k=excess_k, dias_consecutivos_ausencia=dias_cons,
+                                    separar_fin_de_semana=sep, dias_consecutivos_exceso_deficit=ded,
+                                    ausencia_requiere_racha=req,
+                                )
+                                r, _ = _eval(train_perturbed, train_labels, cfg)
+                                grid_results.append((r[fp_key], r[recall_key], cfg))
 
         ok = [g for g in grid_results if g[0] <= max_fp]
         pool = ok if ok else grid_results
@@ -175,6 +191,9 @@ def cross_validate(
                 "frac_historica_min": best_cfg.frac_historica_min,
                 "excess_k": best_cfg.excess_k,
                 "dias_consecutivos_ausencia": best_cfg.dias_consecutivos_ausencia,
+                "separar_fin_de_semana": best_cfg.separar_fin_de_semana,
+                "dias_consecutivos_exceso_deficit": best_cfg.dias_consecutivos_exceso_deficit,
+                "ausencia_requiere_racha": best_cfg.ausencia_requiere_racha,
                 "recall_test": r_test[recall_key],
                 "fp_rate_test": r_test[fp_key],
                 "n_pos_test": int(test_labels["es_positivo"].sum()),
@@ -244,7 +263,7 @@ def main() -> None:
         print()
         print(fold_df.to_string(index=False))
         print("\nParámetros elegidos por fold (deberían ser parecidos si la calibración es estable):")
-        print(fold_df[["fold", "frac_historica_min", "excess_k", "dias_consecutivos_ausencia"]].to_string(index=False))
+        print(fold_df[["fold", "frac_historica_min", "excess_k", "dias_consecutivos_ausencia", "separar_fin_de_semana", "dias_consecutivos_exceso_deficit", "ausencia_requiere_racha"]].to_string(index=False))
         print(f"\nOut-of-fold (pooled, todos los hogares evaluados solo con hogares que NO vieron sus parámetros):")
         print(f"  recall = {pooled['recall_out_of_fold']:.1%}   fp_rate = {pooled['fp_rate_out_of_fold']:.1%}")
         print(f"  n_pos = {pooled['n_pos']}   n_neg = {pooled['n_neg']}")
@@ -256,15 +275,25 @@ def main() -> None:
     if args.camera:
         print(f"Modo CÁMARA — clases trackeadas: {CAMERA_TRACKED_CLASSES}")
         results = []
-        total = len(FRAC_HISTORICA_GRID) * len(EXCESS_K_GRID) * len(DIAS_CONSECUTIVOS_GRID)
+        total = (
+            len(FRAC_HISTORICA_GRID) * len(EXCESS_K_GRID) * len(DIAS_CONSECUTIVOS_GRID)
+            * len(SEPARAR_FINDE_GRID) * len(DIAS_CONSECUTIVOS_EXCESO_DEFICIT_GRID) * len(AUSENCIA_REQUIERE_RACHA_GRID)
+        )
         n = 0
         for frac in FRAC_HISTORICA_GRID:
             for excess_k in EXCESS_K_GRID:
                 for dias_cons in DIAS_CONSECUTIVOS_GRID:
-                    n += 1
-                    print(f"  [{n}/{total}] frac={frac} excess_k={excess_k} dias_cons={dias_cons} ...", flush=True)
-                    cfg = ClassDeviationConfig(frac_historica_min=frac, excess_k=excess_k, dias_consecutivos_ausencia=dias_cons)
-                    results.append(evaluate_camera(perturbed, labels, cfg))
+                    for sep in SEPARAR_FINDE_GRID:
+                        for ded in DIAS_CONSECUTIVOS_EXCESO_DEFICIT_GRID:
+                            for req in AUSENCIA_REQUIERE_RACHA_GRID:
+                                n += 1
+                                print(f"  [{n}/{total}] frac={frac} excess_k={excess_k} dias_cons={dias_cons} sep={sep} ded={ded} req={req} ...", flush=True)
+                                cfg = ClassDeviationConfig(
+                                    frac_historica_min=frac, excess_k=excess_k, dias_consecutivos_ausencia=dias_cons,
+                                    separar_fin_de_semana=sep, dias_consecutivos_exceso_deficit=ded,
+                                    ausencia_requiere_racha=req,
+                                )
+                                results.append(evaluate_camera(perturbed, labels, cfg))
 
         df = pd.DataFrame(results).sort_values(["camara_fp_rate", "camara_recall"], ascending=[True, False])
         pd.set_option("display.width", 200)
@@ -307,17 +336,27 @@ def main() -> None:
         print(f"Multivariado fijo en window_days={drift_config.window_days} k={drift_config.k} threshold_z={drift_config.threshold_z} (calculando una vez) ...")
         scored = score_days(perturbed, drift_config, exclude_from_reference=exclude)
 
-        total = len(FRAC_HISTORICA_GRID) * len(EXCESS_K_GRID) * len(DIAS_CONSECUTIVOS_GRID)
+        total = (
+            len(FRAC_HISTORICA_GRID) * len(EXCESS_K_GRID) * len(DIAS_CONSECUTIVOS_GRID)
+            * len(SEPARAR_FINDE_GRID) * len(DIAS_CONSECUTIVOS_EXCESO_DEFICIT_GRID) * len(AUSENCIA_REQUIERE_RACHA_GRID)
+        )
         n = 0
         for frac in FRAC_HISTORICA_GRID:
             for excess_k in EXCESS_K_GRID:
                 for dias_cons in DIAS_CONSECUTIVOS_GRID:
-                    n += 1
-                    print(f"  [{n}/{total}] frac={frac} excess_k={excess_k} dias_cons={dias_cons} ...", flush=True)
-                    cfg = ClassDeviationConfig(frac_historica_min=frac, excess_k=excess_k, dias_consecutivos_ausencia=dias_cons)
-                    r = evaluate_class_config(perturbed, labels, scored, cfg)
-                    r.update({"window_days": drift_config.window_days, "k": drift_config.k, "threshold_z": drift_config.threshold_z})
-                    results.append(r)
+                    for sep in SEPARAR_FINDE_GRID:
+                        for ded in DIAS_CONSECUTIVOS_EXCESO_DEFICIT_GRID:
+                            for req in AUSENCIA_REQUIERE_RACHA_GRID:
+                                n += 1
+                                print(f"  [{n}/{total}] frac={frac} excess_k={excess_k} dias_cons={dias_cons} sep={sep} ded={ded} req={req} ...", flush=True)
+                                cfg = ClassDeviationConfig(
+                                    frac_historica_min=frac, excess_k=excess_k, dias_consecutivos_ausencia=dias_cons,
+                                    separar_fin_de_semana=sep, dias_consecutivos_exceso_deficit=ded,
+                                    ausencia_requiere_racha=req,
+                                )
+                                r = evaluate_class_config(perturbed, labels, scored, cfg)
+                                r.update({"window_days": drift_config.window_days, "k": drift_config.k, "threshold_z": drift_config.threshold_z})
+                                results.append(r)
 
     df = pd.DataFrame(results).sort_values(["combinado_fp_rate", "combinado_recall"], ascending=[True, False])
     pd.set_option("display.width", 220)
@@ -325,7 +364,7 @@ def main() -> None:
     print()
     resumen_cols = [
         "window_days", "k", "threshold_z", "frac_historica_min", "excess_k", "dias_consecutivos_ausencia",
-        "n_pos", "n_neg",
+        "separar_fin_de_semana", "dias_consecutivos_exceso_deficit", "ausencia_requiere_racha", "n_pos", "n_neg",
         "multivariado_recall", "multivariado_fp_rate",
         "por_clase_recall", "por_clase_fp_rate",
         "combinado_recall", "combinado_fp_rate",

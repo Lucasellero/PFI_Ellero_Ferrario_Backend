@@ -419,6 +419,100 @@ FP, pero el límite mismo, `max_fp=0.15`, se puede bajar). `synthetic_eval/grid_
 quedan como el barrido "en la misma data" (útil para explorar el espacio de parámetros), pero
 **el número a citar es el de esta sección**, no los de las tablas anteriores.
 
+### Actualización 2026-09-20 — separar semana/fin de semana, y por qué bajar `--max-fp` no alcanza
+
+Antes de tocar el diseño, se probó simplemente bajar el límite de FP en la selección de
+parámetros (`--cv 5 --max-fp 0.08`) — **empeoró** el resultado real: 76.0% recall / **23.9% FP**
+out-of-fold (peor que el 14.2% de arriba). Causa: con folds chicos, "el mejor FP visto en
+entrenamiento" es una estimación ruidosa — un límite más estricto en el barrido no garantiza un FP
+más bajo en datos nunca vistos, solo elige un punto distinto (a veces peor) de una curva
+recall/FP que en sí no cambió. Confirma que hacía falta la mejora de fondo, no solo mover el
+umbral de selección.
+
+**Cambio real**: `class_deviations.py` ahora puede comparar cada día contra el historial **del
+mismo tipo de día** (semana vs. fin de semana) en vez de mezclar ambos — la hipótesis de Snoun et
+al. 2024 (usar contexto como día/feriado, no solo el valor crudo). Nuevo campo
+`ClassDeviationConfig.separar_fin_de_semana` (default `True`), con fallback automático a la
+ventana completa si no hay suficientes días del mismo tipo todavía. Se agregó al barrido de
+`evaluate_deviations.py` (`SEPARAR_FINDE_GRID`) en vez de fijarlo a mano, para que el
+cross-validation elija el valor que realmente generaliza en cada modo — resultó que **ayuda en
+modo sensor pero no en modo cámara** (con clases ya fusionadas como `cam_comida`, partir encima la
+muestra en dos la vuelve más ruidosa todavía).
+
+**Resultado, mismo protocolo que arriba (`--cv 5`, ahora con `separar_fin_de_semana` en el
+barrido)**:
+
+| | Recall out-of-fold (antes) | **Recall out-of-fold (ahora)** | FP out-of-fold (antes) | **FP out-of-fold (ahora)** |
+|---|---|---|---|---|
+| Modo sensor | 71.4% | **73.3%** | 14.2% | **13.9%** |
+| Modo cámara | 70.5% | **70.0%** | 14.3% | **15.5%** |
+
+Mejora chica pero real en modo sensor (+1.9pp recall, −0.3pp FP) — 4 de 5 folds eligieron
+`separar_fin_de_semana=True`. En modo cámara el cross-validation eligió `False` en 4 de 5 folds
+(confirma la hipótesis: no ayuda ahí) y el resultado quedó prácticamente sin cambios (dentro del
+ruido esperable entre corridas). **Conclusión**: la separación semana/finde es una mejora
+incremental real para el modo con sensor, no la solución al FP alto — sigue siendo ~14-15% en
+ambos modos.
+
+### Actualización 2026-09-20 (2) — exigir persistencia en `exceso`/`deficit`
+
+Siguiente candidato probado: `ClassDeviationConfig.dias_consecutivos_exceso_deficit` — exigir que
+`exceso`/`deficit` se sostengan varios días seguidos antes de contar como desvío (mismo patrón que
+ya tenía `ausencia_sostenida`, extendido a los otros dos tipos), sumado al barrido
+(`DIAS_CONSECUTIVOS_EXCESO_DEFICIT_GRID = (1, 2, 3)`, con `1` = comportamiento original).
+
+| | Recall out-of-fold (antes) | **Recall out-of-fold (ahora)** | FP out-of-fold (antes) | **FP out-of-fold (ahora)** |
+|---|---|---|---|---|
+| Modo sensor | 73.3% | 72.8% | 13.9% | **13.1%** |
+| Modo cámara | 70.0% | 69.5% | 15.5% | **13.8%** |
+
+Mejora el FP en los dos modos (−0.8pp sensor, **−1.7pp cámara**) a costa de un recall casi
+idéntico (−0.5pp ambos) — trade-off favorable, sobre todo en cámara. Pero **8 de 10 folds (ambos
+modos) eligieron `dias_consecutivos_exceso_deficit=1`** — es decir, la mayoría de las veces el
+cross-validation **no** encontró que exigir persistencia ayudara; la mejora observada viene más de
+que el barrido más grande encontró mejores combinaciones de los otros parámetros (`frac_historica_min`/
+`excess_k`) que ya estaban, no de la persistencia en sí. **Conclusión**: implementado y sumado al
+barrido (no hace daño, ayuda marginalmente en algunos folds), pero no es la palanca que resuelve el
+FP — dos ideas de "ajustar mejor los mismos parámetros" (semana/finde, persistencia) ya se
+probaron y ninguna bajó el FP de forma sustancial. El límite parece estar en el diseño mismo del
+detector (mediana+MAD por clase), no en su calibración.
+
+### Actualización 2026-09-20 (3) — diagnóstico manual de FP concretos, y por qué exigir persistencia en `ausencia` NO ayudó
+
+Se abrieron los 48 casos concretos marcados como desvío sobre días reales sin tocar (con la
+config de mayoría de folds: `frac=0.8, excess_k=3.0, separar_fin_de_semana=True`). Dos hallazgos:
+
+1. **21 de 48 (44%) son `ausencia` de un solo día en clases casi-diarias** (ej. `bano_nocturno`
+   con mediana=1 y presente el 95-100% de los días históricos). Matemáticamente esperable: si algo
+   pasa el 95% de los días, no pasar 1 de cada ~20 es ruido normal, no un desvío — el detector
+   dispara con un solo día faltante, y solo la variante `ausencia_sostenida` exige racha.
+2. **Un caso (`hh117`, 2011-12-03/04) donde 3 clases distintas se dispararon el mismo día**
+   (medicación, baño nocturno, salir de casa) — no parece ruido: probablemente a esa persona le
+   pasó algo real esos días (viaje, enfermedad). El día se sampleó como negativo (`real_sin_tocar`)
+   sin verificar que fuera realmente "normal" — un límite de la metodología de validación, no del
+   detector: parte del "FP" medido en toda esta sección puede en realidad ser el detector
+   acertando sobre desvíos reales de CASAS que la muestra aleatoria de negativos no filtró.
+
+**Hipótesis probada con el usuario**: exigir que `ausencia` también necesite racha (no solo
+`ausencia_sostenida`) — nuevo campo `ClassDeviationConfig.ausencia_requiere_racha`, sumado al
+barrido (`AUSENCIA_REQUIERE_RACHA_GRID`). Decisión tomada con el usuario: medirlo con
+cross-validation en vez de asumir el trade-off a mano.
+
+**Resultado: los 10 folds (5 sensor + 5 cámara) eligieron `ausencia_requiere_racha=False`** — cero
+folds encontraron que ayudara. El costo en recall (perder `sin_medicacion`, hoy 88.9%, que depende
+de detectar una ausencia de un solo día) es mayor que el beneficio en FP que se esperaba. Números
+finales sin cambio respecto al punto anterior: **72.8%/13.1% sensor, 69.5%/13.8% cámara**.
+
+**Conclusión de todo este ciclo de intentos** (semana/finde, persistencia en exceso/deficit,
+persistencia en ausencia): se probaron 3 hipótesis de calibración con evidencia, no a ojo; una
+ayudó un poco (semana/finde en modo sensor), dos no. El FP se movió de ~14-15% a ~13-14%, una
+mejora real pero chica. El diagnóstico manual del punto 2 de arriba sugiere que el próximo paso
+con más potencial no es otra variación de umbral/persistencia sobre el mismo esquema
+mediana+MAD, sino **verificar si una fracción de los "FP" medidos son en realidad desvíos reales
+de CASAS mal etiquetados como negativos** — repetir el diagnóstico manual sobre una muestra más
+grande de los 48 casos, revisando a mano (o cruzando contra otra fuente, si existiera) si esos días
+fueron realmente atípicos para esa persona.
+
 ## Patrones identificados pero no priorizados (quedan documentados para no perderlos)
 
 - **Secuencia/orden de la rutina** (ej. medicación sin haber desayunado antes) — el más complejo
@@ -429,15 +523,26 @@ quedan como el barrido "en la misma data" (útil para explorar el espacio de par
 
 Orden recomendado, de mayor a menor impacto — cada uno referencia el detalle en "Pendiente" abajo:
 
-1. **Bajar el FP (14.2%/14.3% hoy, ver "Cross-validation por hogar")**. Es lo primero: un
-   sistema que avisa mal 1 de cada 7 veces no es defendible para el informe ni para un usuario
-   real. Concreto, en `evaluate_deviations.py`:
-   - Correr `--cv 5 --max-fp 0.05` (o 0.08) y ver qué recall queda — documentar el trade-off tal
-     cual salga, no forzar un número.
-   - Agregar separación semana/fin de semana al vector de día (`src/features.py`) antes de
-     recalibrar — es la hipótesis más prometedora sin probar todavía (ver punto 2 de "Pendiente").
-   - Si con eso no alcanza, probar exigir 2 días seguidos de la misma señal antes de alertar
-     (mismo patrón que ya usa `ausencia_sostenida` en `class_deviations.py`).
+1. **Seguir bajando el FP (13.1%/13.8% hoy, ver "Actualización 2026-09-20 (3)" en
+   "Cross-validation por hogar")**. Es lo primero: un sistema que avisa mal ~1 de cada 8 veces no
+   es defendible para el informe ni para un usuario real. Cuatro intentos de calibración ya
+   probados con evidencia (no a ojo) — ~~bajar `--max-fp` en la selección~~ (empeoró, 23.9% FP),
+   ~~separar semana/fin de semana~~ (ayudó un poco en sensor), ~~persistencia en exceso/deficit~~
+   (ayudó un poco en los dos modos), ~~persistencia también en ausencia~~ (probado con
+   cross-validation, **los 10 folds la descartaron** — pierde más recall del que ahorra en FP). El
+   FP bajó de ~14-15% a ~13-14%, mejora real pero chica — cuatro variaciones del mismo esquema
+   (mediana+MAD por clase) ya se agotaron.
+   - **Siguiente candidato, con evidencia a favor** (ver diagnóstico manual en "Actualización
+     2026-09-20 (3)"): al menos 1 de los 48 casos de FP revisados a mano no parece ruido — parecen
+     3 clases distintas marcando el mismo desvío real el mismo día, en un día que se sampleó como
+     "negativo" sin verificar que fuera realmente normal. Repetir ese diagnóstico manual sobre una
+     muestra más grande de los 48 casos (o sobre el set completo) para estimar qué fracción del FP
+     medido es en realidad este efecto — si es una fracción grande, el número real de FP del
+     sistema es mejor de lo que dice esta sección, y el problema pasa a ser de metodología de
+     validación (necesitamos negativos verificados), no del detector.
+   - Si el diagnóstico no explica la mayoría del FP: el límite está en el diseño mismo
+     (mediana+MAD por clase, sin ningún modelo de "qué tan raro es raro" más sofisticado) — ahí
+     recién valdría la pena una arquitectura distinta, no otro parámetro más.
 2. **Subir la clasificación de actividad de `vlm/`/`fusion/` a las 9 clases que `baseline/` ya
    espera** (hoy la cámara solo da 4-6) — es el trabajo que deja este módulo con más margen de
    mejora real, más que seguir afinando `baseline/` en el vacío contra CASAS. Dos piezas, ambas ya
