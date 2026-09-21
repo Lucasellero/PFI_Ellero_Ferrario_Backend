@@ -85,6 +85,20 @@ despliegue con cámara.
   anotar zonas una vez por setup del dataset y hornearlas en `extract_dataset.py`.
 - **Criterio de aceptación:** +X pts de accuracy holdout por categoría, sin regresión
   en las que ya andan bien (`Cooking`, `Moving`).
+- **Medido (2026-09-21, ver "Fase 1 de PLAN_sustitucion_clip.md..." en `vlm/README.md`
+  para el detalle): es la señal individual más fuerte de las dos fases.** `Cooking` sube
+  80.2%→**86.0%** (vs 82.6% con contexto de objeto solo), global 65.6%→67.1%. Validado
+  anotando a mano las 7 cámaras fijas de Toyota Smarthome (un mismo departamento
+  instrumentado, layout fijo para todo el dataset). Combinar zona+objeto **no suma,
+  empeora levemente** (66.5% global) — son redundantes, usar zona sola.
+- **Integrado a producción (2026-09-21)**: `CameraConfig.zones` en `runner/config.py`,
+  cálculo en vivo en `runner/camera_worker.py`, `zone_vector` opcional en
+  `ClipActivityClassifier.classify()`/`HybridActivityClassifier.classify()`, y
+  `vlm/models/category_probe.npz` ahora es el probe con contexto de zona (6 categorías).
+  La cámara real de `cameras.yaml` queda sin `zones:` configurado — degrada a cero,
+  mismo comportamiento que antes de esto — hasta que alguien dibuje los polígonos de esa
+  instalación (ver ejemplo comentado en `cameras.yaml`). Falta el editor visual en
+  `dashboard/` (sin él, se escribe el YAML a mano) — pendiente, decisión de priorización.
 
 ### Fase 2 — Contexto de objeto vía YOLO-COCO  *(reusa modelo ya cargado)*
 
@@ -106,8 +120,11 @@ despliegue con cámara.
   hipótesis solo parcialmente: `Cooking` sube +2.4 pts (80.2%→82.6%) gracias sobre
   todo a `Cook.Cleandishes` (-40% de errores, probablemente por detectar la pileta),
   pero el efecto global es +0.3 pts (dentro de ruido) y una subclase (`Cook.Cut`)
-  empeoró. No reemplaza a Fase 1 (zona) — se recomienda combinarlas antes de decidir
-  si Fase 2 sola justifica el costo de una segunda pasada de YOLO en vivo.
+  empeoró. **Actualización 2026-09-21: combinarla con Fase 1 (zona) no suma, empeora
+  levemente** (66.5% vs 67.1% global) — son redundantes, y Fase 1 sola ya es mejor
+  señal (86.0% `Cooking` vs 82.6%). No se recomienda usar Fase 2 en producción si Fase
+  1 se implementa — el costo de la segunda pasada de YOLO en vivo no se justifica
+  frente a una señal gratis (zona) que rinde más.
 
 ### Fase 3 — Ampliar el clasificador temporal a ~10 clases, entrenado en serio
 

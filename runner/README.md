@@ -127,6 +127,19 @@ promedio estabiliza la predicción. Además:
   familiar tampoco le aporta; agregarlas elimina ese error. `activity_label`
   en el metadata es la categoría; la clase fina ganadora queda en
   `fine_label`.
+- **Contexto de zona del hogar** (2026-09-21): si la cámara tiene `zones:`
+  configurado en `cameras.yaml` (polígonos normalizados por nombre de zona —
+  ver ejemplo comentado ahí y `fusion/src/zone_context.py`), se calcula en
+  qué zona cae la posición de cadera de la persona (mismos keypoints que ya
+  calcula el detector de pose, sin modelo adicional) y se suma como feature
+  del linear probe. Es la mejora más fuerte medida hasta ahora en
+  `vlm/README.md` ("Fase 1 de PLAN_sustitucion_clip.md...", 2026-09-21):
+  `Cooking` 80.2%→86.0%. **Configuración manual, una sola vez por cámara
+  real**, en el setup de instalación (como las zonas de interés de una
+  cámara de seguridad) — no es algo que el sistema infiera solo. Sin
+  `zones:` configurado, el vector de zona es todo cero y el sistema se
+  comporta igual que sin esta feature (no rompe nada, solo no se beneficia
+  todavía).
 - **Umbral de confianza** (`clip_min_confidence`): se aplica sobre la
   confianza de la *categoría* (suma de sus subclases); las ventanas
   ambiguas se descartan (quedan en el log) en vez de emitir una etiqueta

@@ -174,10 +174,16 @@ class HybridActivityClassifier:
         skeleton_window: np.ndarray | None,
         clip_image_bgr: np.ndarray | None,
         clip_hand_crop_bgr: np.ndarray | None = None,
+        clip_zone_vector: np.ndarray | None = None,
     ) -> dict:
         """Cualquiera de las dos entradas puede ser `None` (sin ventana de
         esqueleto lista, o sin frame/persona para CLIP en este tick) — el
         resultado degrada a la señal disponible, ver `ScoreFuser.fuse`.
+
+        `clip_zone_vector`: contexto de zona del hogar (ver
+        `fusion/src/zone_context.py`), pasado tal cual a
+        `clip_classifier.classify()` — `None` si la cámara no tiene zonas
+        configuradas, degrada sola sin romper nada (ver `ClipActivityClassifier.classify`).
         """
         skeleton_result = clip_result = None
         skeleton_cat_scores = clip_cat_scores = None
@@ -187,7 +193,7 @@ class HybridActivityClassifier:
             skeleton_cat_scores = fine_scores_to_category_scores(skeleton_result["scores"])
 
         if self.mode in ("hybrid", "clip_only") and clip_image_bgr is not None:
-            clip_result = self.clip_classifier.classify(clip_image_bgr, clip_hand_crop_bgr)
+            clip_result = self.clip_classifier.classify(clip_image_bgr, clip_hand_crop_bgr, clip_zone_vector)
             clip_cat_scores = clip_result["category_scores"]
 
         if self.mode == "skeleton_only":

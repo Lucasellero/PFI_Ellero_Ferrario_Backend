@@ -47,6 +47,13 @@ parser.add_argument(
          'Ablation: mide si esa señal ayuda sobre CLIP solo.',
 )
 parser.add_argument(
+    '--with-zone-context', action='store_true',
+    help='Suma el vector one-hot de zona (zone_features, ver '
+         'extract_clip_features.py --zone-context / fusion/src/zone_context.py) '
+         'al input del probe, si está presente en TODOS los .npz cargados. '
+         'Ablation: mide si la zona ayuda sobre CLIP solo (y sobre +objeto).',
+)
+parser.add_argument(
     '-o', '--output', default=None,
     help='Default: vlm/models/category_probe.npz (el que carga producción). '
          'Usar otra ruta para experimentos/ablations que no deben pisar el '
@@ -77,6 +84,15 @@ if args.with_object_context:
     obj_X = np.concatenate([d['object_features'] for d in datasets])
     X = np.concatenate([X, obj_X], axis=1)
     print(f'Usando contexto de objeto: +{obj_X.shape[1]} dims (total {X.shape[1]})')
+if args.with_zone_context:
+    if not all('zone_features' in d for d in datasets):
+        raise SystemExit(
+            '--with-zone-context pero algún .npz no tiene zone_features '
+            '— re-extraer con extract_clip_features.py --zone-context.'
+        )
+    zone_X = np.concatenate([d['zone_features'] for d in datasets])
+    X = np.concatenate([X, zone_X], axis=1)
+    print(f'Usando contexto de zona: +{zone_X.shape[1]} dims (total {X.shape[1]})')
 y_cat = np.array([LABEL_TO_CATEGORY[label] for label in y_fine])
 
 text_features = np.load(ROOT / 'vlm' / 'models' / 'text_features.npy')

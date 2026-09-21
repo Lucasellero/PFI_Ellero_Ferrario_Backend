@@ -87,6 +87,7 @@ except ImportError:
 try:
     from fusion.src.fusion import HybridActivityClassifier, ScoreFuser
     from fusion.src.keypoint_sequence import SkeletonSequenceBuffer, frame_features
+    from fusion.src.zone_context import zone_one_hot
     _SKELETON_AVAILABLE = True
 except ImportError:
     _SKELETON_AVAILABLE = False
@@ -466,6 +467,18 @@ class CameraWorker(threading.Thread):
             hand_crop = crop_to_hands(frame.image, kpts, box, keypoints_conf=kpts_conf)
             crop = crop_to_person(frame.image, box)
 
+            # Contexto de zona del hogar (ver "Fase 1 de PLAN_sustitucion_clip.md..."
+            # en vlm/README.md, 2026-09-21): geometría sobre los mismos
+            # keypoints de cadera que ya calcula build_pose_sample más
+            # arriba, sin modelo adicional. None si esta cámara no tiene
+            # zones: configurado en cameras.yaml — degrada solo (ver
+            # ClipActivityClassifier.classify), no rompe nada.
+            zone_vector = None
+            if _SKELETON_AVAILABLE and self._config.zones:
+                h, w = frame.image.shape[:2]
+                hip = (kpts[11] + kpts[12]) / 2.0
+                zone_vector = zone_one_hot(self._config.zones, (float(hip[0] / w), float(hip[1] / h)))
+
             # Con esqueleto disponible, category_scores sale fusionado
             # (HybridActivityClassifier, ver fusion/src/fusion.py); si no,
             # cae a CLIP solo — mismo resultado que antes de este enganche.
@@ -474,11 +487,11 @@ class CameraWorker(threading.Thread):
                     self._skeleton_buffer.build_window(ts)
                     if self._skeleton_buffer is not None else None
                 )
-                fused = self._hybrid.classify(window, crop, hand_crop)
+                fused = self._hybrid.classify(window, crop, hand_crop, zone_vector)
                 clip_result = fused["clip"]
                 cat_scores = fused["category_scores"]
             else:
-                clip_result = self._clip.classify(crop, hand_crop)
+                clip_result = self._clip.classify(crop, hand_crop, zone_vector)
                 cat_scores = clip_result["category_scores"]
 
             self._clip_scores.append(clip_result["scores"])

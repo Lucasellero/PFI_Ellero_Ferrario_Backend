@@ -13,6 +13,14 @@ class CameraConfig:
     source: str          # ruta a archivo, URL RTSP/HTTP, o índice de webcam ("0")
     realtime: bool = True    # si True, descarta frames viejos para no ir más lento que el tiempo real
     loop: bool = True        # si True, reinicia el video cuando termina (solo archivos)
+    # Zonas del hogar vistas por esta cámara: {nombre_zona: [[x,y], ...]} en
+    # coordenadas normalizadas 0-1 del frame — se configuran una sola vez por
+    # cámara real, en el setup de instalación (ver ejemplo comentado en
+    # cameras.yaml y fusion/src/zone_context.py). None = sin configurar
+    # todavía: el clasificador degrada a "sin zona" (vector en cero), no
+    # rompe nada. Medido en vlm/README.md ("Fase 1 de PLAN_sustitucion_clip.md...",
+    # 2026-09-21): +6pts de accuracy en Cooking cuando está configurado.
+    zones: dict[str, list[list[float]]] | None = None
 
 
 @dataclass

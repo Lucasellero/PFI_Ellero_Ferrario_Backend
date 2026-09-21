@@ -1,0 +1,61 @@
+# Zonas anotadas a mano para las 7 cámaras fijas de Toyota Smarthome (un
+# solo departamento instrumentado, layout fijo para todos los
+# participantes/clases — ver "Fase 1 de PLAN_sustitucion_clip.md..." en
+# vlm/README.md para cómo se confirmó esto). Coordenadas normalizadas 0-1
+# (x=0 izquierda, y=0 arriba), estimadas a ojo sobre un frame de cada
+# cámara — alcanza para medir si la señal de zona ayuda, no es para
+# producción (ahí las zonas las dibuja un instalador por cámara real).
+#
+# Mismo esquema que usaría `cameras.yaml.zones` en producción: por eso este
+# archivo NO es cameras.yaml (es un dataset de validación, ver
+# fusion/README.md), pero el parser/consumidor (zone_context.zone_one_hot)
+# es el mismo que se usaría ahí.
+
+"01":  # mesa de comer + sillas rojas/blancas
+  mesa:
+    - [0.05, 0.35]
+    - [0.75, 0.30]
+    - [0.75, 0.85]
+    - [0.05, 0.85]
+
+"02":  # misma mesa, ángulo más ancho
+  mesa:
+    - [0.15, 0.30]
+    - [0.90, 0.35]
+    - [0.85, 0.95]
+    - [0.10, 0.75]
+
+"03":  # mesada + pileta + campana extractora
+  cocina:
+    - [0.0, 0.30]
+    - [0.75, 0.20]
+    - [0.75, 0.90]
+    - [0.0, 0.90]
+
+"04":  # sillón en L verde + mesa ratona
+  sofa:
+    - [0.05, 0.35]
+    - [0.90, 0.30]
+    - [0.95, 0.95]
+    - [0.05, 0.95]
+
+"05":  # mismo sillón, ángulo con TV
+  sofa:
+    - [0.0, 0.40]
+    - [1.0, 0.35]
+    - [1.0, 1.0]
+    - [0.0, 1.0]
+
+"06":  # isla de cocina con anafe
+  cocina:
+    - [0.0, 0.35]
+    - [0.60, 0.30]
+    - [0.60, 0.95]
+    - [0.0, 0.95]
+
+"07":  # isla de cocina, ángulo con tabla de picar
+  cocina:
+    - [0.15, 0.35]
+    - [1.0, 0.40]
+    - [1.0, 1.0]
+    - [0.15, 1.0]

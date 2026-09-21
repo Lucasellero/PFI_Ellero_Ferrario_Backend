@@ -767,14 +767,81 @@ correr una segunda pasada de YOLO-detección en vivo en `runner/camera_worker.py
 línea, junto con el cache `vlm/clip_features_full_obj.npz` (no versionados, ver
 `.gitignore`).
 
-**Próximo paso más prometedor identificado, no ejecutado**: combinar esto con Fase 1
-(zona del hogar) en vez de agregarlo solo — el objeto cercano y la zona se solapan a
-propósito (`sink`/`oven` ≈ zona "cocina", `dining table` ≈ zona "mesa"), pero la zona no
-depende de que YOLO detecte el mueble correcto en ese frame puntual (con oclusión o
-ángulo raro, el objeto puede no verse; la zona es fija una vez configurada) — puede ser
-una señal más estable para los casos donde el objeto no se detectó. Fase 1 sigue
-bloqueada por lo mismo que ya documentaba `PLAN_sustitucion_clip.md` (requiere el editor
-de zonas o anotarlas a mano por video, no solo tener el dataset).
+### Fase 1 de `PLAN_sustitucion_clip.md`: zona del hogar, medida sobre Toyota Smarthome (2026-09-21)
+
+Aclaración de producto primero (para no repetir la confusión): las zonas **no** son
+algo que la cámara deba inferir sola ("esto es la cocina") — son una configuración
+manual, una sola vez por cámara, en el setup de instalación (un instalador dibuja
+polígonos sobre un frame congelado, igual que las "zonas de interés" de cualquier
+cámara de seguridad doméstica). El usuario confirmó que ese costo de setup vale la pena
+si la señal ayuda de verdad — esta sección mide eso, sobre Toyota Smarthome, antes de
+tocar `cameras.yaml`/`runner/` en producción.
+
+**Por qué se pudo medir sin trabajo manual excesivo**: Toyota Smarthome tiene solo 7
+IDs de cámara (`_c01` a `_c07`) y, mirando un frame de cada una, se confirmó que las 7 son
+ángulos fijos de **un mismo departamento instrumentado** (mismo sillón visto desde
+`c04`/`c05`, misma mesa desde `c01`/`c02`, misma isla de cocina desde `c06`/`c07`, pileta
+en `c03`) — layout fijo para todos los participantes y clases grabados ahí. Se anotó a
+mano un polígono de zona por cámara (`fusion/toyota_smarthome_zones.yaml`; vocabulario
+que aplica a este departamento: `cocina`, `mesa`, `sofa` — no hay cama ni baño a la vista
+en ninguna de las 7 cámaras, `Laydown` ocurre en el sillón) y se reutilizó sobre las
+14561 muestras ya extraídas, sin volver a grabar ni descargar nada.
+
+Implementación: `fusion/src/zone_context.py` (`zone_one_hot`, point-in-polygon con ray
+casting, sin dependencias nuevas) resuelve la posición de cadera (misma que ya calcula
+`detect_person` para el crop de manos — **sin costo de modelo adicional**, a diferencia
+del contexto de objeto) contra los polígonos de la cámara de ese video, y arma un
+one-hot de 6 zonas (`ZONE_VOCAB`, incluye `cama`/`bano`/`puerta` aunque este dataset no
+los active, para que el vector tenga siempre la misma dimensión). Nuevos flags:
+`extract_clip_features.py --zone-context <archivo.yaml>` y `train_category_probe.py
+--with-zone-context`, mismo patrón que Fase 2.
+
+Resultado, comparado con lo ya medido (mismo dataset/protocolo, 5 seeds):
+
+| Categoría | CLIP solo | +objeto (Fase 2) | +zona (Fase 1) | +zona+objeto |
+|---|---|---|---|---|
+| Cooking | 80.2% | 82.6% | **86.0%** | 84.4% |
+| EatingDrinkingMedication | 56.7% | 55.7% | 56.7% | 56.4% |
+| Moving | 70.8% | 70.5% | 69.7% | 69.5% |
+| Phone | 58.6% | 61.5% | **63.3%** | 59.8% |
+| ReadingScreen | 64.4% | 66.6% | 66.6% | 66.6% |
+| Resting | 66.8% | 67.0% | 70.1% | **71.5%** |
+| Global | 65.6% | 65.9% | **67.1%** | 66.5% |
+
+**La zona sola es la mejor señal individual medida hasta ahora** — `Cooking` llega a
+86.0%, a 2.9 pts del histórico pre-regresión (88.9%), superando claramente al contexto
+de objeto (82.6%). Tiene sentido: la zona es un dato **fijo y sin ruido de detección**
+(una vez configurada, no depende de que YOLO vea el mueble correcto en ese frame
+puntual — con oclusión o ángulo raro, el objeto puede no detectarse; la zona no
+"falla" de esa forma), mientras que el objeto depende de una detección frame a frame
+que puede fallar o confundirse.
+
+**Zona + objeto combinados NO suman — empeoran levemente respecto a zona sola**
+(66.5% vs 67.1% global, `Cooking` 84.4% vs 86.0%). Confirma la sospecha que ya dejaba
+anotada la sección de Fase 2 ("solapa parcialmente con la zona"): una vez que se sabe
+la zona, el objeto detectado ahí no aporta información nueva — solo suma el ruido de
+sus propias detecciones fallidas/erróneas. **No conviene usar las dos juntas.**
+
+**Actualización 2026-09-21: integrado a producción.** `vlm/models/category_probe.npz`
+(el que carga `ClipActivityClassifier` por default) es ahora este mismo probe con
+contexto de zona — 6 categorías, 1030 dims. `CameraConfig.zones` (nuevo campo en
+`runner/config.py`), `runner/camera_worker.py` (calcula la zona de la cadera en el mismo
+punto donde ya arma el crop de CLIP) y `ClipActivityClassifier.classify()`/
+`HybridActivityClassifier.classify()` (nuevo parámetro `zone_vector`, opcional) ya saben
+usarlo — ver "Contexto de zona del hogar" en `runner/README.md` para el detalle. La
+cámara real de `cameras.yaml` queda sin `zones:` configurado por ahora (decisión
+explícita, ver ese README): el sistema degrada a vector de zona en cero (mismo
+comportamiento que antes de esta integración) hasta que alguien dibuje los polígonos de
+esa instalación real — sin eso, la mejora medida arriba no se nota en producción todavía,
+pero el mecanismo ya está listo para usarla en cuanto se configure, sin tocar código de
+nuevo. Falta, si se quiere que cualquier persona (no técnica) pueda configurar zonas: un
+editor visual en el dashboard (mencionado en el plan original, no construido — por ahora
+se escribe el YAML a mano, ver el ejemplo comentado en `cameras.yaml`). El backup del
+probe de 4 categorías que estaba en producción antes de esto queda en
+`vlm/models/category_probe_4cat_local.npz.bak` (no versionado) por si hace falta
+revertir. Los demás modelos/caches de este experimento (objeto, zona+objeto) quedan
+guardados sin versionar también (`vlm/models/category_probe_6cat_*_2026-09-2*.npz`,
+`clip_features_full_*.npz`).
 
 ## Confirmación de caídas (`src/fall_confirmation.py`)
 

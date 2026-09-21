@@ -3,6 +3,17 @@ cameras:
   source: http://0.0.0.0:8080/stream.mjpg
   realtime: true
   loop: false
+  # zones: opcional, configuración manual una sola vez por cámara real (ver
+  # runner/README.md, sección "Clasificación de actividades (CLIP)", y
+  # fusion/src/zone_context.py). Sin esta clave, el sistema funciona igual
+  # que hoy — la mejora medida (+6pts Cooking, ver vlm/README.md "Fase 1 de
+  # PLAN_sustitucion_clip.md...") solo aplica una vez que se dibujan los
+  # polígonos reales de ESTA cámara. Ejemplo de esquema (comentado, no
+  # activo — coordenadas normalizadas 0-1, [x,y] por vértice, en el orden
+  # que se camina el polígono):
+  # zones:
+  #   cocina: [[0.0, 0.3], [0.6, 0.3], [0.6, 0.9], [0.0, 0.9]]
+  #   mesa:   [[0.6, 0.4], [1.0, 0.4], [1.0, 0.9], [0.6, 0.9]]
 pose_model: yolo11n-pose.pt
 log_level: INFO
 clip_heartbeat_s: 0

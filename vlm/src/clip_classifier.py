@@ -434,7 +434,12 @@ class ClipActivityClassifier:
         )[0][0]
         return image_features / np.linalg.norm(image_features)
 
-    def classify(self, image_bgr: np.ndarray, hand_crop_bgr: np.ndarray | None = None) -> dict:
+    def classify(
+        self,
+        image_bgr: np.ndarray,
+        hand_crop_bgr: np.ndarray | None = None,
+        zone_vector: np.ndarray | None = None,
+    ) -> dict:
         image_features = self.encode_image(image_bgr)
 
         logits = 100.0 * image_features @ self._text_features.T
@@ -463,6 +468,21 @@ class ClipActivityClassifier:
                 self.encode_image(hand_crop_bgr) if hand_crop_bgr is not None else image_features
             )
             probe_input = np.concatenate([image_features, hand_features])
+            # El probe puede haber sido entrenado con contexto de zona sumado
+            # (train_category_probe.py --with-zone-context, ver "Fase 1 de
+            # PLAN_sustitucion_clip.md..." en vlm/README.md) — se detecta por
+            # la dimensión de W en vez de un flag aparte, para no duplicar el
+            # vocabulario de zonas acá (vive en fusion/src/zone_context.py,
+            # que vlm/ no importa — mismo criterio de módulos independientes
+            # que ya sigue keypoint_sequence.py). Sin zone_vector (cámara sin
+            # zonas configuradas, o caller sin pose como vlm/main.py batch),
+            # se rellena con ceros — mismo tratamiento que "no cae en ninguna
+            # zona" en zone_one_hot, no es un error.
+            extra_dims = self._probe["W"].shape[1] - probe_input.shape[0]
+            if extra_dims > 0:
+                if zone_vector is None:
+                    zone_vector = np.zeros(extra_dims, dtype=np.float32)
+                probe_input = np.concatenate([probe_input, zone_vector])
             probe_logits = probe_input @ self._probe["W"].T + self._probe["b"]
             probe_probs = _softmax(probe_logits)
             category_scores = dict(zip(self._probe["classes"], (float(p) for p in probe_probs)))
