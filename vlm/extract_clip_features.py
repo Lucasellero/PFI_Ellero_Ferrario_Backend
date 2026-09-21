@@ -8,8 +8,18 @@ El dataset de referencia (../videos/, 39 videos) es demasiado chico para
 entrenar un clasificador — este script apunta a una carpeta externa con
 muchos más videos por clase (no versionada en git, ver vlm/README.md).
 
+Con `--object-context`, suma además un vector de presencia de objetos
+COCO cerca de la persona (`fusion/src/object_context.py`, Fase 2 de
+`fusion/PLAN_sustitucion_clip.md`) — pensado para medir si esa señal ayuda
+a separar categorías que CLIP solo confunde por falta de contexto espacial
+(ver "El probe de producción había perdido 2 categorías..." en
+vlm/README.md, 2026-09-20: `Cook.Cleandishes`/`Cutbread` vs
+`EatingDrinkingMedication`). Cuesta una segunda pasada de YOLO (detección,
+no pose) por frame muestreado — no gratis, por eso es opcional.
+
 Uso:
     python extract_clip_features.py <carpeta_dataset> [--max-per-class N] [--frames-per-video N]
+                                     [--object-context]
 """
 import argparse
 import random
@@ -32,11 +42,17 @@ from vlm.src.clip_classifier import (
 from src.pose_pipeline import detect_person
 from ultralytics import YOLO
 
+from fusion.src.object_context import object_presence_vector
+
 parser = argparse.ArgumentParser()
 parser.add_argument('dataset_dir', help='Carpeta con videos <Actividad>_pXX_...mp4')
 parser.add_argument('--max-per-class', type=int, default=40, help='Tope de videos por actividad')
 parser.add_argument('--frames-per-video', type=int, default=5)
 parser.add_argument('--seed', type=int, default=7)
+parser.add_argument(
+    '--object-context', action='store_true',
+    help='Suma vector de presencia de objetos COCO cerca de la persona (fusion/src/object_context.py)',
+)
 parser.add_argument('-o', '--output', default=None, help='Default: vlm/clip_features.npz')
 args = parser.parse_args()
 
@@ -45,6 +61,7 @@ OUT_PATH = Path(args.output) if args.output else Path(__file__).parent / "clip_f
 
 clf = ClipActivityClassifier(quantized=True, pad_square=True)
 yolo = YOLO(str(ROOT / 'yolo11n-pose.pt'))
+yolo_obj = YOLO(str(ROOT / 'yolo11n.pt')) if args.object_context else None
 
 
 def participant_of(stem: str) -> str:
@@ -65,7 +82,7 @@ for f in sorted(DATASET_DIR.glob('**/*.mp4')):
         by_label.setdefault(label, []).append(f)
 
 rng = random.Random(args.seed)
-rows_feat, rows_hand_feat, rows_label, rows_participant, rows_video = [], [], [], [], []
+rows_feat, rows_hand_feat, rows_obj_feat, rows_label, rows_participant, rows_video = [], [], [], [], [], []
 
 for label, files in sorted(by_label.items()):
     chosen = rng.sample(files, args.max_per_class) if len(files) > args.max_per_class else files
@@ -91,6 +108,8 @@ for label, files in sorted(by_label.items()):
             hand_feat = image_features(hand_crop) if hand_crop is not None else feat
             rows_feat.append(feat)
             rows_hand_feat.append(hand_feat)
+            if yolo_obj is not None:
+                rows_obj_feat.append(object_presence_vector(yolo_obj, frame, box))
             rows_label.append(label)
             rows_participant.append(participant_of(f.stem))
             rows_video.append(f.stem)
@@ -102,9 +121,14 @@ labels = np.array(rows_label)
 participants = np.array(rows_participant)
 videos = np.array(rows_video)
 
+extra = {}
+if yolo_obj is not None:
+    extra['object_features'] = np.stack(rows_obj_feat).astype(np.float32)
+
 np.savez(
     OUT_PATH, features=features, hand_features=hand_features,
-    labels=labels, participants=participants, videos=videos,
+    labels=labels, participants=participants, videos=videos, **extra,
 )
-print(f'\nGuardado {OUT_PATH}: {features.shape[0]} muestras, {features.shape[1]}-dim (+ hand_features)')
+suffix = ' + object_features' if extra else ''
+print(f'\nGuardado {OUT_PATH}: {features.shape[0]} muestras, {features.shape[1]}-dim (+ hand_features{suffix})')
 print('Por clase:', {l: int((labels == l).sum()) for l in sorted(set(labels))})

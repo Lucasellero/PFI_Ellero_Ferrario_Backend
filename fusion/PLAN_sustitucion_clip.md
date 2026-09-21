@@ -99,6 +99,15 @@ despliegue con cámara.
 - **Nota:** solapa parcialmente con la zona (mesa ≈ zona mesa) — medir si suma sobre
   Fase 1 o es redundante antes de dejarlo en producción (mismo criterio que el
   detector de objeto sostenido descartado en `vlm/README.md`).
+- **Medido (2026-09-20, ver "Fase 2 de PLAN_sustitucion_clip.md..." en `vlm/README.md`
+  para el detalle):** implementado como feature adicional del linear probe de `vlm/`
+  (no integrado a `fusion/` ni al runner todavía — mismo dataset/protocolo de
+  `train_category_probe.py`, no la ventana temporal de `fusion/`). Confirma la
+  hipótesis solo parcialmente: `Cooking` sube +2.4 pts (80.2%→82.6%) gracias sobre
+  todo a `Cook.Cleandishes` (-40% de errores, probablemente por detectar la pileta),
+  pero el efecto global es +0.3 pts (dentro de ruido) y una subclase (`Cook.Cut`)
+  empeoró. No reemplaza a Fase 1 (zona) — se recomienda combinarlas antes de decidir
+  si Fase 2 sola justifica el costo de una segunda pasada de YOLO en vivo.
 
 ### Fase 3 — Ampliar el clasificador temporal a ~10 clases, entrenado en serio
 

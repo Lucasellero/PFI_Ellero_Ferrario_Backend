@@ -607,6 +607,175 @@ correcta con confianza alta. Ver "Clasificación de actividades (CLIP)" en
 `vlm/`, usar `evaluate_activity.py`/`train_category_probe.py` contra un
 dataset, no eyeballear el dashboard con cámaras de prueba en loop corto.
 
+### El probe de producción había perdido 2 categorías sin que quedara anotado (2026-09-20)
+
+Antes de sumar contexto de objeto (YOLO-COCO, ver `fusion/PLAN_sustitucion_clip.md`),
+se revisó el modelo ya entrenado (`vlm/models/category_probe.npz`) para ver si convenía
+mejorarlo primero. Inspeccionando el archivo directamente:
+
+```
+classes: ['Cooking' 'EatingDrinkingMedication' 'Moving' 'Resting']   # 4 de 6
+```
+
+El reentrenamiento del 2026-08-18 (sección "Reentrenamiento con dataset local
+categorizado por carpetas" arriba) fue sobre un dataset local de ~2200 clips que **solo
+cubre 4 de las 31 clases finas de Toyota Smarthome** — por eso el `.npz` final quedó con
+4 categorías en vez de las 6 entrenables (`Background` nunca tuvo datos a propósito, eso
+sí es diseño). El resultado (75.6% global) ya estaba documentado ahí como "no
+comparable al histórico", pero nadie había marcado que el archivo de **producción**
+perdió `ReadingScreen` y `Phone` por completo al sobrescribirse — no es una decisión, es
+que el dataset de esa corrida no las tenía.
+
+**Se reprodujo el entrenamiento de 6 categorías** con el pipeline actual (que ya incluye
+el fix de hand-crop + filtro de confianza por muñeca de la sección anterior), esta vez
+sobre el dataset completo en vez del subset de 2026-07: se encontró
+`D:\DESCARGAS\toyota_smarthome_mp4.tar.gz` (12 GB, 16.115 clips, 31 clases) todavía
+disponible — la carpeta ya extraída que se usó en julio (`D:\DESCARGAS\mp4`) se había
+borrado para liberar espacio, pero el .tar.gz original seguía ahí.
+
+```
+extract_clip_features.py <tar extraído> --max-per-class 120 --frames-per-video 5
+  → 14561 muestras, 31 clases, 3126 "videos" (video × ventana de frames del split)
+train_category_probe.py --seeds 5
+  zero-shot:    43.6%  (std 3.3%)
+  linear-probe: 65.6%  (std 1.9%)
+```
+
+Por categoría (pooled sobre 5 seeds, participantes disjuntos train/val), comparado
+contra el número histórico de la sección "Bug de coordenadas...":
+
+| Categoría | n (val) | Histórico (2026-08, antes de perder cobertura) | Reentrenado 2026-09-20 |
+|---|---|---|---|
+| Cooking | 864 | 88.9% | 80.2% (**-8.7**) |
+| EatingDrinkingMedication | 1823 | 56.1% | 56.7% (+0.6) |
+| Moving | 911 | 64.2% | **70.8%** (+6.6) |
+| Phone | 169 | 63.9% | 58.6% (**-5.3**) |
+| ReadingScreen | 413 | 60.9% | **64.4%** (+3.5) |
+| Resting | 355 | 66.8% | **66.8%** (+3.9) |
+
+**No es una mejora limpia**: sube en 4 categorías pero baja en 2, y las que bajan
+(`Cooking` -8.7, `Phone` -5.3) no son ruido chico — no se puede tomar de la tabla de
+arriba (std 1.9% del promedio global) porque esa std es del *promedio*, no de cada
+categoría por separado, y `Phone` en particular tiene muy poca muestra de validación
+(169, ~34/seed). Es esperable que el split aleatorio por participante mueva bastante una
+categoría con tan pocos videos. No se corrió la matriz de confusión de esta corrida
+todavía (pendiente si se retoma esto).
+
+**Matriz de confusión de esta corrida** (pooled sobre 5 seeds, mismo criterio que la
+sección "Matriz de confusión del probe" de arriba):
+
+| Real \ Predicho | Cooking | EatingDrinkingMed. | Moving | Phone | ReadingScreen | Resting |
+|---|---|---|---|---|---|---|
+| Cooking | **80%** | 11% | 5% | 4% | 1% | 0% |
+| EatingDrinkingMedication | 11% | **57%** | 8% | 8% | 8% | 9% |
+| Moving | 5% | 4% | **71%** | 9% | 6% | 6% |
+| Phone | 3% | 15% | 11% | **59%** | 9% | 4% |
+| ReadingScreen | 1% | 9% | 10% | 3% | **64%** | 13% |
+| Resting | 0% | 9% | 9% | 6% | 9% | **67%** |
+
+La caída de `Cooking` **no es ruido ni un bug**: tiene un confusor dominante y
+explicable. Abriendo los errores por clase fina real, la mitad (91/171) va a
+`EatingDrinkingMedication`, concentrados en `Cook.Cleandishes` (33 de 45 errores) y
+`Cutbread` (27 de 41 errores) — lavar platos y cortar pan sobre una mesada, con las
+manos cerca de utensilios/comida, son visualmente parecidos a servir/comer desde un
+embedding holístico de CLIP (mismo límite estructural ya documentado para
+`EatingDrinkingMedication` en sí misma). El resto (`Cook.Cleanup`, 28/45 errores) se va
+a `Moving` — limpiar la cocina implica caminar/agacharse, no quedarse quieto frente a
+una hornalla. Es plausible que darle mucho más volumen a `EatingDrinkingMedication`
+(1823 muestras de validación, la categoría más grande por lejos) le haya dado más
+"gravedad" en el espacio de decisión sobre estos dos gestos ambiguos que antes, con
+menos datos, quedaban del lado de `Cooking`.
+
+**Decisión, siguiendo el mismo criterio de "no integrar a ciegas" que ya rige el resto
+del proyecto**: no se reemplazó `vlm/models/category_probe.npz` de producción — la baja
+de `Cooking` es real, no es ruido de muestra chica. El archivo nuevo queda guardado
+aparte como `vlm/models/category_probe_6cat_full_2026-09-20.npz` (no versionado, como el
+resto de `models/`), y el backup del que estaba en producción antes de este experimento
+en `vlm/models/category_probe_4cat_local.npz.bak`. Vía más prometedora para la próxima
+vez que se retome esto (no ejecutada todavía): sumar el dataset local de julio como
+`--extra-features` en vez de reemplazarlo — mismo mecanismo que ya usa
+`train_category_probe.py` para OmniFall — para no perder la señal que sea que ese
+dataset (más chico, `Cooking` con menos ambigüedad de mano) le daba a esa categoría, en
+vez de promediar más seeds (la caída no es un problema de varianza, es de composición
+del dataset).
+
+**Lo que sí queda resuelto, sin ambigüedad**: el `.npz` de producción hoy **no cubre
+`ReadingScreen` ni `Phone`** — cualquier trabajo futuro sobre "por qué el runner nunca
+reporta esas categorías" debe partir de este hallazgo, no de un problema de prompts o
+del zero-shot.
+
+### Fase 2 de `PLAN_sustitucion_clip.md`: contexto de objeto (YOLO-COCO), primer resultado (2026-09-20)
+
+En vez de perseguir la caída de `Cooking` con más datos o más seeds (el análisis de
+arriba ya la explica como un límite estructural: `Cook.Cleandishes`/`Cutbread` se ven,
+para un embedding holístico, como "manos cerca de comida"), se implementó la Fase 2 del
+plan de sustitución de CLIP: sumar un vector de presencia de objetos COCO cerca de la
+persona como feature adicional del probe, sin tocar `vision/` ni el encoder de CLIP.
+
+- **`fusion/src/object_context.py`** (nuevo): corre `yolo11n.pt` (detección, no el
+  `-pose.pt` que ya usa `vision/`) sobre el frame completo y arma un vector de 14
+  clases COCO domésticas (`bed`, `couch`, `dining table`, `tv`, `oven`, `sink`,
+  `refrigerator`, `microwave`, `toilet`, `chair`, `book`, `cup`, `bottle`, `bowl`) — el
+  valor de cada slot es la confianza de la detección más segura de esa clase que se
+  superponga con el bbox de la persona agrandado un 60% (los muebles casi nunca se
+  superponen literalmente con la persona, están al lado).
+- **`extract_clip_features.py --object-context`** (nuevo flag): suma `object_features`
+  al cache junto a los embeddings CLIP de siempre.
+- **`train_category_probe.py --with-object-context`** (nuevo flag): concatena ese
+  vector (14 dims) al input del probe (`[body, hand, object]`, 1038-dim en vez de
+  1024). Guarda a una ruta separada (`-o`) para no pisar producción mientras se mide.
+
+Resultado (mismo dataset/protocolo que la sección anterior — 14561 muestras, 31 clases,
+5 seeds, participantes disjuntos):
+
+| Categoría | Sin contexto de objeto | Con contexto de objeto |
+|---|---|---|
+| Cooking | 80.2% | **82.6%** (+2.4) |
+| EatingDrinkingMedication | 56.7% | 55.7% (-1.0) |
+| Moving | 70.8% | 70.5% (-0.3) |
+| Phone | 58.6% | **61.5%** (+2.9) |
+| ReadingScreen | 64.4% | **66.6%** (+2.2) |
+| Resting | 66.8% | 67.0% (+0.2) |
+| Global | 65.6% | 65.9% (+0.3, dentro del ruido entre seeds) |
+
+Abriendo los errores de `Cooking` por clase fina, el contexto de objeto corrigió una
+parte real y específica del problema diagnosticado arriba:
+
+| Clase fina | Errores sin objeto | Errores con objeto |
+|---|---|---|
+| `Cook.Cleandishes` | 45 | **27** (-40%) |
+| `Cook.Cleanup` | 45 | **35** |
+| `Cutbread` | 41 | 38 |
+| `Cook.Cut` | 13 | 20 (empeoró) |
+| `Cook.Stir` | 15 | 15 (sin cambio) |
+| `Cook.Usestove` | 12 | 15 |
+
+**Veredicto: la hipótesis de Fase 2 se confirma parcialmente, no es una solución
+completa.** `Cook.Cleandishes` (lavar platos, plausiblemente porque el detector ve la
+pileta) mejoró mucho; el resto se movió poco o incluso empeoró un poco (`Cook.Cut`). El
+efecto global (+0.3 pts) está dentro del ruido entre seeds — la mejora real está
+concentrada en categorías específicas (`Cooking`, `Phone`, `ReadingScreen`), no es una
+mejora pareja. Consistente con la nota del plan original ("medir si suma sobre Fase 1 o
+es redundante antes de dejarlo en producción"): suma, pero no lo suficiente sola como
+para no seguir necesitando Fase 1 (zonas) o mejor resolución del gesto de manos.
+
+**No se integró a producción**: además de no ser una mejora contundente, haría falta
+correr una segunda pasada de YOLO-detección en vivo en `runner/camera_worker.py`
+(costo adicional en el Pi, no implementado todavía — ver Fase 2 en
+`fusion/PLAN_sustitucion_clip.md`). El modelo queda guardado en
+`vlm/models/category_probe_6cat_obj_2026-09-20.npz` para comparar si se retoma esta
+línea, junto con el cache `vlm/clip_features_full_obj.npz` (no versionados, ver
+`.gitignore`).
+
+**Próximo paso más prometedor identificado, no ejecutado**: combinar esto con Fase 1
+(zona del hogar) en vez de agregarlo solo — el objeto cercano y la zona se solapan a
+propósito (`sink`/`oven` ≈ zona "cocina", `dining table` ≈ zona "mesa"), pero la zona no
+depende de que YOLO detecte el mueble correcto en ese frame puntual (con oclusión o
+ángulo raro, el objeto puede no verse; la zona es fija una vez configurada) — puede ser
+una señal más estable para los casos donde el objeto no se detectó. Fase 1 sigue
+bloqueada por lo mismo que ya documentaba `PLAN_sustitucion_clip.md` (requiere el editor
+de zonas o anotarlas a mano por video, no solo tener el dataset).
+
 ## Confirmación de caídas (`src/fall_confirmation.py`)
 
 Además de clasificar actividades, `vlm/` expone un segundo uso de CLIP:
