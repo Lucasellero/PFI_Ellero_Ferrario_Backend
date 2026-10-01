@@ -390,6 +390,16 @@ python -m runner --config otra_config.yaml
 
 Ctrl+C (o `SIGTERM`) detiene todas las cámaras de forma prolija.
 
+## Sincronización a la nube (`cloud_sync.py`, 2026-10-01)
+
+Thread de fondo opcional (`CloudSyncThread`, arrancado desde `main.py` solo si `cameras.yaml`
+tiene una sección `cloud:`) que lee eventos locales no sincronizados
+(`events/store.py::EventStore.unsynced`) y los manda en batch al backend `cloud/` — ver
+`cloud/README.md`. Solo hace conexiones salientes (nunca expone un puerto), y ante un corte de
+conexión no pierde nada: los eventos siguen en `events/events.db` hasta que se confirma el envío
+(RNF6/RNF7 del informe). Sin esa sección en `cameras.yaml`, el runner funciona exactamente igual
+que antes — 100% local.
+
 ## Fuera de alcance por ahora
 
 - Multi-persona por cámara (mismo límite que `vision/`).

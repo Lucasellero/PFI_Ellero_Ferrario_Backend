@@ -17,6 +17,7 @@
       --activity: #8c7ae6;
       --danger:   #ff4d4d;
       --warning:  #e0b23e;
+      --deviation: #4ecdc4;
       --motion:   #3ddc71;
       --text:     #eaeaec;
       --muted:    #87878c;
@@ -649,6 +650,7 @@
     .event-card.fall       { border-left: 3px solid var(--danger); animation: fallPulse 2.2s ease-out 1; }
     .event-card.immobility { border-left: 3px solid var(--warning); }
     .event-card.activity   { border-left: 3px solid var(--activity); }
+    .event-card.routine_deviation { border-left: 3px solid var(--deviation); }
     @keyframes fallPulse {
       0%   { box-shadow: 0 0 0 rgba(255,77,77,0); }
       15%  { box-shadow: 0 0 14px rgba(255,77,77,.45); }
@@ -661,6 +663,7 @@
     .ev-type.fall       { color: var(--danger); }
     .ev-type.immobility { color: var(--warning); }
     .ev-type.activity   { color: var(--activity); }
+    .ev-type.routine_deviation { color: var(--deviation); }
     .ev-meta { font-size: 10px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .ev-ts { font-size: 10px; color: var(--muted); font-family: var(--mono); flex-shrink: 0; }
 
@@ -1720,9 +1723,20 @@ async function uploadFile(file) {
 const EVENT_ICONS  = {
   fall: '<svg class="icon"><use href="#icon-alert"/></svg>',
   immobility: '<svg class="icon"><use href="#icon-moon"/></svg>',
-  activity: '🏃'
+  activity: '🏃',
+  routine_deviation: '📋'
 };
-const EVENT_LABELS = { fall: 'Caída detectada', immobility: 'Inmovilidad', activity: 'Actividad' };
+const EVENT_LABELS = {
+  fall: 'Caída detectada', immobility: 'Inmovilidad', activity: 'Actividad',
+  routine_deviation: 'Posible desvío de rutina',
+};
+
+// Clave legible por tipo de clase cam_* que puede aparecer en metadata.clase de un
+// routine_deviation (ver baseline/src/camera_events.py::CAMERA_ACTIVITY_MAP).
+const CAM_CLASE_ES = {
+  cam_cocina: 'cocina', cam_comida: 'comida/bebida', cam_descanso_sofa: 'descanso',
+  cam_ocio_sentado: 'ocio sentado', cam_moverse: 'movimiento',
+};
 
 // Traducción de las clases CLIP (vlm/models/labels.json) a nombre + ícono.
 // El runner emite categorías gruesas (COARSE_CATEGORIES en vlm/); las clases
@@ -1802,8 +1816,9 @@ function buildEventCard(ev) {
     label = act ? act.name : ev.metadata.activity_label;
   }
 
-  const ts    = typeof ev.video_timestamp_s === 'number'
-    ? `@${ev.video_timestamp_s.toFixed(1)} s` : '';
+  const ts    = (ev.event_type !== 'routine_deviation' && typeof ev.video_timestamp_s === 'number')
+    ? `@${ev.video_timestamp_s.toFixed(1)} s`
+    : (ev.metadata && ev.metadata.fecha ? ev.metadata.fecha : '');
   const meta  = ev.metadata ? formatMeta(ev.metadata) : '';
 
   const card = document.createElement('div');
@@ -1824,6 +1839,12 @@ function formatMeta(meta) {
   if (meta.torso_angle_deg !== undefined) parts.push(`ang ${meta.torso_angle_deg.toFixed(1)}°`);
   if (meta.duration_s      !== undefined) parts.push(`dur ${meta.duration_s.toFixed(0)} s`);
   if (meta.confidence      !== undefined) parts.push(`confianza ${(meta.confidence * 100).toFixed(0)}%`);
+  // routine_deviation (ver baseline/run_live.py): clase/tipo/dirección según el detector que
+  // disparó el aviso — no todos los campos están presentes en todos los casos.
+  if (meta.detector === 'multivariado') parts.push('forma general del día distinta a lo habitual');
+  if (meta.clase !== undefined) parts.push(CAM_CLASE_ES[meta.clase] || meta.clase);
+  if (meta.tipo  !== undefined) parts.push(meta.tipo.replace(/_/g, ' '));
+  if (meta.direccion !== undefined) parts.push(meta.direccion === 'baja' ? 'en baja sostenida' : 'en aumento sostenido');
   return parts.join(' · ');
 }
 

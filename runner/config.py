@@ -24,6 +24,15 @@ class CameraConfig:
 
 
 @dataclass
+class CloudSyncConfig:
+    """Sección opcional `cloud:` de `cameras.yaml` — sin ella, `runner/cloud_sync.py` no se
+    arranca y nada cambia respecto a una instalación sin nube. Ver `cloud/README.md`."""
+    url: str
+    api_key: str
+    interval_s: float = 30.0
+
+
+@dataclass
 class RunnerConfig:
     cameras: list[CameraConfig]
     pose_model: str = "yolo11n-pose.pt"
@@ -35,11 +44,20 @@ class RunnerConfig:
     motion_gate_enabled: bool = True     # si True, YOLO/CLIP solo corren mientras hay movimiento o presencia confirmada (ver motion_gate.py)
     motion_min_area_ratio: float = 0.005 # fracción del frame (reducido) que debe cambiar para contar como movimiento
     motion_absence_timeout_s: float = 45.0  # segundos sin detección de persona (estando despierto) antes de volver a modo bajo consumo
+    cloud_sync: CloudSyncConfig | None = None  # None = sin sincronización a la nube (default)
 
 
 def load_config(path: Path) -> RunnerConfig:
     data = yaml.safe_load(path.read_text())
     cameras = [CameraConfig(**c) for c in data["cameras"]]
+    cloud_data = data.get("cloud")
+    cloud_sync = (
+        CloudSyncConfig(
+            url=cloud_data["url"], api_key=cloud_data["api_key"],
+            interval_s=float(cloud_data.get("interval_s", 30.0)),
+        )
+        if cloud_data else None
+    )
     return RunnerConfig(
         cameras=cameras,
         pose_model=data.get("pose_model", "yolo11n-pose.pt"),
@@ -51,4 +69,5 @@ def load_config(path: Path) -> RunnerConfig:
         motion_gate_enabled=bool(data.get("motion_gate_enabled", True)),
         motion_min_area_ratio=float(data.get("motion_min_area_ratio", 0.005)),
         motion_absence_timeout_s=float(data.get("motion_absence_timeout_s", 45.0)),
+        cloud_sync=cloud_sync,
     )

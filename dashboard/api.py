@@ -85,18 +85,30 @@ def _rows_to_events(rows: list[tuple]) -> list[dict]:
             "video_id": r[1],
             "event_type": r[2],
             "video_timestamp_s": r[3],
-            "metadata": json.loads(r[4]),
+            "wall_clock_ts": r[4],
+            "metadata": json.loads(r[5]),
         }
         for r in rows
     ]
 
 
+def _connect() -> sqlite3.Connection:
+    """Abre la conexión y agrega `wall_clock_ts` si la DB es de antes de ese campo (ver
+    events/store.py — misma migración, acá porque esta API lee con SQL crudo, no con EventStore)."""
+    conn = sqlite3.connect(str(DB_PATH))
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(events)")}
+    if "wall_clock_ts" not in cols:
+        conn.execute("ALTER TABLE events ADD COLUMN wall_clock_ts REAL")
+        conn.commit()
+    return conn
+
+
 def _fetch_events_since(last_id: int, limit: int = 50) -> list[dict]:
     if not DB_PATH.exists():
         return []
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = _connect()
     rows = conn.execute(
-        "SELECT id, video_id, event_type, video_timestamp_s, metadata "
+        "SELECT id, video_id, event_type, video_timestamp_s, wall_clock_ts, metadata "
         "FROM events WHERE id > ? ORDER BY id ASC LIMIT ?",
         (last_id, limit),
     ).fetchall()
@@ -107,9 +119,9 @@ def _fetch_events_since(last_id: int, limit: int = 50) -> list[dict]:
 def _fetch_last_events(limit: int = 30) -> list[dict]:
     if not DB_PATH.exists():
         return []
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = _connect()
     rows = conn.execute(
-        "SELECT id, video_id, event_type, video_timestamp_s, metadata "
+        "SELECT id, video_id, event_type, video_timestamp_s, wall_clock_ts, metadata "
         "FROM events ORDER BY id DESC LIMIT ?",
         (limit,),
     ).fetchall()

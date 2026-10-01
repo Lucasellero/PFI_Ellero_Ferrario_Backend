@@ -1,0 +1,28 @@
+# No probado en esta sesión (no hay Docker instalado acá) — pensado para levantar app + Postgres
+# local y animarse a probar contra el motor real antes de tocar RDS. Correr desde la raíz del
+# repo: `docker compose -f cloud/docker-compose.yml up --build`.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: monitor
+      POSTGRES_PASSWORD: monitor
+      POSTGRES_DB: monitor
+    ports:
+      - "5432:5432"
+    volumes:
+      - monitor_pg_data:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: ..
+      dockerfile: cloud/Dockerfile
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql+psycopg2://monitor:monitor@db:5432/monitor
+    ports:
+      - "8000:8000"
+
+volumes:
+  monitor_pg_data:

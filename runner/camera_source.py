@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator
 
@@ -42,7 +42,12 @@ LATEST_FRAME_TIMEOUT_S = 1.0  # cuánto esperar por un frame nuevo antes de revi
 @dataclass
 class Frame:
     image: np.ndarray
-    timestamp_s: float   # segundos desde que arrancó esta fuente (wall-clock)
+    timestamp_s: float   # segundos desde que arrancó esta fuente (monotonic)
+    # reloj real (epoch Unix, hora local) al momento de leer el frame —
+    # independiente de timestamp_s, que es relativo al arranque de la
+    # fuente. Lo necesita `baseline/` para ubicar cada evento en el
+    # día/hora real del mundo (ver events/schema.py::wall_clock_ts).
+    wall_clock_ts: float = field(default_factory=time.time)
 
 
 def _is_live_source(source: str) -> bool:

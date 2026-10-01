@@ -5,6 +5,7 @@ import logging
 import re
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -312,6 +313,7 @@ class CameraWorker(threading.Thread):
                         video_id=self._config.id,
                         event_type=EventType(raw["event_type"]),
                         video_timestamp_s=raw["video_timestamp_s"],
+                        wall_clock_ts=frame.wall_clock_ts,
                         metadata=raw["metadata"],
                     )
                     store.add(event)
@@ -571,6 +573,7 @@ class CameraWorker(threading.Thread):
             video_id=self._config.id,
             event_type=EventType.ACTIVITY,
             video_timestamp_s=ts,
+            wall_clock_ts=time.time(),
             metadata={
                 "activity_label": top_cat,
                 "fine_label": fine_label,

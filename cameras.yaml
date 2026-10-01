@@ -17,3 +17,12 @@ cameras:
 pose_model: yolo11n-pose.pt
 log_level: INFO
 clip_heartbeat_s: 0
+# cloud: opcional, sincronización de eventos al backend cloud (ver cloud/README.md y
+# runner/cloud_sync.py). Sin esta clave, el sistema funciona igual que hoy — 100% local, nada
+# sale de la Pi. "url" es la base del backend (sin /devices/events al final), "api_key" es la
+# que devuelve la nube una sola vez al crear el hogar (ver "Correr localmente" en cloud/README.md).
+# Ejemplo (comentado, no activo):
+# cloud:
+#   url: https://monitor-api.ejemplo.com
+#   api_key: "la-api-key-del-hogar"
+#   interval_s: 30

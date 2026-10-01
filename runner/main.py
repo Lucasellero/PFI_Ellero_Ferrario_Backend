@@ -14,6 +14,7 @@ import threading
 from pathlib import Path
 
 from .camera_worker import CameraWorker, _CLIP_AVAILABLE
+from .cloud_sync import CloudSyncThread
 from .config import load_config
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -153,11 +154,22 @@ def main() -> None:
         config.clip_interval_s,
         "activo" if config.motion_gate_enabled else "inactivo",
     )
+    cloud_sync_thread = None
+    if config.cloud_sync is not None:
+        logger.info("cloud_sync: activado (%s, cada %.0fs)", config.cloud_sync.url, config.cloud_sync.interval_s)
+        cloud_sync_thread = CloudSyncThread(
+            db_path=_DB_PATH, url=config.cloud_sync.url, api_key=config.cloud_sync.api_key,
+            interval_s=config.cloud_sync.interval_s, stop_event=stop_event,
+        )
+        cloud_sync_thread.start()
+
     for w in workers:
         w.start()
 
     for w in workers:
         w.join()
+    if cloud_sync_thread is not None:
+        cloud_sync_thread.join(timeout=5.0)
 
     logger.info("=== Runner detenido. ===")
 

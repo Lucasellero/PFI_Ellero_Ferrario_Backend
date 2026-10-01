@@ -75,7 +75,8 @@ eventos, y en los videos del dataset Toyota Smarthome también codifica la
 actividad real como prefijo (`Walk_...`, `Laydown_...`) — ese ground truth
 es el que usan `vision/` para calibrar caídas y `vlm/evaluate_activity.py`
 para medir la clasificación de actividades. La validación cualitativa por
-video anotado (ver `evaluation/`) sigue pendiente.
+video anotado (ver `evaluation/`) ya tiene herramienta (`annotate_video.py`),
+pendiente usarla en la práctica sobre un lote real.
 
 ## Esquema de eventos (contrato entre módulos)
 
@@ -96,6 +97,7 @@ rompe a todos los módulos que dependen de él.
 | `evaluation/` | Validación cualitativa (video anotado, inspección manual) | [evaluation/README.md](evaluation/README.md) |
 | `runner/` | Orquesta `vision/` + `vlm/` sobre N cámaras (archivo o stream en vivo) en paralelo | [runner/README.md](runner/README.md) |
 | `dashboard/` | Panel web: arranca/para `runner/`, gestiona `cameras.yaml`, eventos y preview en vivo | [dashboard/README.md](dashboard/README.md) |
+| `cloud/` | Backend cloud (FastAPI + Postgres): recibe eventos sincronizados, corre `baseline/` en la nube, API para la futura app móvil | [cloud/README.md](cloud/README.md) |
 
 ## Cómo trabajar en paralelo (varias sesiones de Claude Code)
 
@@ -276,14 +278,45 @@ comandos) en su README.
       etiquetados como "día normal" en la validación — sugiere que el FP real
       podría ser mejor que el medido, pendiente de cuantificar. El FP (~13-14%)
       sigue alto para producción, ver "Cómo seguir" en `baseline/README.md`.
-      Sigue sin escribir al store de eventos compartido
-      (`events/schema.py`) ni tener ninguna UI que muestre un desvío — el
-      módulo produce el score, falta el último tramo detección→aviso.
-- [ ] `evaluation/`: exportar video anotado para inspección visual.
+      *Actualización 2026-10-01:* se cerró el último tramo detección→aviso.
+      `events/schema.py` ahora lleva `wall_clock_ts` (reloj real, poblado por
+      `runner/` en vivo — antes todo era tiempo relativo al arranque del
+      proceso) y un `EventType.ROUTINE_DEVIATION` nuevo.
+      `baseline/src/camera_events.py` (nuevo) reconstruye vectores-día a
+      partir de los eventos `ACTIVITY` reales de `events/events.db` (duración
+      por gaps entre eventos consecutivos, con las 5 de 9 clases del
+      vocabulario de cámara que `vlm/` puede dar hoy sin zona de mesa ni
+      detector de puerta — ver "Vocabulario de cámara" en
+      `baseline/README.md`). `baseline/run_live.py` (nuevo) corre los 4
+      detectores contra ese historial una vez al día (pensado para cron/Task
+      Scheduler en la Pi, evaluando el día anterior completo) y escribe cada
+      desvío encontrado de vuelta al store, con chequeo de idempotencia.
+      `dashboard/` ya lo muestra (tarjeta propia, ícono 📋). **No validado
+      contra cámara real todavía** (no hay historial de producción, probado
+      con eventos sintéticos) — sigue pendiente medir qué tan bien funciona
+      cuando `vlm/` solo cubre 5 clases en vez de las 9 con las que se hizo
+      el cross-validation de arriba.
+- [x] `evaluation/`: exportar video anotado para inspección visual
+      (`annotate_video.py`, esqueleto de pose + eventos de `events.db`
+      superpuestos). Implementado pero sin uso real todavía — falta
+      revisar un lote de video con esto y documentar qué se encontró.
 - [x] Raspberry Pi 5 configurada, con el proyecto corriendo directamente
       sobre el hardware (stream de cámara real vía `cameras.yaml`, no
       dataset de video). Falta medir y documentar el rendimiento real
       (la tabla en `vlm/README.md` sigue siendo una estimación).
-- [ ] *(fase futura, no ahora)* exponer `events/` + `baseline/` vía API
-      (FastAPI) para una futura app móvil — separado de `dashboard/`, que es
-      panel de operación local, no la API pública del sistema final.
+- [ ] `cloud/` (nuevo, 2026-10-01): backend cloud que expone `events/`+`baseline/` a la futura
+      app móvil — separado de `dashboard/`, que sigue siendo panel de operación local, no la API
+      pública. Arquitectura ya definida en el informe del PFI (FastAPI + AWS Elastic Beanstalk +
+      Amazon RDS Postgres, Firebase Authentication/Cloud Messaging del lado de la app) — ver
+      `cloud/README.md` para el detalle completo. Implementado y probado localmente (SQLite, sin
+      Docker): ingestión de eventos desde la Pi (`POST /devices/events`, auth por API key de
+      hogar), `baseline_runner.py` corriendo los 4 detectores contra ese historial (reusa
+      `baseline/src/camera_events.py` sin duplicarlo — la línea base ahora corre del lado de la
+      nube, no en la Pi, como aclara el informe), y un cliente de sincronización nuevo del lado
+      Pi (`runner/cloud_sync.py`, opcional vía `cameras.yaml: cloud:`, solo conexiones salientes).
+      **Nada desplegado a AWS/Firebase todavía** (no hay cuenta ni proyecto provisionado) — los
+      endpoints que dependen de Firebase (la API para la app móvil) devuelven `501` explícito en
+      vez de fallar, para no bloquear la ingestión mientras tanto. Pendiente, con runbook
+      detallado paso a paso ya escrito en "Cómo seguir" de `cloud/README.md` (para no arrancar de
+      cero en la próxima sesión): desplegar a EB/RDS reales, crear el proyecto de Firebase, sumar
+      push tokens a `Familiar`, y el CRUD de familiares/roles (RF12).

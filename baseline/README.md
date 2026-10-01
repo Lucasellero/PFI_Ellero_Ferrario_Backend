@@ -577,13 +577,15 @@ rápida de entender qué mide cada uno sin leer todo el código primero.
 
 ## Pendiente
 
-- Integrar con eventos reales de cámara (`vision/`+`vlm/`+`fusion/`) cuando esa clasificación
-  cubra más de 4 categorías — comparar cuántos de estos desvíos se siguen detectando con las
-  clases que da la cámara vs. las que da un sensor (el número que pide
-  `fusion/PLAN_sustitucion_clip.md`, Sec. 5 "Validación end-to-end").
-- Escribir la salida como un `EventType` nuevo en `events/schema.py` (coordinar el cambio, ver
-  README raíz) una vez que el enfoque esté más maduro — hoy queda en artefactos propios de este
-  módulo.
+- ~~Integrar con eventos reales de cámara~~ / ~~escribir la salida como un `EventType` nuevo~~ —
+  **hecho 2026-10-01**, ver "Correr en producción" abajo. Lo que queda de este punto: la cámara
+  en vivo hoy solo puebla 5 de las 9 clases del vocabulario (ver "Vocabulario de cámara"), no las
+  9 con las que se hizo el cross-validation de arriba — falta medir cuánto de ese 72.8%/69.5%
+  recall se sostiene con la cobertura real una vez que `fusion/PLAN_sustitucion_clip.md` (zona de
+  mesa, etc.) suba esa cobertura.
+- `baseline/src/camera_events.CAMERA_COBERTURA_MIN_HORAS` (1.0h, umbral de "hubo señal mínima ese
+  día" para la cámara) es un punto de partida sin calibrar — no hay todavía datos reales de cámara
+  para medir si es el valor correcto (ver docstring en `camera_events.py`).
 - Segunda vuelta de calibración con sesgo explícito hacia menos FP (mismo criterio que
   `vision/README.md` para caídas), y más muestras por escenario — casi todos los escenarios de
   los 4 detectores tienen entre 3 y 12 casos de prueba, chico para un número definitivo.
@@ -604,6 +606,49 @@ rápida de entender qué mide cada uno sin leer todo el código primero.
   futuro necesita distinguir "de mañana" vs "de noche" más allá de lo que ya separa
   `bano`/`bano_nocturno`.
 - Patrones no priorizados en esta ronda: secuencia/orden de la rutina (ver arriba).
+
+## Correr en producción (2026-10-01, actualizado — ver nota 2026-10-01 más abajo)
+
+**Actualización 2026-10-01 (misma fecha, sesión posterior)**: el informe del PFI (capítulos 3/4)
+aclara que la línea base corre del lado de la nube, no en la Pi (RNF6/RNF7). Lo de abajo
+(`run_live.py` contra `events/events.db` local) queda como **herramienta de desarrollo/arnés de
+prueba local**, no como el camino de producción — ese es ahora `cloud/app/baseline_runner.py` +
+`cloud/run_baseline_daily.py` (ver `cloud/README.md`), que reusan exactamente el mismo
+`baseline/src/camera_events.py` descripto acá, solo que leyendo eventos ya sincronizados en la
+nube en vez de `events/events.db` local. Todo lo que sigue sobre el *diseño* del adaptador y los
+4 detectores sigue vigente igual en los dos caminos.
+
+Hasta acá todo lo de arriba corre contra CASAS/sintético vía los `evaluate_*.py`. Para que
+`baseline/` opine sobre eventos reales de `runner/` (la cámara en vivo, no un dataset) hay dos
+piezas nuevas:
+
+- **`src/camera_events.py`**: adaptador que lee eventos `ACTIVITY` de `events/events.db` y arma
+  el mismo vector-día que `features.build_day_vectors()`, reconstruyendo duración a partir de los
+  gaps entre eventos consecutivos (el runner emite un evento al cambiar de actividad + heartbeats
+  periódicos mientras continúa, no un intervalo con duración explícita). Necesita
+  `MonitoringEvent.wall_clock_ts` (reloj real, no el `video_timestamp_s` relativo al archivo) —
+  agregado a `events/schema.py` para esto. Vocabulario: ver `CAMERA_ACTIVITY_MAP` ahí, resumen en
+  "Vocabulario de cámara" arriba (5 de 9 clases alcanzables hoy).
+- **`run_live.py`**: corre los 4 detectores contra ese historial y escribe cada desvío encontrado
+  como un evento `EventType.ROUTINE_DEVIATION` en `events/events.db` (idempotente: no duplica si
+  se corre dos veces el mismo día). Evalúa **un día a la vez**, por default el de ayer:
+
+  ```
+  py run_live.py                                      # ayer, todas las cámaras
+  py run_live.py --date 2026-09-20 --video-id webcam   # backfill/debug de un día puntual
+  ```
+
+  **Scheduling**: pensado para correr **una vez al día**, temprano a la mañana siguiente (nunca el
+  día en curso, que está parcial). Esto es un paso de infraestructura, no algo que resuelva el
+  script — en la Pi, un cron (`0 6 * * * cd /ruta/baseline && py run_live.py`) o el Task Scheduler
+  de Windows en la PC de desarrollo. No hay todavía un daemon ni un hook en `runner/` que lo
+  dispare solo.
+  - `--max-gap-s` (default 120s): debe ser mayor que `clip_heartbeat_s` configurado en
+    `cameras.yaml` para esa cámara, o se subestima sistemáticamente la duración de cada actividad
+    (ver comentario en `camera_events.py`).
+
+Probado con eventos sintéticos (store de prueba con historial + un desvío inyectado a mano) — ver
+"Pendiente": falta medir con datos reales de cámara una vez que haya historial de producción.
 
 ## Setup
 
