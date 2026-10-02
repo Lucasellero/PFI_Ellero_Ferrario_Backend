@@ -579,6 +579,32 @@ resuelto — alargar `IMMOBILITY_SAMPLE_WINDOW_S` (hoy 2s) para diluir más los
 gestos de mano es una idea alternativa no probada, con el mismo riesgo de
 trade-off (también diluiría el arranque de un movimiento real).
 
+**Validación visual con `evaluation/annotate_video.py` (2026-10-01):**
+primera vez que se mide la tasa de detección de `yolo11n-pose` sobre el
+clip COMPLETO (1100-1600s) de estos 4 videos — antes solo se había medido
+sobre tramos cortos aislados (99.6-100%, ver tabla de arriba, que es de
+otros clips). Sobre el clip entero:
+
+| Clip | Detección (clip completo) | Hueco máx |
+|---|---|---|
+| `P07T10C02` (dispara inmovilidad) | 99.2% | 1.6s |
+| `P09T05C05` | 77.8% | 9.7s |
+| `P09T06C05` | 77.7% | 23.1s |
+| `P07T05C05` | 50.6% | 11.7s |
+
+El único clip con detección casi perfecta es el único que dispara
+inmovilidad — a primera vista sugiere que los huecos de tracking (no la
+actividad real) podrían ser la causa. Se revisaron a mano los frames antes/
+durante/después de los dos huecos más grandes (`P09T06C05` @959-982s,
+`P07T05C05` @1128-1141s): en ambos casos **la persona no está en el cuadro**
+ni antes ni después del hueco en ese punto — se fue de la habitación, no es
+que esté quieta y el modelo la pierda (a diferencia del bloqueante de la
+rama `acostado` documentado arriba, que es sobre una persona presente y
+quieta que el modelo no detecta). Esto confirma, con evidencia visual
+directa, la conclusión ya alcanzada arriba por otro camino (medición de
+rachas): esto 3 clips tienen más actividad/ausencia real de la que asumía
+el tramo corto original, no es un artefacto de tracking.
+
 **Datos reales nuevos para la rama `acostado` (2026-08-13): se recuperó la
 anotación untrimmed oficial y se encontraron 214 segmentos `Lay_down` largos
 — la primera validación de esta rama con minutos reales de "acostado

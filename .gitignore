@@ -63,5 +63,8 @@ fusion/fall_windows_cache.pkl
 
 # Sets de evaluación sintética de baseline/ (se regeneran con inject_*.py / evaluate_*.py)
 baseline/synthetic_eval/
+
+# Videos anotados de evaluation/ (se regeneran con annotate_video.py)
+evaluation/output/
 *.onnx
 *.onnx.data

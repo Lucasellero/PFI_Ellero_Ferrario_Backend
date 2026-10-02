@@ -60,10 +60,14 @@ webcam), `camera_source.make_source()` lo trata como stream en vivo
 se resuelve como ruta a archivo, relativa a la raíz del proyecto si no es
 absoluta (`VideoFileLoop`, con loop opcional).
 
-Los timestamps de los eventos son wall-clock (segundos desde que arrancó la
-fuente), no el tiempo relativo al archivo — necesario para que el detector
-de inmovilidad de `vision/` tenga sentido cuando un archivo hace loop o
-cuando la fuente es un stream en vivo sin timestamps propios.
+Los timestamps de los eventos son relativos a cuando arrancó la fuente (no
+el tiempo del archivo), para que el detector de inmovilidad de `vision/`
+tenga sentido cuando un archivo hace loop. En streams en vivo (`LiveStream`)
+y en `VideoFileLoop` con `realtime: true` son wall-clock (no hay otra
+referencia posible, o el frame ya está acompasado a tiempo real). En
+`VideoFileLoop` con `realtime: false` son `frame_idx / fps` acumulado
+across loops, no wall-clock — ver "Bug real encontrado y corregido" más
+abajo (2026-10-01).
 
 ## Tiempo real y frame dropping
 
@@ -92,6 +96,35 @@ de ~0.4-1.5s, no depende de ver cada frame individual — ver
 frame del archivo en orden, tan rápido como el CPU pueda, útil para pasadas
 batch donde importa completitud y no la sensación de tiempo real (por
 ejemplo, reprocesar un archivo para popular el store de eventos).
+
+**Bug real encontrado y corregido (2026-10-01), validando con
+`evaluation/annotate_video.py` sobre `videos/ToyotaSmarthome_FP/`:** con
+`realtime: false`, antes del fix, el timestamp de evento era reloj real
+("wall-clock"), que corre a la velocidad que el hardware logre procesar, no
+a la velocidad del video. Con GPU, el pipeline completo (pose + CLIP +
+clasificador temporal) resultó ~2.6x más rápido que la reproducción real
+(un clip de 1168.5s se procesó en 449s de reloj real, corrida aislada, sin
+otras cámaras compitiendo por la GPU). Como los timestamps de evento eran
+ese mismo reloj real, todos los umbrales temporales de `vision/` (ventana
+de inmovilidad de 180s, ventana de velocidad de caída de 0.4s, cooldowns)
+terminaban midiéndose contra una cantidad de contenido de video distinta a
+la calibrada — en este caso, 180s de reloj real equivalían a ~470s reales
+de video. Si además corrían varias cámaras en paralelo compitiendo por la
+misma GPU, el factor de distorsión dejaba de ser constante (variaba con la
+contención instantánea) y podía ir en cualquier dirección — en una corrida
+de prueba con 4 clips en paralelo esto generó un evento de inmovilidad
+espurio que no aparecía corriendo el mismo clip solo.
+
+**Fix:** `VideoFileLoop` (`camera_source.py`) ahora usa `frame_idx / fps`
+acumulado across loops (nunca wall-clock) cuando `realtime: false` — el
+mismo criterio que ya usan `vision/main.py` y `evaluation/annotate_video.py`
+con `--rerun`. Verificado: timestamps exactos frame a frame (delta
+constante de `1/fps`) y monótonos crecientes a través de loops (no
+resetean a 0 en cada vuelta). `realtime: true` no cambió — ahí wall-clock
+ya era equivalente al tiempo de video por construcción (el frame se
+acompasa a tiempo real antes de entregarse), así que nunca tuvo este
+problema. `LiveStream` tampoco cambió: para un stream en vivo wall-clock es
+la única referencia de tiempo posible.
 
 ## Clasificación de actividades (CLIP)
 

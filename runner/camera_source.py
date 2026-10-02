@@ -4,9 +4,16 @@ VideoFileLoop  — lee un .mp4/.avi y opcionalmente lo reinicia al terminar.
 LiveStream     — lee desde URL RTSP/HTTP o índice de webcam; reconecta ante errores.
 
 Ambas clases exponen el mismo iterador frames() → Iterator[Frame].
-Los timestamps son wall-clock (time.monotonic desde que arrancó la fuente),
-no el tiempo relativo al video, para que el detector de inmovilidad funcione
-de forma coherente incluso cuando el video hace loop.
+`LiveStream` y `VideoFileLoop` con `realtime=True` entregan timestamps
+wall-clock (time.monotonic desde que arrancó la fuente) — necesario porque
+ahí wall-clock es, por construcción, equivalente al tiempo real transcurrido
+(no hay otra referencia de tiempo para un stream en vivo, y un archivo en
+modo realtime ya se acompasa a eso). `VideoFileLoop` con `realtime=False`
+usa en cambio `frame_idx / fps` acumulado across loops (nunca wall-clock):
+sin acompasamiento, el hardware procesa a la velocidad que pueda (con GPU,
+más rápido que la reproducción real), y wall-clock ahí desalinearía los
+umbrales temporales de `vision/` contra el contenido real del video — ver
+"Trampa real" en README.md.
 
 Sobre `realtime` y por qué importa: el pipeline de pose (YOLO) tarda mucho
 más por frame en CPU (~150-300ms) que la duración real de un frame de video
@@ -73,6 +80,10 @@ class VideoFileLoop:
 
     def frames(self) -> Iterator[Frame]:
         loop_count = 0
+        # Cuenta total de frames entregados across loops (nunca se resetea,
+        # a diferencia de frame_idx abajo) — con realtime=False es la base
+        # del timestamp (ver más abajo por qué no puede ser wall-clock).
+        played_frames = 0
         while True:
             cap = cv2.VideoCapture(self._path)
             if not cap.isOpened():
@@ -102,8 +113,25 @@ class VideoFileLoop:
                         wait = scheduled_t - elapsed
                         if wait > 0:
                             time.sleep(wait)
+                        timestamp_s = time.monotonic() - self._start
+                    else:
+                        # Con realtime=True el frame ya está acompasado al
+                        # tiempo real transcurrido (sleep arriba), así que
+                        # wall-clock es equivalente a tiempo de video. Con
+                        # realtime=False NO hay acompasamiento — el hardware
+                        # procesa tan rápido/lento como pueda (en la práctica,
+                        # con GPU, bastante más rápido que la reproducción
+                        # real) — usar wall-clock ahí desalinea los umbrales
+                        # temporales de vision/ (180s de inmovilidad, ventana
+                        # de velocidad de caída, etc.) contra el contenido
+                        # real del video. Ver "Trampa real" en README.md:
+                        # un clip de 1168.5s se procesó en 449s de reloj real
+                        # (ratio 0.38x), lo que requería ~470s de video real
+                        # para acumular 180s de inmovilidad "de reloj".
+                        timestamp_s = played_frames * frame_duration
 
-                    yield Frame(image=image, timestamp_s=time.monotonic() - self._start)
+                    played_frames += 1
+                    yield Frame(image=image, timestamp_s=timestamp_s)
             finally:
                 cap.release()
 
