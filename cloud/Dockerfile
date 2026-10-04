@@ -1,5 +1,6 @@
-# No probado en esta sesión (no hay Docker instalado en la máquina de desarrollo) — revisar al
-# desplegar a Elastic Beanstalk (ver cloud/README.md, "Desplegar a AWS").
+# Desplegado a Elastic Beanstalk (plataforma Docker de contenedor único) el 2026-10-02 — ver
+# cloud/README.md, "Desplegar a AWS". EB exige un EXPOSE explícito para saber a qué puerto del
+# contenedor mandar el tráfico (sin esto, el deploy falla con "no EXPOSE directive found").
 #
 # IMPORTANTE: el contexto de build es la RAÍZ del repo, no cloud/, porque baseline_runner.py
 # importa baseline/src/ y events/ directamente (ver su docstring) y necesita ese código
@@ -18,5 +19,7 @@ COPY events/ events/
 
 WORKDIR /app/cloud
 ENV PYTHONUNBUFFERED=1
+
+EXPOSE 8000
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

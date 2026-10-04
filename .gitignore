@@ -8,6 +8,12 @@ venv/
 .DS_Store
 runner_state/
 
+# Paquete de deploy de cloud/ a Elastic Beanstalk (se arma localmente antes de
+# subir, ver "Desplegar a AWS" en cloud/README.md) — artefacto de build, no
+# código fuente.
+deploy.zip
+deploy_bundle/
+
 # Config/cache local de Claude Code (herramienta, no código del proyecto)
 .claude/
 .agents/
