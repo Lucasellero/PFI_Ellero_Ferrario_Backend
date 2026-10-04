@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .atomic_file import replace_atomic
+
 _ROOT = Path(__file__).resolve().parents[1]
 OVERLAY_STATE_PATH = _ROOT / "runner_state" / "overlay.json"
 
@@ -27,4 +29,4 @@ def write_overlay_enabled(enabled: bool) -> None:
     OVERLAY_STATE_PATH.parent.mkdir(exist_ok=True)
     tmp = OVERLAY_STATE_PATH.with_suffix(".tmp.json")
     tmp.write_text(json.dumps({"show_overlay": bool(enabled)}))
-    tmp.replace(OVERLAY_STATE_PATH)
+    replace_atomic(tmp, OVERLAY_STATE_PATH)

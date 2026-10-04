@@ -397,6 +397,17 @@ overlay del esqueleto (bounding box + keypoints + huesos, vía
 `vision/src/pose_pipeline.draw_pose()`) — así se puede ver en el dashboard
 qué está detectando el pipeline, no solo la imagen cruda de la cámara.
 
+**Excepción — cámara en foco:** mientras una cámara es la que está en vista
+única del dashboard (`CameraWorker._is_focused()`, estado compartido vía
+`focus_state.py` y `POST /api/focus`), el guardado pasa a ser en **cada**
+frame en vez de 1 de cada 5. La pose ya corre sobre todos los frames
+mientras la cámara está despierta (ver abajo), así que el único costo extra
+es encode+escritura del JPEG — permite que la vista única muestre un stream
+fluido con overlay (`GET /api/frame-stream/{cam_id}` en `dashboard/`, ver
+"Vista única fluida" en `dashboard/README.md`). Con YOLO en CPU el "fluido"
+es relativo (~150-300ms/frame); recién se nota fluido de verdad con GPU
+(CUDA) disponible.
+
 Dibujar ese overlay es opcional: cada worker consulta
 `overlay_state.read_overlay_enabled()` antes de generar el preview, que lee
 `../runner_state/overlay.json`. El dashboard escribe ese mismo archivo desde

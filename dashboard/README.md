@@ -51,6 +51,8 @@ para logs) y del store de eventos (SQLite) para los datos, igual que
 | `GET /api/overlay` | estado actual del toggle de overlay de pose (bbox + keypoints) |
 | `POST /api/overlay` | activa/desactiva el overlay en el preview de todas las cámaras |
 | `GET /api/motion` | estado del gate de movimiento (despierta/dormida) por cámara |
+| `POST /api/focus` | marca qué cámara está en vista única (`{"cam_id": "..."}` o `null`) |
+| `GET /api/frame-stream/{cam_id}` | preview de esa cámara como stream MJPEG (`multipart/x-mixed-replace`) |
 | `WS /ws` | push de logs del runner + eventos nuevos + estado, cada ~1s |
 
 `GET`/`POST /api/overlay` leen y escriben `runner_state/overlay.json` vía
@@ -88,6 +90,36 @@ traducida al español con ícono propio (mapa `ACTIVITY_ES` en
 `static/index.html`: `Walk` → "🚶 Caminando", `Readbook` → "📖 Leyendo un
 libro", etc.) y la confianza de la predicción en la línea de metadata. Una
 clase que no esté en el mapa se muestra con su etiqueta cruda.
+
+## Vista única fluida
+
+El preview normal (`GET /api/frame/{cam_id}`, pollado cada 400ms desde la
+grilla) solo se actualiza 1 de cada 5 frames procesados
+(`_FRAME_PREVIEW_EVERY_N` en `runner/camera_worker.py`) — a propósito, para
+no gastar CPU/disco en cámaras que nadie está mirando. Eso lo hace lento
+para ver un video fluido.
+
+`selectCamera()` en `static/index.html` resuelve esto avisándole a `runner/`
+qué cámara está en foco (`POST /api/focus`, ver `runner/focus_state.py`):
+mientras una cámara está enfocada, su `CameraWorker` guarda el preview en
+**cada** frame en vez de 1 de cada 5 (la pose ya corre sobre todos los
+frames mientras la cámara está despierta — ver "Gate de movimiento" más
+abajo — así que esto no agrega costo de inferencia, solo de encode+escritura
+del JPEG). `GET /api/frame-stream/{cam_id}` tailea ese archivo por `mtime` y
+lo empuja como stream MJPEG (`multipart/x-mixed-replace`) — el `<img>` de la
+vista única lo consume directo, sin polling, y de paso trae dibujado el
+overlay de pose si está activado.
+
+Este mecanismo depende de que YOLO corra lo bastante rápido como para no
+atrasarse frame a frame — en CPU (~150-300ms/frame, ver `vision/README.md`)
+el preview fluido se nota entrecortado; con GPU (CUDA) baja a
+~20ms/frame y el stream sale fluido de verdad. `vision/src/pose_pipeline.py`
+ya elige `cuda` automáticamente si `torch.cuda.is_available()` — solo hace
+falta tener instalado un `torch` con build CUDA (no la `+cpu`).
+
+Al salir de la vista única (`setViewMode('multi')`) se manda
+`POST /api/focus {"cam_id": null}` para que esa cámara vuelva a la tasa
+reducida y no quede escribiendo a disco en cada frame sin que nadie la mire.
 
 ## Indicador de movimiento
 

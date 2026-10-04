@@ -20,14 +20,17 @@ from schema import EventType, MonitoringEvent  # noqa: E402  (de events/)
 from store import EventStore                   # noqa: E402  (de events/)
 from src.pose_pipeline import FallImmobilityDetector, build_pose_sample, draw_pose  # noqa: E402  (de vision/)
 
+from .atomic_file import replace_atomic
 from .camera_source import make_source
 from .config import CameraConfig
+from .focus_state import read_focused_camera
 from .motion_gate import MotionDetector
 from .motion_state import write_motion_state
 from .overlay_state import read_overlay_enabled
 
 _FRAMES_DIR = _ROOT / "frames"
 _FRAME_PREVIEW_EVERY_N = 5   # guarda 1 de cada 5 frames (~5fps preview para video a 25fps)
+_FOCUS_POLL_S = 0.25         # cada cuánto se relee runner_state/focus.json (no en cada frame)
 
 # Muestreo CLIP: por cada ventana de clip_interval_s se clasifican varios
 # frames espaciados y se promedian los scores. Un frame único es ruidoso
@@ -172,6 +175,9 @@ class CameraWorker(threading.Thread):
         # nombre de archivo seguro para el frame preview
         self._frame_name = re.sub(r'[^a-zA-Z0-9_-]', '_', config.id)
         self._frame_count = 0
+        # Cache de _is_focused() (ver _FOCUS_POLL_S)
+        self._focused = False
+        self._focus_checked_at = 0.0
 
         # Estado del muestreo CLIP (ver _clip_tick)
         self._clip_sampling = False
@@ -241,8 +247,10 @@ class CameraWorker(threading.Thread):
 
                 if not self._awake:
                     self._frame_count += 1
-                    if self._frame_count % _FRAME_PREVIEW_EVERY_N == 0:
+                    on_cadence = self._frame_count % _FRAME_PREVIEW_EVERY_N == 0
+                    if on_cadence or self._is_focused():
                         self._save_preview(frame.image)
+                    if on_cadence:
                         write_motion_state(self._config.id, awake=False)
                     continue
 
@@ -276,15 +284,21 @@ class CameraWorker(threading.Thread):
                         self._sleep()
 
                 # ── Frame preview para el dashboard (con esqueleto de YOLO) ─
+                # Mientras la cámara está en foco (vista única, ver focus_state.py),
+                # se guarda cada frame en vez de 1 de cada _FRAME_PREVIEW_EVERY_N —
+                # la pose ya corre sobre todos los frames estando despierta (línea de
+                # arriba), así que esto no agrega costo de inferencia, solo de
+                # encode+escritura del JPEG.
                 self._frame_count += 1
-                if self._frame_count % _FRAME_PREVIEW_EVERY_N == 0:
+                on_cadence = self._frame_count % _FRAME_PREVIEW_EVERY_N == 0
+                if on_cadence or self._is_focused():
                     preview = frame.image
                     if detector.last_detection is not None and read_overlay_enabled():
                         kpts, box = detector.last_detection
                         preview = draw_pose(frame.image, kpts, box)
                     self._save_preview(preview)
-                    if self._motion is not None:
-                        write_motion_state(self._config.id, awake=True)
+                if on_cadence and self._motion is not None:
+                    write_motion_state(self._config.id, awake=True)
                 for raw in raw_events:
                     if raw["event_type"] == "fall":
                         # Evidencia parcial (persona fuera de cuadro / torso no
@@ -602,6 +616,14 @@ class CameraWorker(threading.Thread):
         self._last_activity_label = top_cat
         self._last_activity_emit_ts = ts
 
+    def _is_focused(self) -> bool:
+        """True si esta cámara es la que está en vista única en el dashboard."""
+        now = time.monotonic()
+        if now - self._focus_checked_at >= _FOCUS_POLL_S:
+            self._focused = read_focused_camera() == self._config.id
+            self._focus_checked_at = now
+        return self._focused
+
     def _save_preview(self, image) -> None:
         """Escribe un JPEG de preview en frames/{cam_id}.jpg de forma atómica."""
         try:
@@ -609,6 +631,6 @@ class CameraWorker(threading.Thread):
             tmp  = _FRAMES_DIR / f"{self._frame_name}.tmp.jpg"
             dest = _FRAMES_DIR / f"{self._frame_name}.jpg"
             cv2.imwrite(str(tmp), image, [cv2.IMWRITE_JPEG_QUALITY, 70])
-            tmp.replace(dest)
+            replace_atomic(tmp, dest)
         except Exception:
             pass

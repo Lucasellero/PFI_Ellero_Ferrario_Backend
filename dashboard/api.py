@@ -15,6 +15,8 @@ Expone:
   GET  /api/overlay → estado del overlay de pose (bbox + keypoints)
   POST /api/overlay → activa/desactiva el overlay en todas las cámaras
   GET  /api/motion  → estado del gate de movimiento (runner/motion_gate.py) por cámara
+  POST /api/focus   → marca qué cámara está en vista única (runner/focus_state.py)
+  GET  /api/frame-stream/{cam_id} → preview en vivo como stream MJPEG (fluido si está en foco)
   WS   /ws          → stream de logs + estado en tiempo real
 """
 from __future__ import annotations
@@ -31,8 +33,9 @@ import re
 import aiofiles
 import yaml
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
+from runner.focus_state import write_focused_camera
 from runner.motion_state import read_all_motion_state
 from runner.overlay_state import read_overlay_enabled, write_overlay_enabled
 
@@ -333,19 +336,70 @@ async def list_frames() -> dict:
     return {"available": [f.stem for f in FRAMES_DIR.glob("*.jpg") if not f.stem.endswith(".tmp")]}
 
 
-@app.get("/api/video-file/{video_path:path}")
-async def serve_video_file(video_path: str) -> FileResponse:
-    """Sirve un archivo de video del proyecto para reproducción en el browser."""
-    resolved = (ROOT / video_path).resolve()
+def _resolve_project_file(rel_path: str) -> Path:
+    resolved = (ROOT / rel_path).resolve()
     try:
         resolved.relative_to(ROOT.resolve())
     except ValueError:
         raise HTTPException(403, "Acceso denegado")
     if not resolved.exists() or not resolved.is_file():
         raise HTTPException(404, "Archivo no encontrado")
+    return resolved
+
+
+@app.get("/api/video-file/{video_path:path}")
+async def serve_video_file(video_path: str) -> FileResponse:
+    """Sirve un archivo de video del proyecto para reproducción en el browser."""
+    resolved = _resolve_project_file(video_path)
     ext = resolved.suffix.lower()
     media_type = "video/mp4" if ext == ".mp4" else "video/x-msvideo"
     return FileResponse(str(resolved), media_type=media_type)
+
+
+@app.post("/api/focus")
+async def set_focus(body: dict) -> dict:
+    """Le avisa a runner/ qué cámara está en vista única (ver
+    runner/focus_state.py) — mientras está enfocada, su CameraWorker escribe
+    el preview en cada frame en vez de 1 de cada 5, para que
+    GET /api/frame-stream pueda mostrarla fluida y con overlay de YOLO."""
+    cam_id = body.get("cam_id") or None
+    write_focused_camera(cam_id)
+    return {"cam_id": cam_id}
+
+
+@app.get("/api/frame-stream/{cam_id}")
+async def stream_frame(cam_id: str) -> StreamingResponse:
+    """Stream MJPEG (multipart/x-mixed-replace) del preview que ya escribe
+    runner/ en frames/{cam_id}.jpg (con overlay de pose si está activado) —
+    tailea el archivo por mtime y empuja cada versión nueva. Fluido solo
+    mientras esa cámara está enfocada (ver /api/focus); si no, se actualiza a
+    la tasa reducida de siempre (1 de cada 5 frames)."""
+    safe = re.sub(r"[^a-zA-Z0-9_-]", "_", cam_id)
+    path = FRAMES_DIR / f"{safe}.jpg"
+
+    async def gen():
+        last_mtime: Optional[float] = None
+        while True:
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                mtime = None
+            if mtime is not None and mtime != last_mtime:
+                last_mtime = mtime
+                try:
+                    data = path.read_bytes()
+                except OSError:
+                    data = None
+                if data:
+                    yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n"
+                        b"Content-Length: " + str(len(data)).encode() + b"\r\n\r\n"
+                        + data + b"\r\n"
+                    )
+            await asyncio.sleep(0.02)
+
+    return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 
 @app.get("/api/events")

@@ -16,6 +16,8 @@ import re
 import time
 from pathlib import Path
 
+from .atomic_file import replace_atomic
+
 _ROOT = Path(__file__).resolve().parents[1]
 _STATE_DIR = _ROOT / "runner_state" / "motion"
 
@@ -38,7 +40,7 @@ def write_motion_state(cam_id: str, awake: bool) -> None:
         "awake": bool(awake),
         "updated_at": time.time(),
     }))
-    tmp.replace(path)
+    replace_atomic(tmp, path)
 
 
 def read_all_motion_state() -> dict[str, dict]:

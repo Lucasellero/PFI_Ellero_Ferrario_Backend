@@ -1244,7 +1244,9 @@ function stopFramePoller() {
 
 function pollFrames() {
   const t = Date.now();
-  // Solo pollear fuentes en vivo (para video-archivos el browser maneja la reproducción)
+  // La grilla pollea el preview de baja tasa (1 de cada 5 frames). La vista
+  // única no se pollea acá — usa el stream MJPEG continuo de
+  // /api/frame-stream, conectado una sola vez en selectCamera().
   if (viewMode === 'multi') {
     activeCameras.forEach(cam => {
       const cell = document.querySelector(`.cam-cell[data-cam="${CSS.escape(cam.id)}"]`);
@@ -1252,10 +1254,6 @@ function pollFrames() {
       const img = cell.querySelector('.cam-feed-img');
       if (img) img.src = `/api/frame/${encodeURIComponent(cam.id)}?t=${t}`;
     });
-  }
-  if (selectedCam && viewMode === 'single') {
-    const img = document.getElementById('singleFeedImg');
-    if (img) img.src = `/api/frame/${encodeURIComponent(selectedCam)}?t=${t}`;
   }
 }
 
@@ -1524,6 +1522,10 @@ function setViewMode(mode) {
     }
   } else {
     info.classList.remove('visible');
+    // Sacar el foco (runner/ vuelve a esta cámara a 1 de cada 5 frames) y
+    // cerrar el stream, para no dejarlo corriendo sin que nadie lo mire.
+    apiFetch('POST', '/api/focus', { cam_id: null });
+    document.getElementById('singleFeedImg').removeAttribute('src');
   }
 
   // Si el poller está activo, actualizar inmediatamente
@@ -1549,9 +1551,20 @@ function selectCamera(camId) {
   document.getElementById('singleFeedVideo').style.display = 'none';
   document.getElementById('singleFeedInfo').style.display  = 'flex';
 
-  // Siempre intentar cargar el último frame analizado
   const img = document.getElementById('singleFeedImg');
-  img.src = `/api/frame/${encodeURIComponent(camId)}?t=${Date.now()}`;
+
+  // Le avisamos a runner/ que esta cámara está en foco (ver
+  // runner/focus_state.py) — mientras lo está, su CameraWorker escribe el
+  // preview en cada frame en vez de 1 de cada 5, así que el stream de abajo
+  // sale fluido y con overlay de YOLO en vez del snapshot pollado a 400ms.
+  apiFetch('POST', '/api/focus', { cam_id: camId });
+  img.src = `/api/frame-stream/${encodeURIComponent(camId)}?t=${Date.now()}`;
+  // No depender de onload: un stream multipart/x-mixed-replace infinito no
+  // dispara 'load' de forma confiable en todos los browsers (nunca "termina"
+  // de cargar), así que el <img> se quedaba oculto para siempre — se veía
+  // negro (fondo de .single-feed-area) aunque el backend mandara frames bien.
+  img.style.display = 'block';
+  document.getElementById('feedNoCam').style.display = 'none';
 
   renderMotionBadge(document.getElementById('singleMotionBadge'), motionState[camId]);
   rebuildSingleEvents(camId);
