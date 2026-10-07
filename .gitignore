@@ -13,6 +13,10 @@ runner_state/
 # código fuente.
 deploy.zip
 deploy_bundle/
+# Scratch local del deploy a AWS (contraseñas de RDS, DATABASE_URL armado, logs) —
+# nunca tiene que subirse al repo, ver mismo "Desplegar a AWS".
+cloud/.aws_*
+cloud/.backend_*.log
 
 # Config/cache local de Claude Code (herramienta, no código del proyecto)
 .claude/
