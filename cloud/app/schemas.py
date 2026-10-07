@@ -8,7 +8,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from pydantic import BaseModel
+import re
+
+from pydantic import BaseModel, Field, field_validator
 
 _EVENTS_DIR = Path(__file__).resolve().parents[2] / "events"
 if str(_EVENTS_DIR) not in sys.path:
@@ -16,7 +18,9 @@ if str(_EVENTS_DIR) not in sys.path:
 
 from schema import EventType, MonitoringEvent  # noqa: E402  (de events/)
 
-__all__ = ["EventType", "MonitoringEvent", "EventoOut", "CamaraIn", "CamaraOut", "HogarCreada"]
+__all__ = ["EventType", "MonitoringEvent", "EventoOut", "CamaraIn", "CamaraOut",
+           "PerfilIn", "PerfilOut", "FamiliarOut", "HogarPerfilOut", "ResidenteOut", "KitResumenOut",
+           "VincularKitIn", "KitVinculadoOut", "UbicacionIn", "ResidenteIn"]
 
 
 class EventoOut(BaseModel):
@@ -40,22 +44,117 @@ class EventoOut(BaseModel):
 
 
 class CamaraIn(BaseModel):
-    local_id: str
+    identificador_local: str  # el `id` de la cámara en cameras.yaml de la Pi
     ubicacion: str | None = None
 
 
 class CamaraOut(BaseModel):
     id: int
-    local_id: str
-    ubicacion: str | None
+    identificador_local: str
+    ubicacion: str | None  # "" en la base (sin cargar todavía) -> null en la API
     activa: bool
 
     model_config = {"from_attributes": True}
 
+    @field_validator("ubicacion", mode="before")
+    @classmethod
+    def _vacia_es_null(cls, v):
+        return v or None
 
-class HogarCreada(BaseModel):
-    """Se devuelve una sola vez, al crear el hogar — después la API key cruda no se puede
-    recuperar (solo se guarda el hash, ver models.Hogar)."""
+
+# --- `GET /me` / `POST /me` (routers/me.py) ---------------------------------------------------
+# Calcan `Perfil` / `HogarApi` de `src/api/types.ts` del repo Frontend: si cambia uno, cambiar
+# el otro.
+
+
+class PerfilIn(BaseModel):
+    """Body de `POST /me`. El email NO viene acá: sale del token de Firebase (no se le cree al
+    cliente). Mismo rango que `validarNombre` de la app (2 a 60)."""
+    nombre: str = Field(min_length=2, max_length=60)
+
+    @field_validator("nombre", mode="before")
+    @classmethod
+    def _strip(cls, v):
+        return v.strip() if isinstance(v, str) else v
+
+
+class FamiliarOut(BaseModel):
     id: int
     nombre: str
-    device_api_key: str
+    email: str
+
+
+class ResidenteOut(BaseModel):
+    id: int
+    nombre: str
+    telefono: str | None
+
+
+class KitResumenOut(BaseModel):
+    numero_serie: str
+    cantidad_camaras: int
+
+
+class HogarPerfilOut(BaseModel):
+    id: int
+    nombre: str
+    rol: str  # `HogarFamiliar.rol`
+    residente: ResidenteOut | None
+    kit: KitResumenOut | None  # `Hogar.kit_activo`
+
+
+class PerfilOut(BaseModel):
+    familiar: FamiliarOut
+    # vacío = cuenta recién creada, sin kit vinculado -> la app muestra la vinculación
+    hogares: list[HogarPerfilOut]
+
+
+# --- Vinculación del kit (routers/kits.py, routers/mobile.py) ---------------------------------
+# Contrato en `docs/vinculacion-kit.md` del repo Frontend, sección 5. Las reglas de validación
+# repiten las de `src/lib/validaciones.ts` de la app (la app valida primero; esto es la última
+# barrera).
+
+
+def _colapsar_espacios(v):
+    return " ".join(v.split()) if isinstance(v, str) else v
+
+
+class VincularKitIn(BaseModel):
+    codigo: str  # tal como lo tipeó/escaneó el familiar; se normaliza antes de hashear
+
+
+class KitVinculadoOut(BaseModel):
+    hogar_id: int
+    numero_serie: str
+    cantidad_camaras: int
+    camaras: list[CamaraOut]  # las del plan, creadas en fábrica
+
+
+class UbicacionIn(BaseModel):
+    """`validarTextoCorto(texto, ..., 40)` de la app."""
+    ubicacion: str = Field(min_length=2, max_length=40)
+
+    @field_validator("ubicacion", mode="before")
+    @classmethod
+    def _limpiar(cls, v):
+        return _colapsar_espacios(v)
+
+
+_E164 = re.compile(r"^\+[1-9]\d{7,14}$")
+
+
+class ResidenteIn(BaseModel):
+    nombre: str = Field(min_length=2, max_length=60)
+    telefono: str | None = None  # E.164 ("+5491123456789"); la app lo arma con validarTelefonoAR
+
+    @field_validator("nombre", mode="before")
+    @classmethod
+    def _limpiar(cls, v):
+        return _colapsar_espacios(v)
+
+    @field_validator("telefono")
+    @classmethod
+    def _e164(cls, v):
+        if v is not None and not _E164.match(v):
+            raise ValueError("El teléfono tiene que estar en formato internacional (ej. +5491123456789).")
+        return v

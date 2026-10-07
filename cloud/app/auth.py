@@ -1,6 +1,6 @@
 """Dos esquemas de autenticación separados (ver `cloud/README.md`, "Autenticación"):
 
-- Pi -> nube: API key simple por hogar, header `X-API-Key` (`require_hogar_by_api_key`).
+- Pi -> nube: API key por KIT (la controladora), header `X-API-Key` (`require_kit_by_api_key`).
 - App móvil -> nube: `Authorization: Bearer <firebase_id_token>` (`require_familiar`). Si no hay
   credenciales de Firebase configuradas en este proceso, devuelve 501 en vez de romper el arranque
   de la app o fallar de forma confusa — así se puede probar/desplegar la ingestión y
@@ -9,12 +9,13 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 
 from fastapi import Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
 from .db import get_db
-from .models import Hogar, hash_api_key
+from .models import Kit, hash_api_key
 
 FIREBASE_CREDENTIALS_ENV = "GOOGLE_APPLICATION_CREDENTIALS"
 
@@ -39,20 +40,25 @@ def _get_firebase_app():
     return _firebase_app
 
 
-def require_hogar_by_api_key(
+def require_kit_by_api_key(
     x_api_key: str = Header(..., alias="X-API-Key"),
     db: Session = Depends(get_db),
-) -> Hogar:
-    hogar = db.query(Hogar).filter(Hogar.device_api_key_hash == hash_api_key(x_api_key)).first()
-    if hogar is None:
+) -> Kit:
+    """Kit de la controladora que hace el request. De paso registra `ultima_conexion_at` (la
+    app muestra "Lar sin internet desde las 14:20" a partir de ese campo). Se commitea acá mismo
+    para que quede registrado aunque el endpoint después falle (ej. 409, kit sin vincular)."""
+    kit = db.query(Kit).filter(Kit.device_api_key_hash == hash_api_key(x_api_key)).first()
+    if kit is None:
         raise HTTPException(status_code=401, detail="API key inválida")
-    return hogar
+    kit.ultima_conexion_at = datetime.now(timezone.utc)
+    db.commit()
+    return kit
 
 
-def require_familiar_uid(authorization: str = Header(...)) -> str:
-    """Verifica el ID token de Firebase del header `Authorization: Bearer <token>` y devuelve el
-    `firebase_uid`. 501 si este proceso no tiene Firebase configurado (ver docstring del módulo),
-    401 si el token es inválido/expiró."""
+def require_firebase_token(authorization: str = Header(...)) -> dict:
+    """Verifica el ID token de Firebase del header `Authorization: Bearer <token>` y devuelve los
+    claims decodificados (`uid`, `email`, ...). 501 si este proceso no tiene Firebase configurado
+    (ver docstring del módulo), 401 si el token es inválido/expiró."""
     app = _get_firebase_app()
     if app is None:
         raise HTTPException(
@@ -72,4 +78,9 @@ def require_familiar_uid(authorization: str = Header(...)) -> str:
         decoded = firebase_auth.verify_id_token(token, app=app)
     except Exception as exc:  # firebase_admin lanza varias excepciones propias, todas = token inválido
         raise HTTPException(status_code=401, detail="Token de Firebase inválido") from exc
-    return decoded["uid"]
+    return decoded
+
+
+def require_familiar_uid(claims: dict = Depends(require_firebase_token)) -> str:
+    """Solo el `firebase_uid` del token — lo que necesitan casi todos los endpoints de la app."""
+    return claims["uid"]

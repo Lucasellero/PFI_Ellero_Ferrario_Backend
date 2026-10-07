@@ -5,9 +5,10 @@ FastAPI + Postgres (RDS en producción), recibe eventos sincronizados desde la P
 (`runner/cloud_sync.py`), corre `baseline/` contra ese historial y expone una API mínima para la
 futura app móvil.
 
-**Estado: código probado localmente (SQLite, sin Docker), nada desplegado a AWS/Firebase
-todavía** — ver "Cómo seguir" al final, con el runbook concreto de los 4 pendientes (deploy a AWS,
-proyecto de Firebase, push tokens, CRUD de familiares/roles) para retomarlo sin empezar de cero.
+**Estado: código probado localmente (SQLite, sin Docker), nada desplegado a AWS todavía.**
+Proyecto de Firebase creado y probado con tokens reales (2026-10-06, ver "Cómo seguir" → punto 2).
+Ver "Cómo seguir" al final, con el runbook de lo que falta (deploy a AWS, push tokens, CRUD de
+familiares/roles) para retomarlo sin empezar de cero.
 
 ## Arquitectura
 
@@ -33,14 +34,26 @@ herramienta de desarrollo/arnés de prueba local, igual que los `evaluate_*.py` 
 
 ## Modelo de datos
 
-Fiel al diagrama del informe (`fig:diagrama_bd_cloud`): `Hogar` 1:1 `Residente` (RNF11: un único
-residente por instalación), `Hogar` 1:N `Camara`, `Evento` (FK a `Camara` —nullable, ver abajo—
-y a `Residente`, desnormalizado), `Familiar` N:M `Hogar` vía `HogarFamiliar` (con `rol`). Ver
-`app/models.py`.
+Fiel al diagrama del informe (Figura 3.11, "Diagrama de Base de Datos en la Nube"; detalle campo
+por campo en `docs/vinculacion-kit.md` del repo Frontend, sección 4). Ver `app/models.py`.
+Alineado el 2026-10-06 (migración `a3f9c2d17b40`):
 
-**Una diferencia con el diagrama original**: `Evento.camara_id` es nullable. Los eventos
-`routine_deviation` los genera `baseline_runner.py` a partir del historial del residente, no una
-cámara puntual — no tenía sentido forzar una FK a una cámara arbitraria.
+- `Kit` (la controladora + sus cámaras): existe desde fábrica (`alta_kit.py`), con
+  `cantidad_camaras` (plan, 1 a 3), `codigo_vinculacion_hash` (QR) y **`device_api_key_hash`** (la
+  credencial de la Pi es del kit, no del hogar: si se cambia la controladora, se vincula un kit
+  nuevo al mismo hogar sin perder historial). `hogar_id` null hasta que alguien escanea el QR.
+- `Hogar` 1:1 `Residente` (RNF11), 1:N `Kit`; `Camara` N:1 `Kit` (y `hogar_id` null hasta
+  vincular, `identificador_local` = el `id` de `cameras.yaml`, único por kit; `ubicacion`
+  obligatoria como en la figura: `""` mientras el familiar no la cargó, la API la devuelve `null`).
+- `Evento` (FK a `Camara` —nullable: los `routine_deviation` no vienen de una cámara— y a
+  `Residente`, desnormalizado), con `resuelta_at`/`resuelta_por` para "Marcar como resuelta".
+- `Familiar` N:M `Hogar` vía `HogarFamiliar.rol` (`responsable_principal` | `familiar`);
+  `Familiar.push_token` para FCM.
+- `LineaBaseComportamiento` 1:1 `Residente`: **creada pero todavía no se escribe** —
+  `baseline_runner.py` recalcula la línea base en cada corrida.
+
+Datos previos a la migración: cada hogar recibió un kit `LEGACY-NNNNNN` con su misma API key, así
+que una Pi ya configurada sigue autenticando sin cambios.
 
 ## Esquema de transporte: reusa `events/schema.py`
 
@@ -53,13 +66,33 @@ backend local y el de la nube. `occurred_at` (columna de `Evento`) sale directo 
 
 Dos esquemas separados (`app/auth.py`):
 
-- **Pi → nube**: header `X-API-Key`, una key por hogar (`Hogar.device_api_key_hash` — se guarda
-  el hash, la key cruda se devuelve una sola vez al crear el hogar).
+- **Pi → nube**: header `X-API-Key`, una key por kit (`Kit.device_api_key_hash` — se guarda el
+  hash, la key cruda la muestra una sola vez `alta_kit.py`). Cada request autenticado actualiza
+  `Kit.ultima_conexion_at`. Mientras el kit no esté vinculado a un hogar con residente,
+  `POST /devices/events` responde **409** y la Pi reintenta en el próximo ciclo (no se pierde nada).
 - **App móvil → nube**: `Authorization: Bearer <firebase_id_token>`, verificado con
   `firebase_admin.auth.verify_id_token`. **Si el proceso no tiene `GOOGLE_APPLICATION_CREDENTIALS`
   configurado, estos endpoints devuelven `501` con un mensaje claro** en vez de romper el arranque
-  de la app — así se puede levantar y probar la ingestión + `baseline_runner` sin tener un
-  proyecto de Firebase todavía (que es el estado actual).
+  de la app — así se puede levantar y probar la ingestión + `baseline_runner` sin Firebase.
+  Con Firebase: `GOOGLE_APPLICATION_CREDENTIALS=~/.secrets/firebase-pfi.json` (clave de cuenta de
+  servicio del proyecto `pfi-ellero-ferrario`, **fuera del repo**).
+
+## Endpoints de la app móvil
+
+| Endpoint | Qué hace |
+|---|---|
+| `GET /me` | Perfil del familiar logueado + sus hogares (`rol`, `residente`). **404** si la cuenta de Firebase todavía no tiene `Familiar` → la app llama a `POST /me`. |
+| `POST /me` | Body `{nombre}` (2-60). Crea el `Familiar`; el email sale del token, no del body. Idempotente: si ya existe lo devuelve. |
+| `POST /kits/vincular` | Body `{codigo}` (del QR; acepta minúsculas, espacios, guiones). Crea el `Hogar` ("Mi hogar"), le asigna kit y cámaras y deja al familiar como `responsable_principal`. Devuelve `{hogar_id, numero_serie, cantidad_camaras, camaras}`. **404** código inexistente · **409** kit de otro hogar · **429** 5 intentos fallidos en 15 min (por familiar, en memoria del proceso). Reintento del mismo familiar = idempotente. |
+| `GET /hogares/{id}/camaras` | Cámaras del hogar. Cualquier familiar vinculado. |
+| `PATCH /hogares/{id}/camaras/{camara_id}` | Body `{ubicacion}` (2-40). RF10. **409** si repite la de otra cámara del hogar. Solo `responsable_principal`. |
+| `PUT /hogares/{id}/residente` | Body `{nombre, telefono}` (E.164 o null). Crea o actualiza; si el hogar se llamaba "Mi hogar" pasa a "Casa de {nombre}". **204**. Solo `responsable_principal`. Es el último paso: con residente, la app pasa a las pestañas y la Pi ya puede sincronizar eventos. |
+| `GET /hogares/{id}/eventos` · `/alertas` | Eventos del hogar. **403** si el familiar no está vinculado. |
+
+Permisos en `app/permisos.py`. Contrato: `docs/vinculacion-kit.md` (sección 5) y
+`src/api/types.ts` del repo Frontend (cambiar los dos juntos). `kit` en `/me` es el kit activo del
+hogar (el último vinculado). **Diferencia con la app hoy**: las cámaras salen con
+`identificador_local` (nombre del diagrama), la app todavía espera `local_id`.
 
 ## Correr localmente (sin Docker, sin Postgres)
 
@@ -74,20 +107,15 @@ alembic upgrade head
 uvicorn main:app --reload
 ```
 
-Sembrar un hogar de prueba (no hay endpoint público de alta de hogar todavía — es un paso de
-administración manual, ver "Qué falta" abajo):
+Dar de alta un kit "de fábrica" (muestra UNA vez el código del QR y la API key de la Pi):
 
-```python
-from app.db import SessionLocal, Base, engine
-from app.models import Hogar, Residente
-Base.metadata.create_all(engine)
-db = SessionLocal()
-raw_key, hashed = Hogar.generar_api_key()
-hogar = Hogar(nombre="...", device_api_key_hash=hashed)
-db.add(hogar); db.commit(); db.refresh(hogar)
-db.add(Residente(hogar_id=hogar.id, nombre="...")); db.commit()
-print(raw_key)  # guardar esta key, no se puede recuperar después
 ```
+py alta_kit.py --camaras 2                    # cámaras cam1, cam2
+py alta_kit.py --camaras 1 --ids webcam       # ids = los `id` de cameras.yaml
+```
+
+El hogar lo crea la vinculación desde la app (`POST /kits/vincular` con el código, después
+`PUT /hogares/{id}/residente`). Recién con residente la Pi puede sincronizar eventos (antes: 409).
 
 Después, registrar la cámara (`POST /devices/camaras`, header `X-API-Key`) y postear eventos
 (`POST /devices/events`) como ya hace `runner/cloud_sync.py` del lado de la Pi.
@@ -112,13 +140,11 @@ DATABASE_URL=postgresql+psycopg2://... py -m alembic revision --autogenerate -m 
 py -m alembic upgrade head
 ```
 
-## Cómo seguir (para quien retome esto — nada de lo de abajo se pudo probar en esta sesión,
-## no hay credenciales de AWS ni de Firebase)
+## Cómo seguir (para quien retome esto)
 
-Orden recomendado: 2 (Firebase) desbloquea probar 3 y 4 de verdad; 1 (AWS) es independiente y se
-puede hacer en paralelo. Dentro de 3/4, hace falta **primero un endpoint de alta de hogar** (no
-existe todavía — se sembró a mano con un script en esta sesión, ver "Correr localmente" arriba)
-porque todo lo demás de RF12 depende de poder crear un `Hogar` sin tocar la base a mano.
+Orden recomendado: 2 (Firebase) ya está hecho; 1 (AWS) es independiente. Dentro de 3/4, hace
+falta **primero `POST /kits/vincular`** (crea el `Hogar` al escanear el QR, ver punto 4) porque todo
+lo demás de RF12 depende de poder crear un `Hogar` sin tocar la base a mano.
 
 ### 1. Desplegar a AWS (Elastic Beanstalk + RDS)
 
@@ -173,7 +199,15 @@ porque todo lo demás de RF12 depende de poder crear un `Hogar` sin tocar la bas
 6. Deploy: `eb init` (elegir la app creada) → `eb deploy`, o subir el `deploy.zip` manualmente
    desde la consola.
 
-### 2. Crear el proyecto de Firebase
+### 2. Crear el proyecto de Firebase — ✅ HECHO (2026-10-06)
+
+Proyecto `pfi-ellero-ferrario`, Email/Password habilitado, app web `pfi-test` registrada (su
+`firebaseConfig` es lo que usa la app en Expo Go, con el SDK web de Firebase — los
+`google-services.json`/`GoogleService-Info.plist` recién hacen falta con un development build).
+Probado de punta a punta con un ID token real: token inválido → 401, familiar no vinculado → 403,
+vinculado → 200 en `/hogares/{id}/eventos`, y `GET`/`POST /me`. Usuario de prueba en Firebase:
+`test@pfi-ellero-ferrario.test`. Pasos originales, por si hay que repetirlo:
+
 
 1. https://console.firebase.google.com → "Add project" → nombre (ej. el mismo del repo).
 2. **Authentication** → Sign-in method → habilitar "Email/Password" (es lo que describe el
@@ -204,13 +238,8 @@ Hoy `notifications.enviar_push_alerta` siempre recibe una lista vacía (ver `_re
 `app/baseline_runner.py`) — falta dónde guardar el token de FCM de cada familiar y cómo armar esa
 lista. Pasos concretos:
 
-1. `app/models.py` → sumar a `Familiar`:
-   ```python
-   push_token: Mapped[str | None] = mapped_column(String(300), nullable=True)
-   ```
-2. Migración: `py -m alembic revision --autogenerate -m "agregar push_token a familiares"` →
-   revisar el archivo generado (debería ser un `ADD COLUMN` nullable, sin pérdida de datos) →
-   `py -m alembic upgrade head`.
+1. ~~Columna `Familiar.push_token`~~ ✅ (migración `a3f9c2d17b40`, 2026-10-06).
+2. ~~Migración~~ ✅ (misma).
 3. Nuevo endpoint (en `app/routers/mobile.py` o un `familiares.py` nuevo, ver ítem 4):
    ```python
    @router.post("/me/push-token")
@@ -240,18 +269,19 @@ lista. Pasos concretos:
 
 ### 4. CRUD de familiares/roles (RF12)
 
-No implementado — es la pieza que falta para que 2 y 3 tengan sentido en una instalación real (sin
-esto, un `Hogar`/`Familiar` solo se puede crear a mano, como se hizo en esta sesión). Diseño
-concreto para no arrancar de cero:
+Hecho (2026-10-06): alta del hogar por vinculación del kit, cámaras y residente (ver "Endpoints de
+la app móvil"), con permisos por rol en `app/permisos.py`. **Falta el CRUD de familiares**
+(invitar/quitar/cambiar rol, abajo).
 
-**Primero, el prerequisito que falta y no es parte de RF12 en sí**: un endpoint para crear el
-`Hogar` + su `Residente` (hoy es el script manual de "Correr localmente" arriba). Candidato:
-`POST /hogares` (sin auth de hogar porque todavía no existe uno — pensar qué lo protege; podría
-ser el mismo `Authorization: Bearer <firebase_id_token>` del familiar que lo está dando de alta,
-que de paso queda vinculado como primer familiar con rol `"responsable_principal"`).
+**~~Prerequisito~~ ✅: crear el `Hogar`.** Decidido
+(2026-10-05, `docs/vinculacion-kit.md` del Frontend): no hay `POST /hogares`, el hogar nace al
+vincular el kit — `POST /kits/vincular {codigo}` con el token de Firebase del familiar: busca el
+`Kit` por `hash_codigo(codigo)` (404 si no existe, 409 si ya tiene hogar, 429 ante muchos
+intentos), crea el `Hogar`, le asigna kit y cámaras, y vincula al familiar como
+`responsable_principal`. Después `PUT /hogares/{id}/residente` y `PATCH
+/hogares/{id}/camaras/{id}` completan la configuración.
 
-**Modelo de roles** (no versionado en código todavía, es una decisión a tomar): al menos dos
-niveles —
+**Modelo de roles** (decidido; constantes `ROLES` en `app/models.py`, default `familiar`):
 - `responsable_principal`: puede invitar/quitar otros familiares y cambiar roles.
 - `familiar`: solo lectura de eventos/alertas/reportes (lo que ya hace `routers/mobile.py`).
 
@@ -274,10 +304,8 @@ hace falta un enum de DB, alcanza con validar los valores permitidos en el endpo
   que no se pueda sacar al último `responsable_principal` de un hogar (si no, nadie puede
   administrar ese hogar nunca más).
 
-**Reusar, no duplicar**: `_hogar_autorizado` ya existe en `routers/mobile.py` — al sumar
-`familiares.py`, factorizarla a un lugar común (ej. `app/auth.py` o un `app/permisos.py` nuevo)
-en vez de copiarla, ya que las dos rutas la necesitan con la variante "cualquier rol" vs. "solo
-responsable_principal".
+**Reusar, no duplicar**: `permisos.hogar_autorizado(..., solo_responsable=True)` ya cubre las dos
+variantes ("cualquier rol" vs. "solo responsable_principal").
 
 ## Setup
 

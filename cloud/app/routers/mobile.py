@@ -1,30 +1,23 @@
-"""Endpoints mínimos para la futura app móvil — autenticados con Firebase (`auth.require_familiar_uid`).
-Alcance recortado a propósito para esta vuelta (ver `cloud/README.md`, "Pendiente"): alcanza para
-probar el circuito completo evento -> alerta -> consulta, no el CRUD completo de familiares/roles
-(RF12), que no tiene todavía un consumidor real (la app no existe).
+"""Endpoints de la app móvil sobre un hogar — autenticados con Firebase (`auth.require_familiar_uid`),
+permisos en `permisos.py`. Eventos/alertas (lectura) y la configuración inicial que sigue a la
+vinculación del kit: ubicación de cada cámara (RF10) y datos del residente. Falta el CRUD de
+familiares/roles (RF12, ver `cloud/README.md` → "Cómo seguir" punto 4).
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from ..auth import require_familiar_uid
 from ..db import get_db
-from ..models import Evento, Familiar, HogarFamiliar
-from ..schemas import EventoOut
+from ..models import Camara, Evento, Residente
+from ..permisos import hogar_autorizado
+from ..schemas import CamaraOut, EventoOut, ResidenteIn, UbicacionIn
 
 router = APIRouter(prefix="/hogares", tags=["mobile"])
 
-
-def _hogar_autorizado(hogar_id: int, uid: str, db: Session) -> None:
-    familiar = db.query(Familiar).filter(Familiar.firebase_uid == uid).first()
-    if familiar is None:
-        raise HTTPException(status_code=403, detail="Familiar no registrado")
-    vinculo = db.query(HogarFamiliar).filter(
-        HogarFamiliar.hogar_id == hogar_id, HogarFamiliar.familiar_id == familiar.id,
-    ).first()
-    if vinculo is None:
-        raise HTTPException(status_code=403, detail="No autorizado para este hogar")
+# nombre provisorio que pone `POST /kits/vincular`; el residente lo reemplaza por "Casa de Rosa"
+NOMBRE_HOGAR_PROVISORIO = "Mi hogar"
 
 
 @router.get("/{hogar_id}/eventos", response_model=list[EventoOut])
@@ -32,7 +25,7 @@ def listar_eventos(
     hogar_id: int, limit: int = 50,
     uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
 ) -> list[EventoOut]:
-    _hogar_autorizado(hogar_id, uid, db)
+    hogar_autorizado(hogar_id, uid, db)
     eventos = (
         db.query(Evento).join(Evento.residente)
         .filter(Evento.residente.has(hogar_id=hogar_id))
@@ -46,10 +39,63 @@ def listar_alertas(
     hogar_id: int, limit: int = 50,
     uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
 ) -> list[EventoOut]:
-    _hogar_autorizado(hogar_id, uid, db)
+    hogar_autorizado(hogar_id, uid, db)
     eventos = (
         db.query(Evento).join(Evento.residente)
         .filter(Evento.residente.has(hogar_id=hogar_id), Evento.es_alerta.is_(True))
         .order_by(Evento.occurred_at.desc()).limit(limit).all()
     )
     return [EventoOut.from_orm_evento(e) for e in eventos]
+
+
+@router.get("/{hogar_id}/camaras", response_model=list[CamaraOut])
+def listar_camaras(
+    hogar_id: int, uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
+) -> list[Camara]:
+    hogar_autorizado(hogar_id, uid, db)
+    return db.query(Camara).filter(Camara.hogar_id == hogar_id).order_by(Camara.id).all()
+
+
+@router.patch("/{hogar_id}/camaras/{camara_id}", response_model=CamaraOut)
+def actualizar_camara(
+    hogar_id: int, camara_id: int, cambios: UbicacionIn,
+    uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
+) -> Camara:
+    """RF10: el familiar asigna desde la app la ubicación de cada cámara. Sin repetir entre
+    cámaras del mismo hogar (la app valida lo mismo, `validarUbicaciones`)."""
+    hogar_autorizado(hogar_id, uid, db, solo_responsable=True)
+    camara = db.query(Camara).filter(Camara.id == camara_id, Camara.hogar_id == hogar_id).first()
+    if camara is None:
+        raise HTTPException(status_code=404, detail="Esa cámara no es de este hogar.")
+    repetida = any(
+        c.id != camara.id and c.ubicacion.lower() == cambios.ubicacion.lower()
+        for c in db.query(Camara).filter(Camara.hogar_id == hogar_id)
+    )
+    if repetida:
+        raise HTTPException(
+            status_code=409,
+            detail=f'"{cambios.ubicacion}" ya es otra cámara. Sumale un detalle (ej. "{cambios.ubicacion} 2").',
+        )
+    camara.ubicacion = cambios.ubicacion
+    db.commit()
+    db.refresh(camara)
+    return camara
+
+
+@router.put("/{hogar_id}/residente", status_code=204)
+def guardar_residente(
+    hogar_id: int, datos: ResidenteIn,
+    uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
+) -> Response:
+    """Crea o actualiza el residente (1:1 con el hogar, RNF11). Es el último paso de la
+    configuración inicial: con residente, `GET /me` hace que la app pase a las pestañas."""
+    vinculo = hogar_autorizado(hogar_id, uid, db, solo_responsable=True)
+    hogar = vinculo.hogar
+    if hogar.residente is None:
+        db.add(Residente(hogar_id=hogar.id, nombre=datos.nombre, telefono=datos.telefono))
+    else:
+        hogar.residente.nombre, hogar.residente.telefono = datos.nombre, datos.telefono
+    if hogar.nombre == NOMBRE_HOGAR_PROVISORIO:
+        hogar.nombre = f"Casa de {datos.nombre.split()[0]}"
+    db.commit()
+    return Response(status_code=204)
