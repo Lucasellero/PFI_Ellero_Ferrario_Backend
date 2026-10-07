@@ -48,7 +48,7 @@ def main() -> None:
     print(f"Kit {serie} creado (id {kit.id}), cámaras: {', '.join(ids)}")
     print(f"  Código de vinculación: {codigo[:4]}-{codigo[4:]}")
     print(f"  QR:                    lares://vincular?serie={serie}&codigo={codigo}")
-    print(f"  API key (cameras.yaml → cloud.api_key): {api_key}")
+    print(f"  API key (cameras.yaml -> cloud.api_key): {api_key}")
     print("Guardalos ahora: en la base solo quedan los hashes, no se pueden recuperar.")
 
 
