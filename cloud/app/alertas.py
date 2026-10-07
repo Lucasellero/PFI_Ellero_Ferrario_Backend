@@ -17,3 +17,18 @@ def es_alerta(event_type: str, metadata: dict) -> bool:
     if event_type == "routine_deviation":
         return True
     return False  # "activity": nunca es una alerta
+
+
+def texto_alerta(event_type: str, metadata: dict, ubicacion: str | None) -> tuple[str, str]:
+    """Título/cuerpo del push para un evento agudo (`fall`/`immobility` con `es_alerta=True`).
+    Texto simple (RNF8): la app tiene su propia presentación más rica
+    (`src/features/eventos/presentacion.ts` del Frontend) para cuando el familiar abre el
+    detalle; esto es solo lo que entra en la notificación del celular."""
+    lugar = f" en {ubicacion.lower()}" if ubicacion else ""
+    if event_type == "fall":
+        return "Posible caída detectada", f"Revisá cómo está{lugar}."
+    if event_type == "immobility":
+        if metadata.get("trigger") == "post_fall_sospecha":
+            return "Sin movimiento después de una posible caída", f"Revisá cómo está{lugar}."
+        return "Sin movimiento en el piso", f"Revisá cómo está{lugar}."
+    return "Alerta", "Revisá la app para más detalles."

@@ -79,10 +79,9 @@ def _registrar_desvio(
     db.add(evento)
     db.commit()
     print(f"[hogar {hogar.id}] {target_date} desvío ({detector}): {clave} -> {detalle}")
-    # RF8: avisar al/a los familiar/es a cargo. Sin un campo de push-token todavía en `Familiar`
-    # (fuera de alcance de esta vuelta, ver cloud/README.md "Pendiente"), así que por ahora esto
-    # queda en log vía notifications.py hasta sumar ese campo.
-    enviar_push_alerta([], titulo="Posible desvío de rutina", cuerpo=clave, data=detalle)
+    # RF8: avisar al/a los familiar/es a cargo (`POST /me/push-token` guarda el token de cada uno).
+    tokens = [f.familiar.push_token for f in hogar.familiares if f.familiar.push_token]
+    enviar_push_alerta(tokens, titulo="Posible desvío de rutina", cuerpo=clave, data=detalle)
 
 
 def process_hogar(db: Session, hogar: Hogar, target_date: date) -> None:

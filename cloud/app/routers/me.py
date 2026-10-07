@@ -8,13 +8,15 @@
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from ..auth import require_familiar_uid, require_firebase_token
 from ..db import get_db
 from ..models import Familiar
-from ..schemas import FamiliarOut, HogarPerfilOut, KitResumenOut, PerfilIn, PerfilOut, ResidenteOut
+from ..schemas import (
+    FamiliarOut, HogarPerfilOut, KitResumenOut, PerfilIn, PerfilOut, PushTokenIn, ResidenteOut,
+)
 
 router = APIRouter(prefix="/me", tags=["mobile"])
 
@@ -60,3 +62,17 @@ def crear_perfil(
     db.commit()
     db.refresh(familiar)
     return _perfil(familiar)
+
+
+@router.post("/push-token", status_code=204)
+def registrar_push_token(
+    datos: PushTokenIn, uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
+) -> Response:
+    """La app lo llama al loguearse y cada vez que el SDK de FCM avisa que el token rotó
+    (`onTokenRefresh`). Un token por familiar: se pisa al iniciar sesión en otro equipo."""
+    familiar = db.query(Familiar).filter(Familiar.firebase_uid == uid).first()
+    if familiar is None:
+        raise HTTPException(status_code=404, detail="Tu cuenta todavía no tiene perfil.")
+    familiar.push_token = datos.token
+    db.commit()
+    return Response(status_code=204)

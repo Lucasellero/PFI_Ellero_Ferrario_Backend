@@ -9,9 +9,11 @@ futura app móvil.
 todavía.** Proyecto de Firebase creado y probado con tokens reales (2026-10-06, ver "Cómo
 seguir" → punto 2). KIT/vinculación y los endpoints chicos de eventos (resolver, `ubicacion`,
 filtros RF13; 2026-10-07) probados de punta a punta contra Postgres con un ID token real. El
-resumen de rutina (mismo día) solo con un smoke test contra SQLite (eventos sintéticos) — sin
-probar contra Postgres ni con datos de cámara reales todavía. Ver "Cómo seguir" al final, con el
-runbook de lo que falta (deploy a AWS, push tokens, CRUD de familiares/roles) para retomarlo sin
+resumen de rutina y los push tokens (`POST /me/push-token`, 2026-10-07) solo con smoke tests
+contra SQLite (eventos sintéticos, Firebase capturado en vez de real) — sin probar contra
+Postgres, con datos de cámara reales, ni con Firebase Cloud Messaging real todavía. Ver "Cómo
+seguir" al final, con el runbook de lo que falta (deploy a AWS, CRUD de familiares/roles) para
+retomarlo sin
 empezar de cero.
 
 ## Arquitectura
@@ -87,6 +89,7 @@ Dos esquemas separados (`app/auth.py`):
 |---|---|
 | `GET /me` | Perfil del familiar logueado + sus hogares (`rol`, `residente`). **404** si la cuenta de Firebase todavía no tiene `Familiar` → la app llama a `POST /me`. |
 | `POST /me` | Body `{nombre}` (2-60). Crea el `Familiar`; el email sale del token, no del body. Idempotente: si ya existe lo devuelve. |
+| `POST /me/push-token` | Body `{token}` (token de FCM del celular, RF8). **204**. Pisa el anterior (un token por familiar). **404** si la cuenta todavía no tiene `Familiar` (llamar `POST /me` primero). |
 | `POST /kits/vincular` | Body `{codigo}` (del QR; acepta minúsculas, espacios, guiones). Crea el `Hogar` ("Mi hogar"), le asigna kit y cámaras y deja al familiar como `responsable_principal`. Devuelve `{hogar_id, numero_serie, cantidad_camaras, camaras}`. **404** código inexistente · **409** kit de otro hogar · **429** 5 intentos fallidos en 15 min (por familiar, en memoria del proceso). Reintento del mismo familiar = idempotente. |
 | `GET /hogares/{id}/camaras` | Cámaras del hogar. Cualquier familiar vinculado. |
 | `PATCH /hogares/{id}/camaras/{camara_id}` | Body `{ubicacion}` (2-40). RF10. **409** si repite la de otra cámara del hogar. Solo `responsable_principal`. |
@@ -238,40 +241,26 @@ vinculado → 200 en `/hogares/{id}/eventos`, y `GET`/`POST /me`. Usuario de pru
    dejar de dar `501` y pasar a `403`/200 según si el `firebase_uid` del token está vinculado a
    ese hogar.
 
-### 3. Push tokens en `Familiar`
-
-Hoy `notifications.enviar_push_alerta` siempre recibe una lista vacía (ver `_registrar_desvio` en
-`app/baseline_runner.py`) — falta dónde guardar el token de FCM de cada familiar y cómo armar esa
-lista. Pasos concretos:
+### 3. Push tokens en `Familiar` — ✅ HECHO (2026-10-07)
 
 1. ~~Columna `Familiar.push_token`~~ ✅ (migración `a3f9c2d17b40`, 2026-10-06).
 2. ~~Migración~~ ✅ (misma).
-3. Nuevo endpoint (en `app/routers/mobile.py` o un `familiares.py` nuevo, ver ítem 4):
-   ```python
-   @router.post("/me/push-token")
-   def registrar_push_token(token: str, uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db)):
-       familiar = db.query(Familiar).filter(Familiar.firebase_uid == uid).first()
-       if familiar is None:
-           raise HTTPException(404, "Familiar no registrado — ver ítem 4 (alta de familiares)")
-       familiar.push_token = token
-       db.commit()
-   ```
-   La app móvil lo llama una vez al loguearse (o cuando el token de FCM rota, que pasa de vez en
-   cuando — el SDK de Firebase en el cliente avisa con un callback `onTokenRefresh`).
-4. En `app/baseline_runner.py::_registrar_desvio`, reemplazar la lista vacía:
-   ```python
-   tokens = [
-       f.familiar.push_token
-       for f in hogar.familiares  # HogarFamiliar
-       if f.familiar.push_token
-   ]
-   enviar_push_alerta(tokens, titulo="Posible desvío de rutina", cuerpo=clave, data=detalle)
-   ```
-   Mismo cambio aplicaría en `routers/devices.py` si en algún momento se decide notificar también
-   por `fall`/`immobility` con `es_alerta=True` en el momento de la ingestión (hoy esos eventos se
-   guardan pero no disparan push — evaluar si hace falta, el informe no es explícito sobre si el
-   push es exclusivo de desvíos de rutina o también de eventos agudos; RF8 sugiere que sí debería
-   cubrir caídas/inmovilidad también, revisar con el resto del equipo antes de implementarlo).
+3. ~~Nuevo endpoint~~ ✅ `POST /me/push-token` (`app/routers/me.py`), body `{token}`, **204**.
+   La app móvil lo llama al loguearse (y cuando el SDK de Firebase avisa con `onTokenRefresh`,
+   lo cual aún no está cableado del lado de la app — requiere *development build*, ver
+   `README.md` del Frontend).
+4. ~~`app/baseline_runner.py::_registrar_desvio`~~ ✅ usa los tokens reales de `hogar.familiares`
+   en vez de una lista vacía.
+5. ~~`fall`/`immobility` con `es_alerta=True` también disparan push~~ ✅ **decidido y hecho**:
+   sí cubren caídas/inmovilidad además de desvíos de rutina (RF8), en `routers/devices.py` justo
+   después de insertar los eventos del lote — texto del push en `alertas.py::texto_alerta`.
+
+Probado con un smoke test (SQLite, `enviar_push_alerta` capturado en vez de pegarle a Firebase
+real): `fall` confirmado dispara push con el token correcto, `activity` e `immobility` de
+severidad baja no disparan nada, el token se pisa correctamente al loguearse en otro equipo. Sin
+probar con Firebase Cloud Messaging real todavía (necesita *development build* del lado de la
+app para recibir la notificación — Expo Go no la soporta, ver "Próximos pasos" del README del
+Frontend).
 
 ### 4. CRUD de familiares/roles (RF12)
 

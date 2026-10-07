@@ -21,7 +21,7 @@ from schema import EventType, MonitoringEvent  # noqa: E402  (de events/)
 __all__ = ["EventType", "MonitoringEvent", "EventoOut", "CamaraIn", "CamaraOut",
            "PerfilIn", "PerfilOut", "FamiliarOut", "HogarPerfilOut", "ResidenteOut", "KitResumenOut",
            "VincularKitIn", "KitVinculadoOut", "UbicacionIn", "ResidenteIn",
-           "IndicadorRutinaOut", "ResumenRutinaOut"]
+           "IndicadorRutinaOut", "ResumenRutinaOut", "PushTokenIn"]
 
 
 class EventoOut(BaseModel):
@@ -87,6 +87,13 @@ class FamiliarOut(BaseModel):
     id: int
     nombre: str
     email: str
+
+
+class PushTokenIn(BaseModel):
+    """Body de `POST /me/push-token` (RF8). El SDK de FCM en el cliente avisa con un callback
+    (`onTokenRefresh`) cuando el token rota — la app lo vuelve a mandar en ese momento, no solo
+    al loguearse."""
+    token: str = Field(min_length=1, max_length=300)
 
 
 class ResidenteOut(BaseModel):
