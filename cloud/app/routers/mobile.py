@@ -14,9 +14,12 @@ from ..auth import require_familiar_uid
 from ..db import get_db
 from ..models import Camara, Evento, Residente
 from ..permisos import hogar_autorizado
-from ..schemas import CamaraOut, EventoOut, ResidenteIn, UbicacionIn
+from ..rutina import calcular_resumen_rutina
+from ..schemas import CamaraOut, EventoOut, ResidenteIn, ResumenRutinaOut, UbicacionIn
 
 router = APIRouter(prefix="/hogares", tags=["mobile"])
+
+_PERIODOS_VALIDOS = ("hoy", "semana", "mes")
 
 # nombre provisorio que pone `POST /kits/vincular`; el residente lo reemplaza por "Casa de Rosa"
 NOMBRE_HOGAR_PROVISORIO = "Mi hogar"
@@ -54,6 +57,24 @@ def listar_alertas(
         .order_by(Evento.occurred_at.desc()).limit(limit).all()
     )
     return [EventoOut.from_orm_evento(e) for e in eventos]
+
+
+@router.get("/{hogar_id}/rutina", response_model=ResumenRutinaOut)
+def resumen_rutina(
+    hogar_id: int, periodo: str = "semana",
+    uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
+) -> dict:
+    """RF-reportes (mockup 04): rutina del residente vs. su propio historial. Ver `rutina.py`
+    para qué indicadores se calculan y por qué (solo lo que la cámara puede ver de verdad hoy).
+    Lista de `indicadores` vacía si el residente todavía no tiene suficiente historial."""
+    if periodo not in _PERIODOS_VALIDOS:
+        raise HTTPException(status_code=422, detail=f"periodo tiene que ser uno de {_PERIODOS_VALIDOS}.")
+    hogar_autorizado(hogar_id, uid, db)
+    residente = db.query(Residente).filter(Residente.hogar_id == hogar_id).first()
+    if residente is None:
+        return {"periodo": periodo, "indicadores": []}
+    eventos_orm = db.query(Evento).filter(Evento.residente_id == residente.id).all()
+    return calcular_resumen_rutina(eventos_orm, periodo)
 
 
 @router.post("/{hogar_id}/eventos/{evento_id}/resolver", status_code=204)

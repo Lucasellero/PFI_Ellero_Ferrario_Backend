@@ -20,7 +20,8 @@ from schema import EventType, MonitoringEvent  # noqa: E402  (de events/)
 
 __all__ = ["EventType", "MonitoringEvent", "EventoOut", "CamaraIn", "CamaraOut",
            "PerfilIn", "PerfilOut", "FamiliarOut", "HogarPerfilOut", "ResidenteOut", "KitResumenOut",
-           "VincularKitIn", "KitVinculadoOut", "UbicacionIn", "ResidenteIn"]
+           "VincularKitIn", "KitVinculadoOut", "UbicacionIn", "ResidenteIn",
+           "IndicadorRutinaOut", "ResumenRutinaOut"]
 
 
 class EventoOut(BaseModel):
@@ -162,3 +163,20 @@ class ResidenteIn(BaseModel):
         if v is not None and not _E164.match(v):
             raise ValueError("El teléfono tiene que estar en formato internacional (ej. +5491123456789).")
         return v
+
+
+# --- Resumen de rutina (routers/mobile.py, rutina.py) ------------------------------------------
+# Calca `IndicadorRutina`/`ResumenRutina` de `src/api/types.ts` del Frontend.
+
+
+class IndicadorRutinaOut(BaseModel):
+    clave: str
+    titulo: str
+    valor: str
+    habitual: str
+    estado: str  # "ok" | "desvio"
+
+
+class ResumenRutinaOut(BaseModel):
+    periodo: str  # "hoy" | "semana" | "mes"
+    indicadores: list[IndicadorRutinaOut]

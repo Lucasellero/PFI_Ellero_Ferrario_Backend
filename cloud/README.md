@@ -7,10 +7,12 @@ futura app móvil.
 
 **Estado: código probado contra Postgres real (Docker local) y SQLite, nada desplegado a AWS
 todavía.** Proyecto de Firebase creado y probado con tokens reales (2026-10-06, ver "Cómo
-seguir" → punto 2). KIT/vinculación (2026-10-07) y los endpoints chicos de eventos (resolver,
-`ubicacion`, filtros RF13; mismo día) probados de punta a punta contra Postgres con un ID token
-real. Ver "Cómo seguir" al final, con el runbook de lo que falta (deploy a AWS, push tokens,
-CRUD de familiares/roles) para retomarlo sin empezar de cero.
+seguir" → punto 2). KIT/vinculación y los endpoints chicos de eventos (resolver, `ubicacion`,
+filtros RF13; 2026-10-07) probados de punta a punta contra Postgres con un ID token real. El
+resumen de rutina (mismo día) solo con un smoke test contra SQLite (eventos sintéticos) — sin
+probar contra Postgres ni con datos de cámara reales todavía. Ver "Cómo seguir" al final, con el
+runbook de lo que falta (deploy a AWS, push tokens, CRUD de familiares/roles) para retomarlo sin
+empezar de cero.
 
 ## Arquitectura
 
@@ -91,6 +93,7 @@ Dos esquemas separados (`app/auth.py`):
 | `PUT /hogares/{id}/residente` | Body `{nombre, telefono}` (E.164 o null). Crea o actualiza; si el hogar se llamaba "Mi hogar" pasa a "Casa de {nombre}". **204**. Solo `responsable_principal`. Es el último paso: con residente, la app pasa a las pestañas y la Pi ya puede sincronizar eventos. |
 | `GET /hogares/{id}/eventos` · `/alertas` | Eventos del hogar. **403** si el familiar no está vinculado. `/eventos` acepta filtros opcionales `tipo`, `desde`, `hasta` (RF13, `occurred_at` ISO 8601). Cada evento trae `ubicacion` (de `Camara.ubicacion`, `null` si no vino de una cámara o no se cargó) y `resuelta` (`Evento.resuelta_at is not None`). |
 | `POST /hogares/{id}/eventos/{evento_id}/resolver` | "Marcar como resuelta" (mockup 03, RF8). Cualquier familiar vinculado (no solo `responsable_principal`). **204**, idempotente (no pisa quién la marcó primero). **404** si el evento no es de ese hogar. |
+| `GET /hogares/{id}/rutina?periodo=` | Resumen de rutina del residente vs. su historial (pantalla Reportes). `periodo` = `hoy`\|`semana`\|`mes` (ventana rolling, no calendario). Ver `app/rutina.py`: solo dos indicadores (`comida`, `sedentarismo`) — los únicos calculables con cámara única hoy, sin inventar `"despertar"` como mostraba el mock de la app. `indicadores: []` si no hay suficiente historial. **No lee `LineaBaseComportamiento`** (sigue sin escribirse, ver modelo de datos) — calcula todo al vuelo sobre `Evento` en cada request; si el volumen de eventos crece mucho, considerar cachear o sí escribir esa tabla. |
 
 Permisos en `app/permisos.py`. Contrato: `docs/vinculacion-kit.md` (sección 5) y
 `src/api/types.ts` del repo Frontend (cambiar los dos juntos). `kit` en `/me` es el kit activo del
