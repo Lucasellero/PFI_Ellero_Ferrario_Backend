@@ -159,13 +159,59 @@ py -m alembic upgrade head
 
 ## Cómo seguir (para quien retome esto)
 
-**2 (Firebase), 3 (push tokens) y 4 (CRUD de familiares) ya están hechos.** Solo queda **1
-(deploy a AWS)** — y lo que depende de él (HTTPS, ver su punto 5 dentro de la sección de AWS):
-requiere crear recursos reales en la nube (RDS, Elastic Beanstalk, un dominio + certificado) bajo
-la cuenta de AWS de quien lo retome, así que no es algo para automatizar sin supervisión — el
-runbook de abajo queda listo para seguirlo a mano.
+**2 (Firebase), 3 (push tokens), 4 (CRUD de familiares) y 1 (deploy a AWS) ya están hechos.**
+Queda pendiente HTTPS (ver "✅ HECHO" del punto 1, al final) — decisión tomada: no hace falta
+para esta etapa del PFI.
 
-### 1. Desplegar a AWS (Elastic Beanstalk + RDS)
+### 1. Desplegar a AWS (Elastic Beanstalk + RDS) — ✅ HECHO (2026-10-07)
+
+Desplegado y probado de punta a punta con un ID token real contra el endpoint productivo
+(`GET`/`POST /me` → 404 → 200, región `us-east-2`). Cuenta: Innovation Sandbox de la facultad
+(créditos por alumno), IAM user `lellero@uade.edu.ar`. Recursos reales:
+- RDS Postgres `pfi-lares-db`, `db.t3.micro`, sin acceso público (deshabilitado una vez corrida
+  la migración inicial — EB le pega por el security group, no por internet).
+- Elastic Beanstalk `pfi-lares-prod`, plataforma Docker, instancia única `t3.micro`.
+- Credencial de Firebase pasada como `GOOGLE_APPLICATION_CREDENTIALS_JSON` (el JSON entero como
+  variable de entorno, no un archivo montado — ver `app/auth.py::_get_firebase_app`; se agregó
+  esta alternativa justo por este deploy, ver commit `fc7ed50`).
+- **Costo real: $0** — un solo `t3.micro` de EB + un `db.t3.micro` de RDS 24/7 entran dentro del
+  Free Tier normal de la cuenta (750 hs/mes cada uno), verificado con
+  `aws ce get-cost-and-usage` (toda la semana da ~$0.00 en todos los servicios). Los créditos del
+  Innovation Sandbox quedan de colchón si se agrega algo que sí tenga costo (ej. un load
+  balancer con HTTPS, ver más abajo).
+- **HTTPS: decisión tomada, no se hace por ahora.** Requiere un Application Load Balancer +
+  dominio + certificado ACM — el ALB sí tiene costo por hora (no es Free Tier), y esto es una
+  demo de PFI, no producción real. Queda documentado como pendiente si en algún momento hace
+  falta (pasos originales más abajo, en el punto 5 del runbook de Elastic Beanstalk).
+
+**Problemas encontrados y cómo se resolvieron** (para quien lo repita):
+1. **Zip con separadores de Windows**: `Compress-Archive` de PowerShell arma rutas con `\`
+   dentro del zip, y el Linux de la instancia EB no las reconoce ("appears to use backslashes as
+   path separators"). Armar el zip con el módulo `zipfile` de Python en vez de
+   `Compress-Archive`, forzando `/` en los nombres de archivo.
+2. **Contraseña de RDS corrompida por un BOM**: generarla con `Out-File -Encoding utf8` de
+   PowerShell agrega un BOM invisible al principio del archivo, que se propagaba a mitad de la
+   contraseña al armar `DATABASE_URL` por una cadena de `cat`/interpolación en Bash
+   ("password authentication failed" con la contraseña aparentemente correcta). Se solucionó
+   regenerando contraseña y `DATABASE_URL` con un script de Python usando `encoding='ascii'`, y
+   verificando con `repr()` que no quedó ningún byte extra.
+3. **RDS sin acceso desde EB** (504 Gateway Timeout): faltaba una regla de entrada en el security
+   group de RDS que apunte al security group creado por EB — no alcanza con habilitar el puerto
+   5432 desde "mi IP", eso es solo para la migración inicial.
+4. **Filtración de la contraseña maestra de RDS en el bundle de deploy**: un `cp -r cloud/
+   deploy_bundle/cloud/` incluyó por error archivos de scratch local (`.aws_*`) con la contraseña
+   en texto plano, que llegaron a subirse a S3 como parte de una versión de la app de EB. Se
+   detectó antes de que quedara expuesto a nadie más, se borró de las dos ubicaciones en S3 y de
+   la versión de EB, y se rotó la contraseña dos veces. Desde entonces esos archivos de scratch
+   están en `.gitignore` (`cloud/.aws_*`, `cloud/.backend_*.log`, ver commit `c1bf5d9`) y el
+   runbook de deploy (paso 2 de Elastic Beanstalk, abajo) advierte sobre esto explícitamente.
+5. **Deploy viejo ya corriendo**: la cuenta ya tenía un `monitor-backend-env`/`monitor-db`
+   corriendo hace 5 días de una prueba anterior, que contradecía lo que decía este mismo README
+   ("nada desplegado todavía"). Se borró antes de desplegar el actual. Moraleja: antes de asumir
+   el estado de una cuenta de AWS a partir de este README, listar los recursos reales
+   (`aws elasticbeanstalk describe-environments`, `aws rds describe-db-instances`).
+
+Runbook original (para repetirlo desde cero en otra cuenta):
 
 **RDS (Postgres)**:
 1. Consola AWS → RDS → "Create database" → PostgreSQL, plantilla "Free tier" (o la que corresponda),
