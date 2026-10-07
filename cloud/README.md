@@ -82,7 +82,11 @@ Dos esquemas separados (`app/auth.py`):
   configurado, estos endpoints devuelven `501` con un mensaje claro** en vez de romper el arranque
   de la app — así se puede levantar y probar la ingestión + `baseline_runner` sin Firebase.
   Con Firebase: `GOOGLE_APPLICATION_CREDENTIALS=~/.secrets/firebase-pfi.json` (clave de cuenta de
-  servicio del proyecto `pfi-ellero-ferrario`, **fuera del repo**).
+  servicio del proyecto `pfi-ellero-ferrario`, **fuera del repo**). `verify_id_token` usa
+  `clock_skew_seconds=10` (2026-10-07): un token pedido justo después de crear la cuenta puede
+  tener el `iat` un segundo por delante del reloj de este proceso (resolución normal de NTP
+  entre dos máquinas, no un reloj mal configurado) y sin tolerancia se rechaza como "usado
+  demasiado pronto" — encontrado probando la app en un celular contra un backend local.
 
 ## Endpoints de la app móvil
 
