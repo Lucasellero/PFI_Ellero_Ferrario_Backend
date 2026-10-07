@@ -13,8 +13,9 @@ resumen de rutina y los push tokens (`POST /me/push-token`, 2026-10-07) solo con
 contra SQLite — sin probar contra Postgres ni con Firebase Cloud Messaging real todavía. El
 resumen de rutina además se corrió contra `dataset_events/events.zip` (CASAS, un hogar real con
 490 días de historial) como proxy de variabilidad real — ver nota en `app/rutina.py`, no
-reemplaza calibrar con cámara real. Ver "Cómo seguir" al final, con el runbook de lo que falta
-(deploy a AWS, CRUD de familiares/roles) para retomarlo sin empezar de cero.
+reemplaza calibrar con cámara real. CRUD de familiares/roles (RF12, 2026-10-07) con smoke test
+contra SQLite (Firebase mockeado). Ver "Cómo seguir" al final — solo queda el deploy a AWS (y lo
+que depende de él: HTTPS) para retomarlo sin empezar de cero.
 
 ## Arquitectura
 
@@ -97,6 +98,9 @@ Dos esquemas separados (`app/auth.py`):
 | `GET /hogares/{id}/eventos` · `/alertas` | Eventos del hogar. **403** si el familiar no está vinculado. `/eventos` acepta filtros opcionales `tipo`, `desde`, `hasta` (RF13, `occurred_at` ISO 8601). Cada evento trae `ubicacion` (de `Camara.ubicacion`, `null` si no vino de una cámara o no se cargó) y `resuelta` (`Evento.resuelta_at is not None`). |
 | `POST /hogares/{id}/eventos/{evento_id}/resolver` | "Marcar como resuelta" (mockup 03, RF8). Cualquier familiar vinculado (no solo `responsable_principal`). **204**, idempotente (no pisa quién la marcó primero). **404** si el evento no es de ese hogar. |
 | `GET /hogares/{id}/rutina?periodo=` | Resumen de rutina del residente vs. su historial (pantalla Reportes). `periodo` = `hoy`\|`semana`\|`mes` (ventana rolling, no calendario). Ver `app/rutina.py`: solo dos indicadores (`comida`, `sedentarismo`) — los únicos calculables con cámara única hoy, sin inventar `"despertar"` como mostraba el mock de la app. `indicadores: []` si no hay suficiente historial. **No lee `LineaBaseComportamiento`** (sigue sin escribirse, ver modelo de datos) — calcula todo al vuelo sobre `Evento` en cada request; si el volumen de eventos crece mucho, considerar cachear o sí escribir esa tabla. |
+| `GET` · `POST /hogares/{id}/familiares` | RF12. Listar (cualquier vinculado) / invitar por email (solo `responsable_principal`; body `{email, rol}`). Invitar es "a quien ya tiene cuenta" — **404** si ese email nunca hizo `POST /me`, sin invitación pendiente. Idempotente: invitar a alguien ya vinculado devuelve su vínculo sin pisarle el rol. |
+| `PATCH /hogares/{id}/familiares/{familiar_id}` | Cambiar `rol`. Solo `responsable_principal`. **409** si es el único `responsable_principal` del hogar y se le intenta bajar el rol. |
+| `DELETE /hogares/{id}/familiares/{familiar_id}` | Desvincular. Uno mismo siempre puede; a otro familiar, solo `responsable_principal`. **409** si es el único `responsable_principal` del hogar. |
 
 Permisos en `app/permisos.py`. Contrato: `docs/vinculacion-kit.md` (sección 5) y
 `src/api/types.ts` del repo Frontend (cambiar los dos juntos). `kit` en `/me` es el kit activo del
@@ -151,9 +155,11 @@ py -m alembic upgrade head
 
 ## Cómo seguir (para quien retome esto)
 
-Orden recomendado: 2 (Firebase) ya está hecho; 1 (AWS) es independiente. Dentro de 3/4, hace
-falta **primero `POST /kits/vincular`** (crea el `Hogar` al escanear el QR, ver punto 4) porque todo
-lo demás de RF12 depende de poder crear un `Hogar` sin tocar la base a mano.
+**2 (Firebase), 3 (push tokens) y 4 (CRUD de familiares) ya están hechos.** Solo queda **1
+(deploy a AWS)** — y lo que depende de él (HTTPS, ver su punto 5 dentro de la sección de AWS):
+requiere crear recursos reales en la nube (RDS, Elastic Beanstalk, un dominio + certificado) bajo
+la cuenta de AWS de quien lo retome, así que no es algo para automatizar sin supervisión — el
+runbook de abajo queda listo para seguirlo a mano.
 
 ### 1. Desplegar a AWS (Elastic Beanstalk + RDS)
 
@@ -262,45 +268,33 @@ probar con Firebase Cloud Messaging real todavía (necesita *development build* 
 app para recibir la notificación — Expo Go no la soporta, ver "Próximos pasos" del README del
 Frontend).
 
-### 4. CRUD de familiares/roles (RF12)
+### 4. CRUD de familiares/roles (RF12) — ✅ HECHO (2026-10-07)
 
-Hecho (2026-10-06): alta del hogar por vinculación del kit, cámaras y residente (ver "Endpoints de
-la app móvil"), con permisos por rol en `app/permisos.py`. **Falta el CRUD de familiares**
-(invitar/quitar/cambiar rol, abajo).
+Alta del hogar por vinculación del kit, cámaras y residente (2026-10-06, ver "Endpoints de la
+app móvil"). CRUD de familiares completo (2026-10-07, nuevo `app/routers/familiares.py`):
 
-**~~Prerequisito~~ ✅: crear el `Hogar`.** Decidido
-(2026-10-05, `docs/vinculacion-kit.md` del Frontend): no hay `POST /hogares`, el hogar nace al
-vincular el kit — `POST /kits/vincular {codigo}` con el token de Firebase del familiar: busca el
-`Kit` por `hash_codigo(codigo)` (404 si no existe, 409 si ya tiene hogar, 429 ante muchos
-intentos), crea el `Hogar`, le asigna kit y cámaras, y vincula al familiar como
-`responsable_principal`. Después `PUT /hogares/{id}/residente` y `PATCH
-/hogares/{id}/camaras/{id}` completan la configuración.
+- `GET /hogares/{id}/familiares` — listar vinculados + rol (cualquier familiar del hogar).
+- `POST /hogares/{id}/familiares` — invitar por email. Body `{email, rol}`.
+  `firebase_admin.auth.get_user_by_email(email)` resuelve el `firebase_uid`; **404** si esa
+  persona nunca se registró en la app — decidido: sin invitación pendiente/por mail, consistente
+  con "no sobre-ingenierizar antes de medir si hace falta". Crea `Familiar` si no existía (se
+  registró en Firebase pero nunca llamó `POST /me`) + `HogarFamiliar`. Solo
+  `responsable_principal`. Idempotente: invitar a alguien ya vinculado devuelve su vínculo tal
+  cual, sin pisarle el rol.
+- `PATCH /hogares/{id}/familiares/{familiar_id}` — cambiar `rol`. Solo `responsable_principal`.
+  **409** si es el único `responsable_principal` del hogar y se le intenta bajar el rol.
+- `DELETE /hogares/{id}/familiares/{familiar_id}` — desvincular. Uno mismo siempre puede;
+  a otro, solo `responsable_principal`. **409** si es el único `responsable_principal` del hogar.
 
-**Modelo de roles** (decidido; constantes `ROLES` en `app/models.py`, default `familiar`):
-- `responsable_principal`: puede invitar/quitar otros familiares y cambiar roles.
-- `familiar`: solo lectura de eventos/alertas/reportes (lo que ya hace `routers/mobile.py`).
+**Modelo de roles** (constantes `ROLES` en `app/models.py`, default `familiar`):
+`responsable_principal` (invita/quita familiares y cambia roles, además de lo que ya podía:
+configurar residente/cámaras) | `familiar` (solo lectura de eventos/alertas/reportes).
 
-Guardar el rol como ya está en `HogarFamiliar.rol` (columna `String`, ya existe en el modelo) — no
-hace falta un enum de DB, alcanza con validar los valores permitidos en el endpoint.
-
-**Endpoints a sumar** (nuevo `app/routers/familiares.py`):
-- `GET /hogares/{hogar_id}/familiares` — listar vinculados + rol (cualquier familiar del hogar).
-- `POST /hogares/{hogar_id}/familiares` — invitar por email. Body `{email, rol}`. Implementación:
-  `firebase_admin.auth.get_user_by_email(email)` para resolver el `firebase_uid` (falla si esa
-  persona nunca se registró en la app — decidir si eso es un error 404 "primero tiene que crearse
-  una cuenta" o si se arma un flujo de invitación pendiente más elaborado; lo primero es
-  consistente con "no sobre-ingenierizar antes de medir si hace falta" y alcanza para un primer
-  release). Crea `Familiar` si no existía (nombre/email del token decodificado) + `HogarFamiliar`.
-  Solo lo puede llamar un `responsable_principal` del hogar (reusar/extender `_hogar_autorizado`
-  de `routers/mobile.py` para exigir ese rol, no cualquier vínculo).
-- `PATCH /hogares/{hogar_id}/familiares/{familiar_id}` — cambiar `rol`. Mismo chequeo de permiso.
-- `DELETE /hogares/{hogar_id}/familiares/{familiar_id}` — desvincular. Un familiar puede
-  desvincularse a sí mismo siempre; desvincular a otro requiere `responsable_principal`. Validar
-  que no se pueda sacar al último `responsable_principal` de un hogar (si no, nadie puede
-  administrar ese hogar nunca más).
-
-**Reusar, no duplicar**: `permisos.hogar_autorizado(..., solo_responsable=True)` ya cubre las dos
-variantes ("cualquier rol" vs. "solo responsable_principal").
+Reusa `permisos.hogar_autorizado(..., solo_responsable=True)`, no duplica el chequeo de rol.
+Probado con un smoke test (SQLite, `get_user_by_email`/`_get_firebase_app` mockeados): invitar a
+quien no tiene cuenta da 404, invitar dos veces es idempotente, un `familiar` no puede invitar
+(403), y las dos reglas de "no te quedes sin responsable" (`PATCH` y `DELETE`) dan 409 en el
+caso límite (único `responsable_principal` del hogar).
 
 ## Setup
 

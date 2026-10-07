@@ -21,7 +21,8 @@ from schema import EventType, MonitoringEvent  # noqa: E402  (de events/)
 __all__ = ["EventType", "MonitoringEvent", "EventoOut", "CamaraIn", "CamaraOut",
            "PerfilIn", "PerfilOut", "FamiliarOut", "HogarPerfilOut", "ResidenteOut", "KitResumenOut",
            "VincularKitIn", "KitVinculadoOut", "UbicacionIn", "ResidenteIn",
-           "IndicadorRutinaOut", "ResumenRutinaOut", "PushTokenIn"]
+           "IndicadorRutinaOut", "ResumenRutinaOut", "PushTokenIn",
+           "FamiliarVinculadoOut", "InvitarFamiliarIn", "CambiarRolIn"]
 
 
 class EventoOut(BaseModel):
@@ -187,3 +188,22 @@ class IndicadorRutinaOut(BaseModel):
 class ResumenRutinaOut(BaseModel):
     periodo: str  # "hoy" | "semana" | "mes"
     indicadores: list[IndicadorRutinaOut]
+
+
+# --- CRUD de familiares/roles (routers/familiares.py, RF12) ------------------------------------
+
+
+class FamiliarVinculadoOut(BaseModel):
+    id: int
+    nombre: str
+    email: str
+    rol: str  # ver ROLES en models.py
+
+
+class InvitarFamiliarIn(BaseModel):
+    email: str = Field(min_length=3, max_length=200)
+    rol: str = Field(default="familiar")
+
+
+class CambiarRolIn(BaseModel):
+    rol: str
