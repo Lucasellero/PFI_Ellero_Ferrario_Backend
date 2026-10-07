@@ -5,6 +5,8 @@ familiares/roles (RF12, ver `cloud/README.md` → "Cómo seguir" punto 4).
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
@@ -23,14 +25,20 @@ NOMBRE_HOGAR_PROVISORIO = "Mi hogar"
 @router.get("/{hogar_id}/eventos", response_model=list[EventoOut])
 def listar_eventos(
     hogar_id: int, limit: int = 50,
+    tipo: str | None = None, desde: datetime | None = None, hasta: datetime | None = None,
     uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
 ) -> list[EventoOut]:
+    """RF13: filtros opcionales por tipo (`EventType`) y rango de fechas (`occurred_at`, ISO
+    8601). Sin filtros, mismo comportamiento que antes (los últimos `limit`)."""
     hogar_autorizado(hogar_id, uid, db)
-    eventos = (
-        db.query(Evento).join(Evento.residente)
-        .filter(Evento.residente.has(hogar_id=hogar_id))
-        .order_by(Evento.occurred_at.desc()).limit(limit).all()
-    )
+    query = db.query(Evento).join(Evento.residente).filter(Evento.residente.has(hogar_id=hogar_id))
+    if tipo is not None:
+        query = query.filter(Evento.event_type == tipo)
+    if desde is not None:
+        query = query.filter(Evento.occurred_at >= desde)
+    if hasta is not None:
+        query = query.filter(Evento.occurred_at <= hasta)
+    eventos = query.order_by(Evento.occurred_at.desc()).limit(limit).all()
     return [EventoOut.from_orm_evento(e) for e in eventos]
 
 
@@ -46,6 +54,29 @@ def listar_alertas(
         .order_by(Evento.occurred_at.desc()).limit(limit).all()
     )
     return [EventoOut.from_orm_evento(e) for e in eventos]
+
+
+@router.post("/{hogar_id}/eventos/{evento_id}/resolver", status_code=204)
+def resolver_evento(
+    hogar_id: int, evento_id: int,
+    uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
+) -> Response:
+    """"Marcar como resuelta" (mockup 03, RF8): cualquier familiar vinculado puede atenderla, no
+    solo el `responsable_principal`. Idempotente: si ya estaba resuelta, no pisa quién la marcó
+    primero (reintento tras un corte de conexión)."""
+    vinculo = hogar_autorizado(hogar_id, uid, db)
+    evento = (
+        db.query(Evento).join(Evento.residente)
+        .filter(Evento.id == evento_id, Evento.residente.has(hogar_id=hogar_id))
+        .first()
+    )
+    if evento is None:
+        raise HTTPException(status_code=404, detail="Ese evento no es de este hogar.")
+    if evento.resuelta_at is None:
+        evento.resuelta_at = datetime.now(timezone.utc)
+        evento.resuelta_por = vinculo.familiar_id
+        db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/{hogar_id}/camaras", response_model=list[CamaraOut])

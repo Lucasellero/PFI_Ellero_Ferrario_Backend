@@ -5,10 +5,12 @@ FastAPI + Postgres (RDS en producción), recibe eventos sincronizados desde la P
 (`runner/cloud_sync.py`), corre `baseline/` contra ese historial y expone una API mínima para la
 futura app móvil.
 
-**Estado: código probado localmente (SQLite, sin Docker), nada desplegado a AWS todavía.**
-Proyecto de Firebase creado y probado con tokens reales (2026-10-06, ver "Cómo seguir" → punto 2).
-Ver "Cómo seguir" al final, con el runbook de lo que falta (deploy a AWS, push tokens, CRUD de
-familiares/roles) para retomarlo sin empezar de cero.
+**Estado: código probado contra Postgres real (Docker local) y SQLite, nada desplegado a AWS
+todavía.** Proyecto de Firebase creado y probado con tokens reales (2026-10-06, ver "Cómo
+seguir" → punto 2). KIT/vinculación (2026-10-07) y los endpoints chicos de eventos (resolver,
+`ubicacion`, filtros RF13; mismo día) probados de punta a punta contra Postgres con un ID token
+real. Ver "Cómo seguir" al final, con el runbook de lo que falta (deploy a AWS, push tokens,
+CRUD de familiares/roles) para retomarlo sin empezar de cero.
 
 ## Arquitectura
 
@@ -87,7 +89,8 @@ Dos esquemas separados (`app/auth.py`):
 | `GET /hogares/{id}/camaras` | Cámaras del hogar. Cualquier familiar vinculado. |
 | `PATCH /hogares/{id}/camaras/{camara_id}` | Body `{ubicacion}` (2-40). RF10. **409** si repite la de otra cámara del hogar. Solo `responsable_principal`. |
 | `PUT /hogares/{id}/residente` | Body `{nombre, telefono}` (E.164 o null). Crea o actualiza; si el hogar se llamaba "Mi hogar" pasa a "Casa de {nombre}". **204**. Solo `responsable_principal`. Es el último paso: con residente, la app pasa a las pestañas y la Pi ya puede sincronizar eventos. |
-| `GET /hogares/{id}/eventos` · `/alertas` | Eventos del hogar. **403** si el familiar no está vinculado. |
+| `GET /hogares/{id}/eventos` · `/alertas` | Eventos del hogar. **403** si el familiar no está vinculado. `/eventos` acepta filtros opcionales `tipo`, `desde`, `hasta` (RF13, `occurred_at` ISO 8601). Cada evento trae `ubicacion` (de `Camara.ubicacion`, `null` si no vino de una cámara o no se cargó) y `resuelta` (`Evento.resuelta_at is not None`). |
+| `POST /hogares/{id}/eventos/{evento_id}/resolver` | "Marcar como resuelta" (mockup 03, RF8). Cualquier familiar vinculado (no solo `responsable_principal`). **204**, idempotente (no pisa quién la marcó primero). **404** si el evento no es de ese hogar. |
 
 Permisos en `app/permisos.py`. Contrato: `docs/vinculacion-kit.md` (sección 5) y
 `src/api/types.ts` del repo Frontend (cambiar los dos juntos). `kit` en `/me` es el kit activo del

@@ -30,6 +30,8 @@ class EventoOut(BaseModel):
     occurred_at: datetime
     es_alerta: bool
     metadata: dict
+    ubicacion: str | None  # `Camara.ubicacion`; null si el evento no vino de una cámara o no se cargó
+    resuelta: bool  # `Evento.resuelta_at is not None`
 
     @staticmethod
     def from_orm_evento(evento) -> "EventoOut":
@@ -40,6 +42,8 @@ class EventoOut(BaseModel):
             id=evento.id, camara_id=evento.camara_id, event_type=evento.event_type,
             occurred_at=evento.occurred_at, es_alerta=evento.es_alerta,
             metadata=evento.metadata_json,
+            ubicacion=(evento.camara.ubicacion or None) if evento.camara is not None else None,
+            resuelta=evento.resuelta_at is not None,
         )
 
 
