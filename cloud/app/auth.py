@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timezone
 
@@ -18,6 +19,10 @@ from .db import get_db
 from .models import Kit, hash_api_key
 
 FIREBASE_CREDENTIALS_ENV = "GOOGLE_APPLICATION_CREDENTIALS"
+# Alternativa para despliegues en contenedor (ej. Elastic Beanstalk): el contenido completo del
+# JSON de la cuenta de servicio como variable de entorno, en vez de un archivo montado — ver
+# "Cómo seguir" → punto 1 en cloud/README.md. Si están las dos, esta tiene prioridad.
+FIREBASE_CREDENTIALS_JSON_ENV = "GOOGLE_APPLICATION_CREDENTIALS_JSON"
 
 _firebase_app = None
 _firebase_init_attempted = False
@@ -31,12 +36,18 @@ def _get_firebase_app():
     if _firebase_init_attempted:
         return _firebase_app
     _firebase_init_attempted = True
-    if not os.environ.get(FIREBASE_CREDENTIALS_ENV):
-        return None
     import firebase_admin
     from firebase_admin import credentials
 
-    _firebase_app = firebase_admin.initialize_app(credentials.ApplicationDefault())
+    creds_json = os.environ.get(FIREBASE_CREDENTIALS_JSON_ENV)
+    if creds_json:
+        cred = credentials.Certificate(json.loads(creds_json))
+    elif os.environ.get(FIREBASE_CREDENTIALS_ENV):
+        cred = credentials.ApplicationDefault()
+    else:
+        return None
+
+    _firebase_app = firebase_admin.initialize_app(cred)
     return _firebase_app
 
 
@@ -64,8 +75,9 @@ def require_firebase_token(authorization: str = Header(...)) -> dict:
         raise HTTPException(
             status_code=501,
             detail=(
-                f"Firebase no está configurado en este backend (falta {FIREBASE_CREDENTIALS_ENV}) "
-                "— este endpoint necesita un proyecto de Firebase real para autenticar la app móvil."
+                f"Firebase no está configurado en este backend (falta {FIREBASE_CREDENTIALS_ENV} o "
+                f"{FIREBASE_CREDENTIALS_JSON_ENV}) — este endpoint necesita un proyecto de Firebase "
+                "real para autenticar la app móvil."
             ),
         )
     if not authorization.startswith("Bearer "):
