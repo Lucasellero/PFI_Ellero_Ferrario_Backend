@@ -10,11 +10,11 @@ todavía.** Proyecto de Firebase creado y probado con tokens reales (2026-10-06,
 seguir" → punto 2). KIT/vinculación y los endpoints chicos de eventos (resolver, `ubicacion`,
 filtros RF13; 2026-10-07) probados de punta a punta contra Postgres con un ID token real. El
 resumen de rutina y los push tokens (`POST /me/push-token`, 2026-10-07) solo con smoke tests
-contra SQLite (eventos sintéticos, Firebase capturado en vez de real) — sin probar contra
-Postgres, con datos de cámara reales, ni con Firebase Cloud Messaging real todavía. Ver "Cómo
-seguir" al final, con el runbook de lo que falta (deploy a AWS, CRUD de familiares/roles) para
-retomarlo sin
-empezar de cero.
+contra SQLite — sin probar contra Postgres ni con Firebase Cloud Messaging real todavía. El
+resumen de rutina además se corrió contra `dataset_events/events.zip` (CASAS, un hogar real con
+490 días de historial) como proxy de variabilidad real — ver nota en `app/rutina.py`, no
+reemplaza calibrar con cámara real. Ver "Cómo seguir" al final, con el runbook de lo que falta
+(deploy a AWS, CRUD de familiares/roles) para retomarlo sin empezar de cero.
 
 ## Arquitectura
 

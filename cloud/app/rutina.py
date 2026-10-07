@@ -27,6 +27,17 @@ Frontend (`desde()`) y a los `window_days` de `baseline/`, no una semana/mes de 
 **Sin calibrar con datos reales de cámara** (no existen aún, mismo disclaimer que
 `camera_events.py`): los umbrales (`_EXCESO_K`, piso de sigma) son puntos de partida razonables,
 no un resultado medido.
+
+**Probado (2026-10-07) con un proxy de variabilidad real**: `calcular_resumen_rutina` corrido
+contra `dataset_events/events.zip` (CASAS, hogar `hh113`, 490 días de historial real), filtrando
+solo las clases `actividad_gruesa` con análogo de cámara (`comida`, `descanso_sofa`,
+`ocio_sentado`, `cocina`) y usando la `duracion_s` real de CASAS en vez de reconstruir por gaps.
+Con meses de historial real, `comida` dio un rango habitual con varianza genuina (`07:36–08:18`,
+no el `05:30–05:30` sin varianza del smoke test sintético) y detectó correctamente un desvío al
+simular un "hoy" con la primera comida a las 11:41. **Esto NO es una calibración con cámara
+real** (CASAS es un sensor de hogar completo, no una cámara; la cobertura/ambigüedad temporal es
+distinta) — sirve para confirmar que la lógica de mediana+MAD se comporta bien con variabilidad
+real, no para fijar los umbrales finales.
 """
 from __future__ import annotations
 
