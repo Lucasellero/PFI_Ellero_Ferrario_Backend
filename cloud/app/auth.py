@@ -75,7 +75,12 @@ def require_firebase_token(authorization: str = Header(...)) -> dict:
     from firebase_admin import auth as firebase_auth
 
     try:
-        decoded = firebase_auth.verify_id_token(token, app=app)
+        # clock_skew_seconds: sin esto, un token recién emitido (ej. justo después de crear la
+        # cuenta) puede rechazarse como "usado demasiado pronto" si el reloj de este proceso está
+        # apenas un segundo adelantado respecto al de los servidores de Firebase que lo emitieron
+        # — no hace falta que el reloj esté mal configurado, alcanza con la resolución normal de
+        # NTP. 10s de tolerancia es el valor que recomienda la propia librería para este caso.
+        decoded = firebase_auth.verify_id_token(token, app=app, clock_skew_seconds=10)
     except Exception as exc:  # firebase_admin lanza varias excepciones propias, todas = token inválido
         raise HTTPException(status_code=401, detail="Token de Firebase inválido") from exc
     return decoded
