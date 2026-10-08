@@ -5,17 +5,18 @@ FastAPI + Postgres (RDS en producción), recibe eventos sincronizados desde la P
 (`runner/cloud_sync.py`), corre `baseline/` contra ese historial y expone una API mínima para la
 futura app móvil.
 
-**Estado: código probado contra Postgres real (Docker local) y SQLite, nada desplegado a AWS
-todavía.** Proyecto de Firebase creado y probado con tokens reales (2026-10-06, ver "Cómo
-seguir" → punto 2). KIT/vinculación y los endpoints chicos de eventos (resolver, `ubicacion`,
-filtros RF13; 2026-10-07) probados de punta a punta contra Postgres con un ID token real. El
-resumen de rutina y los push tokens (`POST /me/push-token`, 2026-10-07) solo con smoke tests
-contra SQLite — sin probar contra Postgres ni con Firebase Cloud Messaging real todavía. El
-resumen de rutina además se corrió contra `dataset_events/events.zip` (CASAS, un hogar real con
-490 días de historial) como proxy de variabilidad real — ver nota en `app/rutina.py`, no
-reemplaza calibrar con cámara real. CRUD de familiares/roles (RF12, 2026-10-07) con smoke test
-contra SQLite (Firebase mockeado). Ver "Cómo seguir" al final — solo queda el deploy a AWS (y lo
-que depende de él: HTTPS) para retomarlo sin empezar de cero.
+**Estado: desplegado en AWS (Elastic Beanstalk + RDS, ver punto 1 de "Cómo seguir") y probado de
+punta a punta desde una app real en un celular** (2026-10-07/08, ver "Prueba end-to-end en
+celular real" en el README del repo Frontend). Proyecto de Firebase creado y probado con tokens
+reales (2026-10-06, ver "Cómo seguir" → punto 2). KIT/vinculación, eventos (resolver,
+`ubicacion`, filtros RF13), CRUD de familiares/roles (RF12), resumen y serie de rutina (RF9,
+`GET /rutina` y `GET /rutina/serie`, este último sumado 2026-10-08 para el gráfico de evolución
+de la app) — todo probado contra Postgres real en producción, con Firebase real. **Sin probar
+todavía**: Firebase Cloud Messaging real (push tokens se guardan, `POST /me/push-token`, pero
+nada los consume del lado de la app — requiere *development build*, bloqueado en EAS). El
+resumen/serie de rutina además se corrió contra `dataset_events/events.zip` (CASAS, un hogar real
+con 490 días de historial) como proxy de variabilidad real — ver nota en `app/rutina.py`, no
+reemplaza calibrar con cámara real, que sigue sin existir.
 
 ## Arquitectura
 
@@ -183,6 +184,18 @@ Desplegado y probado de punta a punta con un ID token real contra el endpoint pr
   dominio + certificado ACM — el ALB sí tiene costo por hora (no es Free Tier), y esto es una
   demo de PFI, no producción real. Queda documentado como pendiente si en algún momento hace
   falta (pasos originales más abajo, en el punto 5 del runbook de Elastic Beanstalk).
+
+**Deploys posteriores al inicial** (mismo mecanismo: `aws s3 cp` del zip a
+`s3://pfi-lares-deploy-115908660276/`, `create-application-version` + `update-environment`, ver
+runbook abajo — no se volvió a tocar RDS ni Firebase, solo código de `cloud/app/`):
+- **v3 (2026-10-08)**: endpoint `GET /hogares/{id}/rutina/serie` — mismo indicador que
+  `GET /rutina` pero un punto por día, para el gráfico de evolución nuevo de la app (`rutina.py`,
+  `routers/mobile.py`, `schemas.py`).
+- **v4 (2026-10-08)**: indicadores `cocina`/`movilidad` sumados a `app/rutina.py` (antes solo
+  `comida`/`sedentarismo`).
+- Mientras se armaba el deploy de v3 se encontró que `monitor-backend-env` (el environment viejo
+  de una cuenta de prueba previa, ver problema 5 abajo) **seguía corriendo** pese a que este mismo
+  README decía que se había borrado — se terminó (`terminate-environment`) el 2026-10-08.
 
 **Problemas encontrados y cómo se resolvieron** (para quien lo repita):
 1. **Zip con separadores de Windows**: `Compress-Archive` de PowerShell arma rutas con `\`

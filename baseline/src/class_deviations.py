@@ -88,6 +88,18 @@ class ClassDeviationConfig:
     # sumó al barrido para que el cross-validation lo confirme o lo descarte con datos, en vez de
     # decidirlo a mano.
     ausencia_requiere_racha: bool = False
+    # 2026-10-08: el diagnóstico manual escalado (ver "Actualización 2026-10-08" en README) mostró
+    # que `ausencia` de un solo día es el 64-89% del FP medido — esperable: `frac_historica_min`
+    # es un umbral fijo que no distingue "esto pasa el 80% de los días, faltar 1 vez es ruido
+    # normal" de "esto pasa el 99% de los días, faltar 1 vez sí es raro". `"binomial"` reemplaza
+    # ese umbral por una probabilidad real: con `p` = fracción histórica de presencia, la chance
+    # de faltar `racha_ausencia` días seguidos por puro azar es `(1-p)**racha_ausencia` — se marca
+    # `ausencia` solo si esa probabilidad cae debajo de `ausencia_alpha` (más exigente cuando `p`
+    # es alto, igual que `frac_historica_min`, pero ahora según cuántos días seguidos faltó, no
+    # solo el día de hoy). No toca `ausencia_sostenida`/`exceso`/`deficit`. `"umbral"` = el
+    # comportamiento original (`frac_historica_min`), default, para no romper calibraciones viejas.
+    ausencia_metodo: str = "umbral"  # "umbral" | "binomial"
+    ausencia_alpha: float = 0.05
 
 
 def score_class_deviations(
@@ -146,7 +158,16 @@ def score_class_deviations(
                 mad = float(np.median(np.abs(hist - mediana)))
                 sigma_robusto = mad * _MAD_TO_STD
 
-                ausencia = era_ausente and frac_presente >= config.frac_historica_min
+                if config.ausencia_metodo == "binomial":
+                    # P(faltar `racha_ausencia` días seguidos por azar | históricamente presente
+                    # una fracción `frac_presente` de los días) = (1 - frac_presente)**racha —
+                    # `frac_presente == 1.0` (nunca faltó en la ventana) se trata como "siempre
+                    # significativo" (no hay forma de que 1 - 1.0 = 0.0 sea < alpha por error de
+                    # punto flotante si alpha es exactamente 0).
+                    p_azar = (1.0 - frac_presente) ** racha_ausencia if frac_presente < 1.0 else 0.0
+                    ausencia = era_ausente and frac_presente > 0 and p_azar < config.ausencia_alpha
+                else:
+                    ausencia = era_ausente and frac_presente >= config.frac_historica_min
                 if config.ausencia_requiere_racha:
                     ausencia = ausencia and racha_ausencia >= config.dias_consecutivos_ausencia
                 ausencia_sostenida = (

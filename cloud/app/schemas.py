@@ -5,7 +5,7 @@ backend local y el de la nube, no inventar uno nuevo para el transporte Pi→nub
 from __future__ import annotations
 
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import re
@@ -188,6 +188,24 @@ class IndicadorRutinaOut(BaseModel):
 class ResumenRutinaOut(BaseModel):
     periodo: str  # "hoy" | "semana" | "mes"
     indicadores: list[IndicadorRutinaOut]
+
+
+class PuntoSerieRutinaOut(BaseModel):
+    fecha: date
+    valor: float | None  # null = sin datos ese día (no se inventa un valor)
+    estado: str  # "ok" | "desvio" | "sin_dato"
+
+
+class SerieRutinaOut(BaseModel):
+    """Para graficar un indicador día por día (eje X = fecha, eje Y = `valor`) con la línea de lo
+    habitual y los límites de desvío — `ResumenRutinaOut` da el resumen de texto, esto da la serie."""
+    clave: str  # "comida" | "sedentarismo"
+    periodo: str
+    unidad: str  # "hora" (minuto del día, `comida`) | "minutos" (duración, `sedentarismo`)
+    habitual: float | None  # mediana histórica — null si todavía no hay suficiente historial
+    limite_inferior: float | None  # null si el desvío de este indicador no mira "muy poco"
+    limite_superior: float | None
+    puntos: list[PuntoSerieRutinaOut]
 
 
 # --- CRUD de familiares/roles (routers/familiares.py, RF12) ------------------------------------

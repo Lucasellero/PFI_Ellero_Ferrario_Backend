@@ -40,6 +40,31 @@ DIAS_CONSECUTIVOS_GRID = (2, 3)
 SEPARAR_FINDE_GRID = (True, False)
 DIAS_CONSECUTIVOS_EXCESO_DEFICIT_GRID = (1, 2, 3)
 AUSENCIA_REQUIERE_RACHA_GRID = (False, True)
+# 2026-10-08: alternativa a `frac_historica_min` para decidir `ausencia` (ver "Actualización
+# 2026-10-08" en README.md) — un test de significancia binomial en vez de un umbral fijo de
+# fracción histórica. `frac_historica_min` no se barre en la rama binomial (no afecta a
+# `ausencia` ahí, solo a `ausencia_sostenida`) para no duplicar el costo del grid.
+AUSENCIA_ALPHA_GRID = (0.01, 0.02, 0.05)
+
+
+def _grid_configs():
+    """Genera los `ClassDeviationConfig` candidatos del barrido — unión del esquema original
+    (`ausencia_metodo="umbral"`, barre `frac_historica_min`) y el binomial (barre `ausencia_alpha`
+    en su lugar)."""
+    for excess_k in EXCESS_K_GRID:
+        for dias_cons in DIAS_CONSECUTIVOS_GRID:
+            for sep in SEPARAR_FINDE_GRID:
+                for ded in DIAS_CONSECUTIVOS_EXCESO_DEFICIT_GRID:
+                    for req in AUSENCIA_REQUIERE_RACHA_GRID:
+                        comunes = dict(
+                            excess_k=excess_k, dias_consecutivos_ausencia=dias_cons,
+                            separar_fin_de_semana=sep, dias_consecutivos_exceso_deficit=ded,
+                            ausencia_requiere_racha=req,
+                        )
+                        for frac in FRAC_HISTORICA_GRID:
+                            yield ClassDeviationConfig(frac_historica_min=frac, ausencia_metodo="umbral", **comunes)
+                        for alpha in AUSENCIA_ALPHA_GRID:
+                            yield ClassDeviationConfig(ausencia_metodo="binomial", ausencia_alpha=alpha, **comunes)
 
 
 def load_synthetic(out_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -119,6 +144,7 @@ def cross_validate(
     camera: bool = False,
     seed: int = 0,
     max_fp: float = 0.15,
+    metric: str = "combinado",
 ) -> tuple[pd.DataFrame, dict]:
     """K-fold por HOGAR (no por día — mismo criterio que `GroupKFold` por video en
     `vision/`/`fusion/`): en cada fold, la grilla de `ClassDeviationConfig` se elige mirando solo
@@ -127,7 +153,14 @@ def cross_validate(
     sobre los mismos datos. Al final se agrupan las predicciones de TODOS los folds de test
     (pooled, no promedio simple de tasas por fold — más robusto con folds de tamaño desigual) para
     un recall/FP "out-of-fold" único.
+
+    `metric`: "combinado" (default, multivariado OR detector por clase) o "por_clase" (ignora el
+    multivariado por completo — ver "Actualización 2026-10-08" en README.md: en modo sensor, 26%
+    del FP medido viene solo del multivariado, que aporta poco recall propio; esto mide si sacarlo
+    mejora el trade-off recall/FP out-of-fold). Sin efecto en modo cámara (nunca usa multivariado).
     """
+    if metric not in ("combinado", "por_clase"):
+        raise ValueError(f"metric tiene que ser 'combinado' o 'por_clase', no {metric!r}")
     homes = sorted(labels["hogar"].unique())
     rng = np.random.default_rng(seed)
     homes_shuffled = list(homes)
@@ -145,9 +178,10 @@ def cross_validate(
         scored_sub = scored_all[scored_all["hogar"].isin(labels_sub["hogar"].unique())]
         return evaluate_class_config(perturbed_sub, labels_sub, scored_sub, cfg, return_df=True)
 
-    recall_key = "camara_recall" if camera else "combinado_recall"
-    fp_key = "camara_fp_rate" if camera else "combinado_fp_rate"
-    hit_col = "hit" if camera else "es_desvio_combinado"
+    prefijo = "camara" if camera else metric
+    recall_key = f"{prefijo}_recall"
+    fp_key = f"{prefijo}_fp_rate"
+    hit_col = "hit" if camera else ("es_desvio_combinado" if metric == "combinado" else "es_desvio_clase")
 
     fold_rows = []
     pooled_frames = []
@@ -159,19 +193,9 @@ def cross_validate(
         train_perturbed = perturbed[perturbed.index.get_level_values("hogar").isin(train_homes)]
 
         grid_results = []
-        for frac in FRAC_HISTORICA_GRID:
-            for excess_k in EXCESS_K_GRID:
-                for dias_cons in DIAS_CONSECUTIVOS_GRID:
-                    for sep in SEPARAR_FINDE_GRID:
-                        for ded in DIAS_CONSECUTIVOS_EXCESO_DEFICIT_GRID:
-                            for req in AUSENCIA_REQUIERE_RACHA_GRID:
-                                cfg = ClassDeviationConfig(
-                                    frac_historica_min=frac, excess_k=excess_k, dias_consecutivos_ausencia=dias_cons,
-                                    separar_fin_de_semana=sep, dias_consecutivos_exceso_deficit=ded,
-                                    ausencia_requiere_racha=req,
-                                )
-                                r, _ = _eval(train_perturbed, train_labels, cfg)
-                                grid_results.append((r[fp_key], r[recall_key], cfg))
+        for cfg in _grid_configs():
+            r, _ = _eval(train_perturbed, train_labels, cfg)
+            grid_results.append((r[fp_key], r[recall_key], cfg))
 
         ok = [g for g in grid_results if g[0] <= max_fp]
         pool = ok if ok else grid_results
@@ -188,7 +212,9 @@ def cross_validate(
             {
                 "fold": i,
                 "n_test_homes": len(test_homes),
+                "ausencia_metodo": best_cfg.ausencia_metodo,
                 "frac_historica_min": best_cfg.frac_historica_min,
+                "ausencia_alpha": best_cfg.ausencia_alpha,
                 "excess_k": best_cfg.excess_k,
                 "dias_consecutivos_ausencia": best_cfg.dias_consecutivos_ausencia,
                 "separar_fin_de_semana": best_cfg.separar_fin_de_semana,
@@ -246,6 +272,12 @@ def main() -> None:
         default=0.15,
         help="FP máximo aceptable al elegir la mejor combinación (sesgo del proyecto: preferir menos FP sobre más recall)",
     )
+    ap.add_argument(
+        "--metric",
+        choices=("combinado", "por_clase"),
+        default="combinado",
+        help="solo con --cv, modo sensor: 'por_clase' ignora el multivariado (ver Actualización 2026-10-08 en README.md)",
+    )
     args = ap.parse_args()
 
     if not (args.dir / "day_vectors_perturbed.parquet").exists():
@@ -258,12 +290,14 @@ def main() -> None:
     if args.cv:
         modo = "CÁMARA" if args.camera else "SENSOR"
         print(f"Cross-validation por hogar, {args.cv} folds, modo {modo} ...")
-        fold_df, pooled = cross_validate(perturbed, labels, n_folds=args.cv, camera=args.camera, max_fp=args.max_fp)
+        fold_df, pooled = cross_validate(
+            perturbed, labels, n_folds=args.cv, camera=args.camera, max_fp=args.max_fp, metric=args.metric,
+        )
         pd.set_option("display.width", 200)
         print()
         print(fold_df.to_string(index=False))
         print("\nParámetros elegidos por fold (deberían ser parecidos si la calibración es estable):")
-        print(fold_df[["fold", "frac_historica_min", "excess_k", "dias_consecutivos_ausencia", "separar_fin_de_semana", "dias_consecutivos_exceso_deficit", "ausencia_requiere_racha"]].to_string(index=False))
+        print(fold_df[["fold", "ausencia_metodo", "frac_historica_min", "ausencia_alpha", "excess_k", "dias_consecutivos_ausencia", "separar_fin_de_semana", "dias_consecutivos_exceso_deficit", "ausencia_requiere_racha"]].to_string(index=False))
         print(f"\nOut-of-fold (pooled, todos los hogares evaluados solo con hogares que NO vieron sus parámetros):")
         print(f"  recall = {pooled['recall_out_of_fold']:.1%}   fp_rate = {pooled['fp_rate_out_of_fold']:.1%}")
         print(f"  n_pos = {pooled['n_pos']}   n_neg = {pooled['n_neg']}")

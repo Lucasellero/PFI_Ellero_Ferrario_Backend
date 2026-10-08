@@ -14,12 +14,13 @@ from ..auth import require_familiar_uid
 from ..db import get_db
 from ..models import Camara, Evento, Residente
 from ..permisos import hogar_autorizado
-from ..rutina import calcular_resumen_rutina
-from ..schemas import CamaraOut, EventoOut, ResidenteIn, ResumenRutinaOut, UbicacionIn
+from ..rutina import CLAVES_INDICADOR, calcular_resumen_rutina, calcular_serie_rutina
+from ..schemas import CamaraOut, EventoOut, ResidenteIn, ResumenRutinaOut, SerieRutinaOut, UbicacionIn
 
 router = APIRouter(prefix="/hogares", tags=["mobile"])
 
 _PERIODOS_VALIDOS = ("hoy", "semana", "mes")
+_INDICADORES_VALIDOS = CLAVES_INDICADOR
 
 # nombre provisorio que pone `POST /kits/vincular`; el residente lo reemplaza por "Casa de Rosa"
 NOMBRE_HOGAR_PROVISORIO = "Mi hogar"
@@ -75,6 +76,29 @@ def resumen_rutina(
         return {"periodo": periodo, "indicadores": []}
     eventos_orm = db.query(Evento).filter(Evento.residente_id == residente.id).all()
     return calcular_resumen_rutina(eventos_orm, periodo)
+
+
+@router.get("/{hogar_id}/rutina/serie", response_model=SerieRutinaOut)
+def serie_rutina(
+    hogar_id: int, indicador: str, periodo: str = "mes",
+    uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
+) -> dict:
+    """Mismo indicador que `GET /rutina`, pero un punto por día del período en vez de un
+    resumen de texto — para el gráfico de la pantalla Reportes (eje X = día, eje Y = valor, con
+    la línea de lo habitual y los límites de desvío). Ver `rutina.calcular_serie_rutina`."""
+    if periodo not in _PERIODOS_VALIDOS:
+        raise HTTPException(status_code=422, detail=f"periodo tiene que ser uno de {_PERIODOS_VALIDOS}.")
+    if indicador not in _INDICADORES_VALIDOS:
+        raise HTTPException(status_code=422, detail=f"indicador tiene que ser uno de {_INDICADORES_VALIDOS}.")
+    hogar_autorizado(hogar_id, uid, db)
+    residente = db.query(Residente).filter(Residente.hogar_id == hogar_id).first()
+    if residente is None:
+        return {
+            "clave": indicador, "periodo": periodo, "unidad": "hora" if indicador == "comida" else "minutos",
+            "habitual": None, "limite_inferior": None, "limite_superior": None, "puntos": [],
+        }
+    eventos_orm = db.query(Evento).filter(Evento.residente_id == residente.id).all()
+    return calcular_serie_rutina(eventos_orm, indicador, periodo)
 
 
 @router.post("/{hogar_id}/eventos/{evento_id}/resolver", status_code=204)

@@ -43,6 +43,22 @@ dataset_events/labeled/
 dataset_events/events/*.jsonl
 dataset_events/events/*.parquet
 dataset_events/*.db
+# Zip portable de events/ (útil como snapshot a mano, ej. para el smoke test de
+# cloud/app/rutina.py), mismo criterio que lo de arriba: se regenera, no se versiona.
+dataset_events/events.zip
+
+# frames/{cam_id}.jpg: preview en vivo que escribe runner/camera_worker.py por cada cámara
+# mientras corre — no es contenido, se pisa solo en cada corrida. Las capturas de abajo son
+# imágenes de demo elegidas a mano para el informe/mockups, sí se versionan.
+frames/*.jpg
+!frames/CAIDA_1.jpg
+!frames/CAIDA_2.jpg
+!frames/CAMINAR.jpg
+!frames/COCINANDO.jpg
+!frames/COMIENDO.jpg
+!frames/DESCANSANDO.jpg
+!frames/TOMANDO_AGUA.jpg
+!frames/webcam.jpg
 
 # Cache de features derivado del dataset (se regenera con evaluate_posture.py)
 vision/posture_features.csv

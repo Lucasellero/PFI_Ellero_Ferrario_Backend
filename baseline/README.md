@@ -513,6 +513,55 @@ de CASAS mal etiquetados como negativos** — repetir el diagnóstico manual sob
 grande de los 48 casos, revisando a mano (o cruzando contra otra fuente, si existiera) si esos días
 fueron realmente atípicos para esa persona.
 
+### Actualización 2026-10-08 — diagnóstico escalado a TODOS los FP (no 48 a mano), y un hallazgo nuevo
+
+Automaticé el criterio del diagnóstico manual del punto anterior (`diagnose_fp_manual.py`, nuevo:
+para cada día `real_sin_tocar` marcado como desvío, cuenta cuántas clases distintas de
+`TRACKED_CLASSES`/`CAMERA_TRACKED_CLASSES` dispararon ese mismo día) y lo corrí sobre **todos**
+los FP del set de 80 hogares (no una muestra de 48), con la config de mayoría de folds:
+
+| Modo | Días negativos | FP | 2+ clases el mismo día (hipótesis: desvío real mal muestreado) | 1 sola clase (ruido esperable) | Solo multivariado (ninguna clase individual disparó) |
+|---|---|---|---|---|---|
+| Sensor | 420 | 53 (12.6%) | 5 (9.4%) | 34 (64.2%) | 14 (26.4%) |
+| Cámara | 420 | 63 (15.0%) | 7 (11.1%) | 56 (88.9%) | 0 (0.0%) |
+
+**Lectura del primer hallazgo** (confirma y acota el punto 2 de la sección anterior): el caso real
+de `hh117` que motivó la hipótesis no era único — aparecen 4-6 más con el mismo patrón (2+ clases
+disparando el mismo día, ver `synthetic_eval/fp_manual_sensor.csv` para el detalle). Pero es una
+fracción chica (9-11% de los FP, no "una fracción grande" como se esperaba) — **"perdonar" estos
+casos bajaría el FP de 12.6% a ~11.4% en modo sensor, una mejora real pero menor, no la que
+resolvería el problema de fondo.** La mayoría del FP (64-89%) sigue siendo ruido genuino de clases
+casi-diarias, como ya se había diagnosticado.
+
+**Hallazgo nuevo, no visto en el diagnóstico de 48 casos**: en modo sensor, **26.4% del FP viene
+exclusivamente del detector multivariado** — ningún detector por clase individual disparó ese día,
+solo `dynamic_clustering.py`. Esto no aparece en modo cámara (0%) porque ahí el multivariado ni se
+corre (ver "Diseño" arriba, `evaluate_camera` no lo usa). Siguiente candidato más prometedor que
+seguir ajustando `class_deviations.py` (ya se agotaron 4 variaciones, ver arriba): medir con
+cross-validation si sacar el multivariado del `combinado` (o solo subirle `threshold_z`) en modo
+sensor mejora el trade-off recall/FP — la tabla de la sección "Cross-validation por hogar" ya
+sugiere que el multivariado aporta poco recall propio (12.3% solo, contra 72.6% del detector por
+clase) a cambio de FP propio no despreciable.
+
+**Medido (2026-10-08, `evaluate_deviations.py --cv 5 --metric por_clase`): la hipótesis NO se
+sostiene.** Sacar el multivariado del combinado empeoró las dos métricas out-of-fold, no solo una:
+
+| | Combinado (actual) | Solo por clase (sin multivariado) |
+|---|---|---|
+| Recall | 72.8% | 71.4% (−1.4pp) |
+| FP | 13.1% | **16.1% (+3.0pp, peor)** |
+
+Contraintuitivo: el multivariado aporta casi nada de recall propio, pero sacarlo también *empeoró*
+el FP. Explicación más probable: no es que el multivariado agregue ruido que haya que filtrar —
+al elegir `ClassDeviationConfig` sin mirarlo, el barrido por fold eligió configuraciones más
+sueltas (`excess_k=2.5` en 2 de 5 folds, contra `3.0` en la mayoría de folds del combinado) que
+ajustan mejor en entrenamiento pero generalizan peor. El multivariado funciona como un ancla que
+empuja a elegir una calibración del detector por clase más conservadora, aunque su propio aporte
+directo de recall/FP sea chico. **Conclusión: no tocar el combinado — van 4 variaciones de
+calibración probadas con evidencia (semana/finde, persistencia en exceso/deficit, persistencia en
+ausencia, sacar el multivariado) y solo una ayudó un poco.** El próximo candidato real es el
+ajuste estadístico de "qué tan raro es raro" (ver abajo), no otra variación sobre qué se combina.
+
 ## Patrones identificados pero no priorizados (quedan documentados para no perderlos)
 
 - **Secuencia/orden de la rutina** (ej. medicación sin haber desayunado antes) — el más complejo
@@ -532,17 +581,31 @@ Orden recomendado, de mayor a menor impacto — cada uno referencia el detalle e
    cross-validation, **los 10 folds la descartaron** — pierde más recall del que ahorra en FP). El
    FP bajó de ~14-15% a ~13-14%, mejora real pero chica — cuatro variaciones del mismo esquema
    (mediana+MAD por clase) ya se agotaron.
-   - **Siguiente candidato, con evidencia a favor** (ver diagnóstico manual en "Actualización
-     2026-09-20 (3)"): al menos 1 de los 48 casos de FP revisados a mano no parece ruido — parecen
-     3 clases distintas marcando el mismo desvío real el mismo día, en un día que se sampleó como
-     "negativo" sin verificar que fuera realmente normal. Repetir ese diagnóstico manual sobre una
-     muestra más grande de los 48 casos (o sobre el set completo) para estimar qué fracción del FP
-     medido es en realidad este efecto — si es una fracción grande, el número real de FP del
-     sistema es mejor de lo que dice esta sección, y el problema pasa a ser de metodología de
-     validación (necesitamos negativos verificados), no del detector.
-   - Si el diagnóstico no explica la mayoría del FP: el límite está en el diseño mismo
-     (mediana+MAD por clase, sin ningún modelo de "qué tan raro es raro" más sofisticado) — ahí
-     recién valdría la pena una arquitectura distinta, no otro parámetro más.
+   - ~~Repetir el diagnóstico manual sobre una muestra más grande (o el set completo)~~ — **hecho
+     2026-10-08** (`diagnose_fp_manual.py`, ver "Actualización 2026-10-08"): el efecto es real pero
+     chico (9-11% del FP, no "una fracción grande") — "perdonar" esos días bajaría el FP de 12.6% a
+     ~11.4% en modo sensor, no resuelve el problema de fondo. El límite sigue estando en el diseño
+     del detector por clase (mediana+MAD), como se sospechaba.
+   - ~~Sacar el multivariado del `combinado` en modo sensor~~ — **medido 2026-10-08, NO ayudó**
+     (ver "Actualización 2026-10-08"): empeoró recall (−1.4pp) Y FP (+3.0pp) out-of-fold. El
+     multivariado aporta poco recall propio pero ancla a una calibración del detector por clase más
+     conservadora — sacarlo deja elegir parámetros más sueltos que generalizan peor. Van 4
+     variaciones de calibración probadas con evidencia, solo 1 ayudó un poco.
+   - ~~**Candidato siguiente**: test de significancia binomial para `ausencia`~~ — **medido
+     2026-10-08, NO ayudó** (`ausencia_metodo="binomial"` en `ClassDeviationConfig`, sumado al
+     barrido de `evaluate_deviations.py --cv 5`). Out-of-fold: **71.0% recall / 14.2% FP**, peor
+     que el 72.8%/13.1% actual en las dos métricas. Causa: 4 de 5 folds eligieron `alpha=0.05` (el
+     punto más suelto del barrido de alpha, ya se veía flojo en una prueba rápida previa:
+     77.7%/14.8%) — mismo patrón que el experimento del multivariado: lo que el barrido elige
+     mirando solo entrenamiento no siempre generaliza. **El umbral actual (`frac_historica_min`)
+     queda sin cambios**, es mejor que la alternativa medida. El código de `ausencia_metodo` queda
+     implementado y documentado (`src/class_deviations.py`) por si alguien quiere retomar la idea
+     con otra variante (ej. acotar el barrido de `alpha` a valores más estrictos, `0.01-0.02`, que
+     en la prueba rápida sin cross-validation se veían mejor — no se probó así con CV todavía).
+     Van 5 variaciones de calibración probadas con evidencia en este módulo (semana/finde,
+     persistencia en exceso/deficit, persistencia en ausencia, sacar el multivariado, binomial),
+     solo 1 ayudó (un poco). El FP real del sistema parece estar cerca de su piso con este esquema
+     de detector — una mejora grande necesitaría repensar el diseño, no otro parámetro.
 2. **Subir la clasificación de actividad de `vlm/`/`fusion/` a las 9 clases que `baseline/` ya
    espera** (hoy la cámara solo da 4-6) — es el trabajo que deja este módulo con más margen de
    mejora real, más que seguir afinando `baseline/` en el vacío contra CASAS. Dos piezas, ambas ya
