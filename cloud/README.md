@@ -27,7 +27,7 @@ runner/cloud_sync.py (Pi) ──POST /devices/events──► cloud/ (FastAPI)
                                                    Evento (Postgres/RDS)
                                                           │
                                                           ▼
-                                    run_baseline_daily.py (cron/EventBridge, 1x/día)
+                                    app/linea_base_diaria.py (thread de la API, 03:00 ART)
                                        reusa baseline/src/ (ver baseline_runner.py)
                                                           │
                                                           ▼
@@ -149,8 +149,14 @@ py run_baseline_daily.py                              # ayer, todos los hogares
 py run_baseline_daily.py --date 2026-09-20 --hogar-id 1
 ```
 
-Pensado para cron/AWS EventBridge (1 vez al día) — mismo criterio que `baseline/run_live.py`:
-nunca evalúa el día en curso, es idempotente (no duplica un desvío ya emitido).
+En producción **la corre la propia API** (`app/linea_base_diaria.py`, 2026-10-09): un thread que
+arranca con uvicorn y todos los días a las 03:00 de Argentina (UTC-3 fijo, no la zona del
+contenedor) evalúa el día anterior de cada hogar. Antes no la corría nada en AWS (sin EventBridge,
+Lambdas ni cron, confirmado en la consola). Con Postgres toma `pg_try_advisory_lock` para que, si
+hay más de una instancia, no corra dos veces a la vez. Se desactiva con
+`LINEA_BASE_DIARIA_DESACTIVADA=1` (tests, desarrollo local). Este CLI queda para correr un día
+puntual a mano (backfill/debug). Mismo criterio que `baseline/run_live.py`: nunca evalúa el día en
+curso, es idempotente (no duplica un desvío ya emitido).
 
 ## Migraciones (Alembic)
 

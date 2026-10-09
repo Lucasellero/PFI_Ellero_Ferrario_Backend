@@ -1,5 +1,5 @@
-"""CLI para correr `app.baseline_runner` — pensado para cron/AWS EventBridge en producción,
-mismo criterio que `baseline/run_live.py` del lado local (ver su docstring): evalúa **un día
+"""CLI para correr `app.baseline_runner` a mano (backfill/debug). En producción la corre la propia
+API una vez por día (`app/linea_base_diaria.py`). Mismo criterio que `baseline/run_live.py` del lado local (ver su docstring): evalúa **un día
 completo por vez**, por default el de ayer, nunca el día en curso.
 
 Uso:
