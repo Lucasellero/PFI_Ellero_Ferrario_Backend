@@ -16,10 +16,10 @@ from ..models import Camara, Evento, Kit
 from ..notifications import enviar_push_alerta
 from ..schemas import CamaraIn, CamaraOut, MonitoringEvent
 
-router = APIRouter(prefix="/devices", tags=["devices"])
+router = APIRouter(prefix="/devices")
 
 
-@router.post("/events", status_code=201)
+@router.post("/events", tags=["Controladora"], summary="Enviar eventos detectados", status_code=201)
 def ingest_events(
     eventos: list[MonitoringEvent],
     kit: Kit = Depends(require_kit_by_api_key),
@@ -82,7 +82,7 @@ def ingest_events(
     return {"insertados": insertados}
 
 
-@router.post("/camaras", response_model=CamaraOut, status_code=201)
+@router.post("/camaras", tags=["Controladora"], summary="Registrar una cámara del kit", response_model=CamaraOut, status_code=201)
 def registrar_camara(
     camara_in: CamaraIn,
     kit: Kit = Depends(require_kit_by_api_key),

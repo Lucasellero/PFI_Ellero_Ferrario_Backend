@@ -16,7 +16,7 @@ from ..models import ROL_RESPONSABLE_PRINCIPAL, ROLES, Familiar, HogarFamiliar
 from ..permisos import hogar_autorizado
 from ..schemas import CambiarRolIn, FamiliarVinculadoOut, InvitarFamiliarIn
 
-router = APIRouter(prefix="/hogares", tags=["mobile"])
+router = APIRouter(prefix="/hogares")
 
 
 def _out(vinculo: HogarFamiliar) -> FamiliarVinculadoOut:
@@ -44,7 +44,7 @@ def _es_unico_responsable(db: Session, hogar_id: int, familiar_id: int) -> bool:
     return otros == 0
 
 
-@router.get("/{hogar_id}/familiares", response_model=list[FamiliarVinculadoOut])
+@router.get("/{hogar_id}/familiares", tags=["Familiares"], summary="Listar los familiares del hogar", response_model=list[FamiliarVinculadoOut])
 def listar_familiares(
     hogar_id: int, uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
 ) -> list[FamiliarVinculadoOut]:
@@ -54,7 +54,7 @@ def listar_familiares(
     return [_out(v) for v in vinculos]
 
 
-@router.post("/{hogar_id}/familiares", response_model=FamiliarVinculadoOut, status_code=201)
+@router.post("/{hogar_id}/familiares", tags=["Familiares"], summary="Invitar a un familiar", response_model=FamiliarVinculadoOut, status_code=201)
 def invitar_familiar(
     hogar_id: int, datos: InvitarFamiliarIn,
     uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
@@ -104,7 +104,7 @@ def invitar_familiar(
     return _out(vinculo)
 
 
-@router.patch("/{hogar_id}/familiares/{familiar_id}", response_model=FamiliarVinculadoOut)
+@router.patch("/{hogar_id}/familiares/{familiar_id}", tags=["Familiares"], summary="Cambiar el rol de un familiar", response_model=FamiliarVinculadoOut)
 def cambiar_rol(
     hogar_id: int, familiar_id: int, datos: CambiarRolIn,
     uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
@@ -135,7 +135,7 @@ def cambiar_rol(
     return _out(vinculo)
 
 
-@router.delete("/{hogar_id}/familiares/{familiar_id}", status_code=204)
+@router.delete("/{hogar_id}/familiares/{familiar_id}", tags=["Familiares"], summary="Desvincular a un familiar", status_code=204)
 def quitar_familiar(
     hogar_id: int, familiar_id: int,
     uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),

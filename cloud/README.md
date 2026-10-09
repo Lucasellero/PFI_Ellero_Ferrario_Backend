@@ -91,6 +91,10 @@ Dos esquemas separados (`app/auth.py`):
 
 ## Endpoints de la app móvil
 
+Documentación interactiva (Swagger) en `/docs`, agrupada por función (Controladora, Cuenta,
+Vinculación, Hogar, Eventos, Rutina, Familiares). Los grupos, descripciones y candados se definen
+en `main.py` y en cada `@router` (`tags`, `summary`); son solo metadatos de OpenAPI.
+
 | Endpoint | Qué hace |
 |---|---|
 | `GET /me` | Perfil del familiar logueado + sus hogares (`rol`, `residente`). **404** si la cuenta de Firebase todavía no tiene `Familiar` → la app llama a `POST /me`. |

@@ -17,7 +17,7 @@ from ..permisos import hogar_autorizado
 from ..rutina import CLAVES_INDICADOR, calcular_resumen_rutina, calcular_serie_rutina
 from ..schemas import CamaraOut, EventoOut, ResidenteIn, ResumenRutinaOut, SerieRutinaOut, UbicacionIn
 
-router = APIRouter(prefix="/hogares", tags=["mobile"])
+router = APIRouter(prefix="/hogares")
 
 _PERIODOS_VALIDOS = ("hoy", "semana", "mes")
 _INDICADORES_VALIDOS = CLAVES_INDICADOR
@@ -26,7 +26,7 @@ _INDICADORES_VALIDOS = CLAVES_INDICADOR
 NOMBRE_HOGAR_PROVISORIO = "Mi hogar"
 
 
-@router.get("/{hogar_id}/eventos", response_model=list[EventoOut])
+@router.get("/{hogar_id}/eventos", tags=["Eventos"], summary="Listar los eventos del hogar, con filtros", response_model=list[EventoOut])
 def listar_eventos(
     hogar_id: int, limit: int = 50,
     tipo: str | None = None, desde: datetime | None = None, hasta: datetime | None = None,
@@ -46,7 +46,7 @@ def listar_eventos(
     return [EventoOut.from_orm_evento(e) for e in eventos]
 
 
-@router.get("/{hogar_id}/alertas", response_model=list[EventoOut])
+@router.get("/{hogar_id}/alertas", tags=["Eventos"], summary="Listar las alertas del hogar", response_model=list[EventoOut])
 def listar_alertas(
     hogar_id: int, limit: int = 50,
     uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
@@ -60,7 +60,7 @@ def listar_alertas(
     return [EventoOut.from_orm_evento(e) for e in eventos]
 
 
-@router.get("/{hogar_id}/rutina", response_model=ResumenRutinaOut)
+@router.get("/{hogar_id}/rutina", tags=["Rutina"], summary="Resumen de la rutina frente a lo habitual", response_model=ResumenRutinaOut)
 def resumen_rutina(
     hogar_id: int, periodo: str = "semana",
     uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
@@ -78,7 +78,7 @@ def resumen_rutina(
     return calcular_resumen_rutina(eventos_orm, periodo)
 
 
-@router.get("/{hogar_id}/rutina/serie", response_model=SerieRutinaOut)
+@router.get("/{hogar_id}/rutina/serie", tags=["Rutina"], summary="Evolución diaria de un indicador de rutina", response_model=SerieRutinaOut)
 def serie_rutina(
     hogar_id: int, indicador: str, periodo: str = "mes",
     uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
@@ -101,7 +101,7 @@ def serie_rutina(
     return calcular_serie_rutina(eventos_orm, indicador, periodo)
 
 
-@router.post("/{hogar_id}/eventos/{evento_id}/resolver", status_code=204)
+@router.post("/{hogar_id}/eventos/{evento_id}/resolver", tags=["Eventos"], summary="Marcar una alerta como resuelta", status_code=204)
 def resolver_evento(
     hogar_id: int, evento_id: int,
     uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
@@ -124,7 +124,7 @@ def resolver_evento(
     return Response(status_code=204)
 
 
-@router.get("/{hogar_id}/camaras", response_model=list[CamaraOut])
+@router.get("/{hogar_id}/camaras", tags=["Hogar"], summary="Listar las cámaras del hogar", response_model=list[CamaraOut])
 def listar_camaras(
     hogar_id: int, uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
 ) -> list[Camara]:
@@ -132,7 +132,7 @@ def listar_camaras(
     return db.query(Camara).filter(Camara.hogar_id == hogar_id).order_by(Camara.id).all()
 
 
-@router.patch("/{hogar_id}/camaras/{camara_id}", response_model=CamaraOut)
+@router.patch("/{hogar_id}/camaras/{camara_id}", tags=["Hogar"], summary="Cambiar la ubicación de una cámara", response_model=CamaraOut)
 def actualizar_camara(
     hogar_id: int, camara_id: int, cambios: UbicacionIn,
     uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
@@ -158,7 +158,7 @@ def actualizar_camara(
     return camara
 
 
-@router.put("/{hogar_id}/residente", status_code=204)
+@router.put("/{hogar_id}/residente", tags=["Hogar"], summary="Cargar o editar los datos del residente", status_code=204)
 def guardar_residente(
     hogar_id: int, datos: ResidenteIn,
     uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),

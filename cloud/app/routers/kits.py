@@ -22,7 +22,7 @@ from ..permisos import familiar_de
 from ..schemas import CamaraOut, KitVinculadoOut, VincularKitIn
 from .mobile import NOMBRE_HOGAR_PROVISORIO
 
-router = APIRouter(prefix="/kits", tags=["mobile"])
+router = APIRouter(prefix="/kits")
 
 MAX_INTENTOS_FALLIDOS = 5
 VENTANA_INTENTOS_S = 15 * 60
@@ -44,7 +44,7 @@ def _respuesta(kit: Kit) -> KitVinculadoOut:
     )
 
 
-@router.post("/vincular", response_model=KitVinculadoOut)
+@router.post("/vincular", tags=["Vinculación"], summary="Vincular un kit con el código QR", response_model=KitVinculadoOut)
 def vincular_kit(
     datos: VincularKitIn, uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
 ) -> KitVinculadoOut:

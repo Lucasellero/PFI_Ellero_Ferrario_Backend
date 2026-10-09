@@ -18,7 +18,7 @@ from ..schemas import (
     FamiliarOut, HogarPerfilOut, KitResumenOut, PerfilIn, PerfilOut, PushTokenIn, ResidenteOut,
 )
 
-router = APIRouter(prefix="/me", tags=["mobile"])
+router = APIRouter(prefix="/me")
 
 
 def _perfil(familiar: Familiar) -> PerfilOut:
@@ -37,7 +37,7 @@ def _perfil(familiar: Familiar) -> PerfilOut:
     )
 
 
-@router.get("", response_model=PerfilOut)
+@router.get("", tags=["Cuenta"], summary="Ver el perfil y los hogares del familiar", response_model=PerfilOut)
 def obtener_perfil(uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db)) -> PerfilOut:
     familiar = db.query(Familiar).filter(Familiar.firebase_uid == uid).first()
     if familiar is None:
@@ -45,7 +45,7 @@ def obtener_perfil(uid: str = Depends(require_familiar_uid), db: Session = Depen
     return _perfil(familiar)
 
 
-@router.post("", response_model=PerfilOut)
+@router.post("", tags=["Cuenta"], summary="Crear el perfil del familiar", response_model=PerfilOut)
 def crear_perfil(
     datos: PerfilIn, claims: dict = Depends(require_firebase_token), db: Session = Depends(get_db),
 ) -> PerfilOut:
@@ -64,7 +64,7 @@ def crear_perfil(
     return _perfil(familiar)
 
 
-@router.post("/push-token", status_code=204)
+@router.post("/push-token", tags=["Cuenta"], summary="Guardar el token de notificaciones del celular", status_code=204)
 def registrar_push_token(
     datos: PushTokenIn, uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
 ) -> Response:
