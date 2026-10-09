@@ -19,6 +19,12 @@ que `vlm/`/`fusion/` emiten hoy (6 categorías finas, sin zona de mesa ni detect
 roadmap. `Moving` no tiene análogo en `COARSE` (es camera-only, ver nota en `activity_map.py`) y
 se agrega acá como clase extra `moverse`.
 
+Zona horaria (`tz`, 2026-10-09): la fecha y el minuto del día de cada evento salen de
+`wall_clock_ts` (epoch UTC) convertido a hora local. Sin `tz`, se usa la zona de la máquina
+(`datetime.fromtimestamp`), que es lo correcto en la Pi (está en la casa del residente). En la
+nube el contenedor corre en UTC, así que `cloud/` pasa `tz` explícito (Argentina): si no, una
+toma de las 22:00 caía a la 01:00 del día siguiente y los días cortaban a las 21:00.
+
 Hogar: v1 usa el `video_id` (id de cámara) directamente como clave de hogar — el alcance actual
 del proyecto es una sola cámara por hogar (ver README raíz), así que no hace falta un concepto de
 "hogar" separado todavía.
@@ -26,7 +32,7 @@ del proyecto es una sola cámara por hogar (ver README raíz), así que no hace 
 from __future__ import annotations
 
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, tzinfo
 from pathlib import Path
 
 import pandas as pd
@@ -76,6 +82,14 @@ DEFAULT_MAX_GAP_S = 120.0
 CAMERA_COBERTURA_MIN_HORAS = 1.0
 
 
+def _hora_local(ts: float, tz: tzinfo | None) -> datetime:
+    """Hora local *naive* del epoch `ts`: en `tz` si se pasa, si no en la zona de la máquina
+    (ver "Zona horaria" en el docstring del módulo)."""
+    if tz is None:
+        return datetime.fromtimestamp(ts)
+    return datetime.fromtimestamp(ts, tz).replace(tzinfo=None)
+
+
 def _is_valid(event: MonitoringEvent) -> tuple[str, str] | None:
     """Devuelve (clase_cam, activity_label) si el evento es una actividad utilizable, si no None."""
     if event.event_type != EventType.ACTIVITY:
@@ -96,6 +110,7 @@ def build_day_vectors_from_events(
     hogar: str,
     max_gap_s: float = DEFAULT_MAX_GAP_S,
     cobertura_min_horas: float = CAMERA_COBERTURA_MIN_HORAS,
+    tz: tzinfo | None = None,
 ) -> pd.DataFrame:
     """Arma el vector-día (mismo contrato que `features.build_day_vectors`) a partir de eventos
     `ACTIVITY` reales, reconstruyendo duración por los gaps entre eventos consecutivos (ver
@@ -117,7 +132,7 @@ def build_day_vectors_from_events(
 
     for i, (event, (clase, _)) in enumerate(usable):
         ts = event.wall_clock_ts
-        fecha = datetime.fromtimestamp(ts).date()
+        fecha = _hora_local(ts, tz).date()
         if not event.metadata.get("ongoing", False):
             _bump(fecha, clase, 0.0, es_ocurrencia=True)
 
@@ -151,7 +166,9 @@ def build_day_vectors_from_events(
     return out
 
 
-def build_events_df_from_events(events: list[MonitoringEvent], hogar: str) -> pd.DataFrame:
+def build_events_df_from_events(
+    events: list[MonitoringEvent], hogar: str, tz: tzinfo | None = None,
+) -> pd.DataFrame:
     """Un registro por ocurrencia real (no heartbeat) de actividad, con columnas
     `hogar`/`actividad`/`inicio`/`fecha`/`minuto_del_dia` — formato que espera
     `timing_deviations.score_timing_deviations`. `actividad` lleva el prefijo `cam_` (ej.
@@ -164,7 +181,7 @@ def build_events_df_from_events(events: list[MonitoringEvent], hogar: str) -> pd
         if valid is None or event.metadata.get("ongoing", False):
             continue
         clase, _ = valid
-        inicio = datetime.fromtimestamp(event.wall_clock_ts)
+        inicio = _hora_local(event.wall_clock_ts, tz)
         rows.append(
             {
                 "hogar": hogar,

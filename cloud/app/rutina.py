@@ -73,6 +73,7 @@ if str(_EVENTS_DIR) not in sys.path:
 
 from schema import EventType, MonitoringEvent  # noqa: E402  (de events/)
 
+from .horario import ZONA_ARGENTINA, hoy_argentina  # noqa: E402
 from .models import Evento  # noqa: E402
 
 # mismas constantes/convención que baseline/src/class_deviations.py y timing_deviations.py
@@ -277,12 +278,12 @@ def calcular_serie_rutina(eventos_orm: list[Evento], clave: str, periodo: str) -
     """Mismo cálculo que `calcular_resumen_rutina`, pero devuelve un punto por día del período
     en vez de un solo valor agregado — para graficar (eje X = día, eje Y = valor) con la línea de
     lo habitual y los límites de desvío. `clave`: una de `CLAVES_INDICADOR`."""
-    hoy = datetime.now(timezone.utc).date()
+    hoy = hoy_argentina()
     inicio, fin = _dias_periodo(periodo, hoy)
 
     eventos = [_evento_a_monitoring_event(e) for e in eventos_orm if e.event_type == EventType.ACTIVITY.value]
-    day_vectors = build_day_vectors_from_events(eventos, hogar="hogar")
-    events_df = build_events_df_from_events(eventos, hogar="hogar")
+    day_vectors = build_day_vectors_from_events(eventos, hogar="hogar", tz=ZONA_ARGENTINA)
+    events_df = build_events_df_from_events(eventos, hogar="hogar", tz=ZONA_ARGENTINA)
 
     if clave == "comida":
         resultado = _serie_comida(events_df, inicio, fin)
@@ -303,12 +304,12 @@ def calcular_resumen_rutina(eventos_orm: list[Evento], periodo: str) -> dict:
     """`periodo`: "hoy" | "semana" | "mes". Devuelve `{"periodo", "indicadores"}` — lista vacía
     si el residente todavía no tiene suficiente historial (hogar recién vinculado) o ninguno de
     los indicadores tiene datos del período pedido."""
-    hoy = datetime.now(timezone.utc).date()
+    hoy = hoy_argentina()
     inicio, fin = _dias_periodo(periodo, hoy)
 
     eventos = [_evento_a_monitoring_event(e) for e in eventos_orm if e.event_type == EventType.ACTIVITY.value]
-    day_vectors = build_day_vectors_from_events(eventos, hogar="hogar")
-    events_df = build_events_df_from_events(eventos, hogar="hogar")
+    day_vectors = build_day_vectors_from_events(eventos, hogar="hogar", tz=ZONA_ARGENTINA)
+    events_df = build_events_df_from_events(eventos, hogar="hogar", tz=ZONA_ARGENTINA)
 
     indicadores = [
         ind for ind in (

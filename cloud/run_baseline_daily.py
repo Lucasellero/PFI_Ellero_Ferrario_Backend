@@ -13,6 +13,7 @@ from datetime import date, timedelta
 
 from app.db import SessionLocal
 from app.baseline_runner import process_hogar
+from app.horario import hoy_argentina
 from app.models import Hogar
 
 
@@ -22,7 +23,7 @@ def main() -> None:
     parser.add_argument("--hogar-id", type=int, default=None, help="Solo este hogar. Default: todos.")
     args = parser.parse_args()
 
-    target_date = date.fromisoformat(args.date) if args.date else date.today() - timedelta(days=1)
+    target_date = date.fromisoformat(args.date) if args.date else hoy_argentina() - timedelta(days=1)
 
     db = SessionLocal()
     try:

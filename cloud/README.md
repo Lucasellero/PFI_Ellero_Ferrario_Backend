@@ -158,6 +158,17 @@ hay más de una instancia, no corra dos veces a la vez. Se desactiva con
 puntual a mano (backfill/debug). Mismo criterio que `baseline/run_live.py`: nunca evalúa el día en
 curso, es idempotente (no duplica un desvío ya emitido).
 
+## Zona horaria (días y horas del residente)
+
+El contenedor corre en UTC, pero "hoy", la hora de la primera comida y dónde corta cada día son
+los del residente. Todo lo que agrupa eventos por día u hora usa `app/horario.py`
+(`ZONA_ARGENTINA`, UTC-3 fijo; `hoy_argentina()`), que se le pasa a `camera_events` como `tz`.
+**Bug corregido el 2026-10-09** (deploy v6): antes se usaba la zona de la máquina, así que en AWS
+una toma de las 22:00 contaba como "primera comida" a la 01:00 del día siguiente y los días
+cortaban a las 21:00 de Argentina. Se vio al cargar 60 días de CASAS (`hh113`) en una cuenta de
+prueba: "primera comida" habitual 01:02–01:35 → con el arreglo, 08:00–10:34. En la Pi (`tz`
+sin pasar) el comportamiento no cambia: usa la hora local de la máquina, que ya es la del hogar.
+
 ## Migraciones (Alembic)
 
 `alembic/env.py` lee `DATABASE_URL` del entorno (mismo que usa `app/db.py`) y los modelos de

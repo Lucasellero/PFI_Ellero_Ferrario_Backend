@@ -28,11 +28,11 @@ from sqlalchemy import text
 
 from .baseline_runner import process_hogar
 from .db import SessionLocal, engine
+from .horario import ZONA_ARGENTINA
 from .models import Hogar
 
 logger = logging.getLogger(__name__)
 
-ZONA_ARGENTINA = timezone(timedelta(hours=-3), "ART")
 HORA_EJECUCION = time(3, 0)
 # Número arbitrario que identifica este candado entre todos los advisory locks de la base.
 CLAVE_CANDADO = 715_202_610

@@ -39,6 +39,7 @@ if str(_EVENTS_DIR) not in sys.path:
 from schema import EventType, MonitoringEvent  # noqa: E402  (de events/)
 
 from .alertas import es_alerta as _es_alerta
+from .horario import ZONA_ARGENTINA
 from .models import Evento, Hogar
 from .notifications import enviar_push_alerta
 
@@ -96,7 +97,7 @@ def process_hogar(db: Session, hogar: Hogar, target_date: date) -> None:
     )
     eventos = [_evento_to_monitoring_event(e) for e in eventos_orm]
 
-    day_vectors = build_day_vectors_from_events(eventos, hogar=str(hogar.id))
+    day_vectors = build_day_vectors_from_events(eventos, hogar=str(hogar.id), tz=ZONA_ARGENTINA)
     if day_vectors.empty or target_date not in day_vectors.index.get_level_values("fecha"):
         return  # sin cobertura ese día (o sin historial todavía) — nada para evaluar
 
@@ -129,7 +130,7 @@ def process_hogar(db: Session, hogar: Hogar, target_date: date) -> None:
                 },
             )
 
-    events_df = build_events_df_from_events(eventos, hogar=str(hogar.id))
+    events_df = build_events_df_from_events(eventos, hogar=str(hogar.id), tz=ZONA_ARGENTINA)
     if not events_df.empty:
         timing = score_timing_deviations(events_df, tracked_classes=tracked, config=TimingConfig())
         if not timing.empty:
