@@ -136,12 +136,25 @@ def _es_desvio_duracion(valor: float, mediana_hist: float, sigma: float, direcci
     return valor < mediana_hist - _EXCESO_K * sigma  # "deficit"
 
 
-def _indicador_duracion(day_vectors, inicio: date, fin: date, periodo: str, clave: str) -> dict | None:
+def _totales_por_dia(day_vectors, clave: str):
+    """Minutos por día de las clases del indicador, o None si la cámara nunca vio ninguna en todo
+    el historial: en ese caso un "0 min, habitual 0 min, ok" sería engañoso (no es que la persona
+    no lo haga, es que no hay datos — ej. un hogar recién instalado, o la carga de CASAS de la
+    cuenta demo, que no tiene una clase de "caminar"), así que el indicador directamente no se
+    muestra. Si alguna vez se vio y hoy da 0, sí se muestra: ahí el 0 es información."""
     spec = _INDICADORES_DURACION[clave]
     cols = [c for c in spec["columnas"] if c in day_vectors.columns]
     if not cols:
         return None
-    totales_por_dia = day_vectors[cols].sum(axis=1)  # index: (hogar, fecha)
+    totales = day_vectors[cols].sum(axis=1)  # index: (hogar, fecha)
+    return totales if float(totales.sum()) > 0 else None
+
+
+def _indicador_duracion(day_vectors, inicio: date, fin: date, periodo: str, clave: str) -> dict | None:
+    spec = _INDICADORES_DURACION[clave]
+    totales_por_dia = _totales_por_dia(day_vectors, clave)
+    if totales_por_dia is None:
+        return None
     fechas = totales_por_dia.index.get_level_values("fecha")
 
     actuales = totales_por_dia[(fechas >= inicio) & (fechas <= fin)]
@@ -201,10 +214,9 @@ def _serie_duracion(day_vectors, inicio: date, fin: date, clave: str) -> dict | 
     corresponda (`exceso` para `sedentarismo`, `deficit` para `cocina`/`movilidad`, ver
     `_INDICADORES_DURACION`)."""
     spec = _INDICADORES_DURACION[clave]
-    cols = [c for c in spec["columnas"] if c in day_vectors.columns]
-    if not cols:
+    totales_por_dia = _totales_por_dia(day_vectors, clave)
+    if totales_por_dia is None:
         return None
-    totales_por_dia = day_vectors[cols].sum(axis=1)
     fechas = totales_por_dia.index.get_level_values("fecha")
 
     historicos = totales_por_dia[(fechas < inicio) | (fechas > fin)]
