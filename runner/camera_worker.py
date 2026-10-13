@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import sys
 import threading
 import time
@@ -27,8 +26,8 @@ from .focus_state import read_focused_camera
 from .motion_gate import MotionDetector
 from .motion_state import write_motion_state
 from .overlay_state import read_overlay_enabled
+from .preview_file import FRAMES_DIR as _FRAMES_DIR, delete_preview, preview_paths
 
-_FRAMES_DIR = _ROOT / "frames"
 _FRAME_PREVIEW_EVERY_N = 5   # guarda 1 de cada 5 frames (~5fps preview para video a 25fps)
 _FOCUS_POLL_S = 0.25         # cada cuánto se relee runner_state/focus.json (no en cada frame)
 
@@ -172,8 +171,6 @@ class CameraWorker(threading.Thread):
         self._motion_min_area_ratio = motion_min_area_ratio
         self._motion_absence_timeout = motion_absence_timeout_s
         self._log = logging.getLogger(f"camera.{config.id}")
-        # nombre de archivo seguro para el frame preview
-        self._frame_name = re.sub(r'[^a-zA-Z0-9_-]', '_', config.id)
         self._frame_count = 0
         # Cache de _is_focused() (ver _FOCUS_POLL_S)
         self._focused = False
@@ -198,6 +195,9 @@ class CameraWorker(threading.Thread):
 
     def run(self) -> None:
         store = EventStore(self._db_path)
+        # Una vista previa de una corrida anterior que no llegó a limpiarse (corte de luz,
+        # proceso matado) no es de esta corrida: se borra antes de empezar.
+        self._delete_preview()
         detector = FallImmobilityDetector(model_path=self._pose_model)
         source = make_source(
             self._config.source, self._config.realtime, self._config.loop,
@@ -246,11 +246,10 @@ class CameraWorker(threading.Thread):
                     self._update_motion_gate(frame)
 
                 if not self._awake:
+                    # Dormida no se guarda vista previa: la imagen se borró al dormirse (ver
+                    # _sleep) y no vuelve a escribirse hasta que la cámara despierte.
                     self._frame_count += 1
-                    on_cadence = self._frame_count % _FRAME_PREVIEW_EVERY_N == 0
-                    if on_cadence or self._is_focused():
-                        self._save_preview(frame.image)
-                    if on_cadence:
+                    if self._frame_count % _FRAME_PREVIEW_EVERY_N == 0:
                         write_motion_state(self._config.id, awake=False)
                     continue
 
@@ -350,6 +349,7 @@ class CameraWorker(threading.Thread):
             self._log.exception("Error fatal en cámara [%s]", self._config.id)
         finally:
             store.close()
+            self._delete_preview()
             self._log.info("[%s] detenida.", self._config.id)
 
     def _update_motion_gate(self, frame) -> None:
@@ -376,6 +376,7 @@ class CameraWorker(threading.Thread):
 
     def _sleep(self) -> None:
         self._awake = False
+        self._delete_preview()
         write_motion_state(self._config.id, awake=False)
         self._log.info(
             "[%s] sin persona detectada por %.0fs — YOLO/CLIP en pausa hasta el próximo movimiento",
@@ -625,12 +626,16 @@ class CameraWorker(threading.Thread):
         return self._focused
 
     def _save_preview(self, image) -> None:
-        """Escribe un JPEG de preview en frames/{cam_id}.jpg de forma atómica."""
+        """Escribe un JPEG de preview en runner_state/frames/{cam_id}.jpg de forma atómica."""
         try:
-            _FRAMES_DIR.mkdir(exist_ok=True)
-            tmp  = _FRAMES_DIR / f"{self._frame_name}.tmp.jpg"
-            dest = _FRAMES_DIR / f"{self._frame_name}.jpg"
+            _FRAMES_DIR.mkdir(parents=True, exist_ok=True)
+            tmp, dest = preview_paths(self._config.id, _FRAMES_DIR)
             cv2.imwrite(str(tmp), image, [cv2.IMWRITE_JPEG_QUALITY, 70])
             replace_atomic(tmp, dest)
         except Exception:
             pass
+
+    def _delete_preview(self) -> None:
+        """Borra runner_state/frames/{cam_id}.jpg: se llama al dormirse la cámara y al detenerse el worker,
+        para que la imagen solo exista mientras la cámara se está analizando."""
+        delete_preview(self._config.id, _FRAMES_DIR)

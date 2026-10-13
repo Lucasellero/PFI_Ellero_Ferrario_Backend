@@ -156,10 +156,14 @@ def main() -> None:
     )
     cloud_sync_thread = None
     if config.cloud_sync is not None:
-        logger.info("cloud_sync: activado (%s, cada %.0fs)", config.cloud_sync.url, config.cloud_sync.interval_s)
+        logger.info(
+            "cloud_sync: activado (%s, cada %.0fs, retención local de %g días)",
+            config.cloud_sync.url, config.cloud_sync.interval_s, config.cloud_sync.retencion_local_dias,
+        )
         cloud_sync_thread = CloudSyncThread(
             db_path=_DB_PATH, url=config.cloud_sync.url, api_key=config.cloud_sync.api_key,
             interval_s=config.cloud_sync.interval_s, stop_event=stop_event,
+            retencion_local_dias=config.cloud_sync.retencion_local_dias,
         )
         cloud_sync_thread.start()
 

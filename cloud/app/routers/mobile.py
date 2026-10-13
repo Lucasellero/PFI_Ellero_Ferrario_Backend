@@ -1,7 +1,7 @@
 """Endpoints de la app móvil sobre un hogar — autenticados con Firebase (`auth.require_familiar_uid`),
 permisos en `permisos.py`. Eventos/alertas (lectura) y la configuración inicial que sigue a la
-vinculación del kit: ubicación de cada cámara (RF10) y datos del residente. Falta el CRUD de
-familiares/roles (RF12, ver `cloud/README.md` → "Cómo seguir" punto 4).
+vinculación del kit: ubicación de cada cámara (RF10) y datos del residente. También la baja del
+hogar (`DELETE /hogares/{hogar_id}`). El CRUD de familiares/roles (RF12) está en `familiares.py`.
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from ..auth import require_familiar_uid
 from ..db import get_db
-from ..models import Camara, Evento, Residente
+from ..models import Camara, Evento, Hogar, HogarFamiliar, Kit, LineaBaseComportamiento, Residente
 from ..permisos import hogar_autorizado
 from ..rutina import CLAVES_INDICADOR, calcular_resumen_rutina, calcular_serie_rutina
 from ..schemas import CamaraOut, EventoOut, ResidenteIn, ResumenRutinaOut, SerieRutinaOut, UbicacionIn
@@ -156,6 +156,39 @@ def actualizar_camara(
     db.commit()
     db.refresh(camara)
     return camara
+
+
+@router.delete("/{hogar_id}", tags=["Hogar"], summary="Dar de baja el hogar y borrar sus datos", status_code=204)
+def dar_de_baja_hogar(
+    hogar_id: int, uid: str = Depends(require_familiar_uid), db: Session = Depends(get_db),
+) -> Response:
+    """Baja del hogar, solo `responsable_principal`. No se puede deshacer: borra el residente,
+    todos sus eventos, su línea base, los vínculos de los familiares y el hogar. Las cuentas de
+    los familiares no se borran. El kit y sus cámaras quedan como recién salidos de fábrica (sin
+    hogar y sin ubicación cargada), así que el mismo código QR sirve para vincularlos de nuevo.
+    Hasta entonces, la controladora recibe 410 al enviar eventos y los descarta en vez de
+    acumularlos (ver `routers/devices.py`)."""
+    hogar_autorizado(hogar_id, uid, db, solo_responsable=True)
+    # El orden respeta las claves foráneas: primero lo que apunta al residente, al final el hogar.
+    residente_ids = [r.id for r in db.query(Residente).filter(Residente.hogar_id == hogar_id)]
+    if residente_ids:
+        db.query(Evento).filter(Evento.residente_id.in_(residente_ids)).delete(synchronize_session=False)
+        db.query(LineaBaseComportamiento).filter(
+            LineaBaseComportamiento.residente_id.in_(residente_ids),
+        ).delete(synchronize_session=False)
+        db.query(Residente).filter(Residente.id.in_(residente_ids)).delete(synchronize_session=False)
+    db.query(HogarFamiliar).filter(HogarFamiliar.hogar_id == hogar_id).delete(synchronize_session=False)
+    # `vinculado_at` se conserva a propósito: sin hogar pero con fecha de vinculación es como
+    # `routers/devices.py` distingue un kit dado de baja (410) de uno que nunca se vinculó (409).
+    db.query(Kit).filter(Kit.hogar_id == hogar_id).update(
+        {Kit.hogar_id: None, Kit.vinculado_por: None}, synchronize_session=False,
+    )
+    db.query(Camara).filter(Camara.hogar_id == hogar_id).update(
+        {Camara.hogar_id: None, Camara.ubicacion: ""}, synchronize_session=False,
+    )
+    db.query(Hogar).filter(Hogar.id == hogar_id).delete(synchronize_session=False)
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.put("/{hogar_id}/residente", tags=["Hogar"], summary="Cargar o editar los datos del residente", status_code=204)

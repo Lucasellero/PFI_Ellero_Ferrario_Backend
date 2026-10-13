@@ -9,9 +9,14 @@ completo (nunca el día en curso, que está parcial e induciría ruido). El *sch
 Task Scheduler en la Pi) es un paso de infraestructura, no algo que resuelva este script — ver
 "Correr en producción" en `baseline/README.md`.
 
+Desde el 2026-10-13 el detector de horario no emite desvíos por defecto (mismo criterio que
+`cloud/app/baseline_runner.py`, ver "Actualización 2026-10-13 (4)" en `baseline/README.md`): se
+enciende con `--timing`. Los otros tres detectores corren siempre.
+
 Uso:
     py run_live.py                  # evalúa el día de ayer (hora local), todas las cámaras
     py run_live.py --date 2026-09-20 --video-id webcam   # backfill/debug de un día puntual
+    py run_live.py --timing         # además, el detector de horario (apagado por defecto)
 """
 from __future__ import annotations
 
@@ -65,7 +70,9 @@ def _emit(store: EventStore, video_id: str, fecha: date, detector: str, clave: s
     print(f"[{video_id}] {fecha} desvío ({detector}): {clave} -> {detalle}")
 
 
-def process_camera(store: EventStore, video_id: str, target_date: date, max_gap_s: float = DEFAULT_MAX_GAP_S) -> None:
+def process_camera(
+    store: EventStore, video_id: str, target_date: date, max_gap_s: float = DEFAULT_MAX_GAP_S, timing: bool = False,
+) -> None:
     events = store.all(video_id=video_id)
     day_vectors = build_day_vectors_from_events(events, hogar=video_id, max_gap_s=max_gap_s)
     if day_vectors.empty or target_date not in day_vectors.index.get_level_values("fecha"):
@@ -102,10 +109,14 @@ def process_camera(store: EventStore, video_id: str, target_date: date, max_gap_
                 },
             )
 
-    # 3) Horario habitual (a nivel de evento, no de día — usa events_df aparte).
-    events_df = build_events_df_from_events(events, hogar=video_id)
+    # 3) Horario habitual (a nivel de evento, no de día — usa events_df aparte). Apagado por
+    # defecto desde el 2026-10-13 (`timing=False`, ver docstring del módulo).
+    events_df = build_events_df_from_events(events, hogar=video_id) if timing else pd.DataFrame()
     if not events_df.empty:
-        timing = score_timing_deviations(events_df, tracked_classes=tracked, config=TimingConfig())
+        # `evaluate_only`: mismo resultado para `target_date`, sin recalcular todo el historial
+        timing = score_timing_deviations(
+            events_df, tracked_classes=tracked, config=TimingConfig(), evaluate_only={(video_id, target_date)},
+        )
         if not timing.empty:
             timing = timing[timing["fecha"] == target_date]
             for _, row in timing.iterrows():
@@ -142,6 +153,11 @@ def main() -> None:
              "Debe ser mayor a `clip_heartbeat_s` configurado en cameras.yaml para esa cámara, "
              "o se subestima la duración real de cada actividad (ver camera_events.py).",
     )
+    parser.add_argument(
+        "--timing", action="store_true",
+        help="Emitir también los desvíos del detector de horario (apagado por defecto: con las clases "
+             "de cámara marca alguna alerta en dos de cada tres días normales).",
+    )
     args = parser.parse_args()
 
     target_date = date.fromisoformat(args.date) if args.date else date.today() - timedelta(days=1)
@@ -150,7 +166,7 @@ def main() -> None:
     try:
         video_ids = [args.video_id] if args.video_id else sorted({e.video_id for e in store.all()})
         for video_id in video_ids:
-            process_camera(store, video_id, target_date, max_gap_s=args.max_gap_s)
+            process_camera(store, video_id, target_date, max_gap_s=args.max_gap_s, timing=args.timing)
     finally:
         store.close()
 

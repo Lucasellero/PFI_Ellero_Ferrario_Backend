@@ -30,6 +30,9 @@ class CloudSyncConfig:
     url: str
     api_key: str
     interval_s: float = 30.0
+    # Días que un evento ya confirmado por la nube sigue en events/events.db antes de borrarse
+    # (ver `EventStore.purge_synced` y `runner/cloud_sync.py`). Los no sincronizados no se tocan.
+    retencion_local_dias: float = 7.0
 
 
 @dataclass
@@ -55,9 +58,13 @@ def load_config(path: Path) -> RunnerConfig:
         CloudSyncConfig(
             url=cloud_data["url"], api_key=cloud_data["api_key"],
             interval_s=float(cloud_data.get("interval_s", 30.0)),
+            retencion_local_dias=float(cloud_data.get("retencion_local_dias", 7.0)),
         )
         if cloud_data else None
     )
+    if cloud_sync is not None and cloud_sync.retencion_local_dias <= 0:
+        # 0 borraría cada evento apenas se sincroniza: se rechaza en vez de adivinar la intención.
+        raise ValueError("cloud.retencion_local_dias tiene que ser mayor que 0")
     return RunnerConfig(
         cameras=cameras,
         pose_model=data.get("pose_model", "yolo11n-pose.pt"),

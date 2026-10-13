@@ -32,6 +32,10 @@ runner/cloud_sync.py (Pi) ──POST /devices/events──► cloud/ (FastAPI)
                                                           │
                                                           ▼
                                     Evento(event_type=routine_deviation) + push (FCM)
+                                                          │
+                                                          ▼
+                                    app/retencion.py: borra eventos vencidos
+                                       (solo si están definidas sus variables de entorno)
 
 app móvil (Firebase Auth) ──GET /hogares/{id}/eventos──► cloud/ (lee Postgres)
 ```
@@ -70,6 +74,35 @@ todo el pipeline local) — el informe pide explícitamente compartir ese esquem
 backend local y el de la nube. `occurred_at` (columna de `Evento`) sale directo de
 `MonitoringEvent.wall_clock_ts` (agregado a `events/schema.py` en la sesión anterior).
 
+### Ingestión idempotente (2026-10-13)
+
+`POST /devices/events` ya no guarda dos veces el mismo evento. Antes, si la nube guardaba un
+lote pero la respuesta no llegaba a la controladora, ésta lo reenviaba y quedaba duplicado
+(medido: 10 eventos, 20 filas; ver "Corte y reconexión con la nube, medido" en
+`runner/README.md`).
+
+- Cada evento trae `event_id`, un identificador único que la controladora genera al guardarlo
+  en su base local y repite en cada reenvío (`events/README.md`). Se guarda en `Evento.event_id`.
+- Al recibir un lote, la nube busca cuáles de esos identificadores ya tiene **para las cámaras
+  de ese kit** y guarda solo el resto. Lo que mandó un kit no bloquea a otro.
+- La respuesta sigue siendo **201**, ahora con `{"insertados": n, "duplicados": m}`. Tiene que
+  ser 201 también cuando todo el lote es repetido: así la controladora lo marca como enviado
+  y deja de reenviarlo.
+- Un evento repetido no vuelve a disparar el aviso de caída o inmovilidad.
+- Última barrera: restricción única `(camara_id, event_id)` en la tabla. Si dos pedidos con los
+  mismos eventos llegan a la vez, uno de los dos falla al confirmar; la ingestión vuelve a
+  consultar y los trata como repetidos.
+- Un evento sin `event_id` (controladora con el código anterior) se guarda siempre, como antes:
+  compatible, pero sin protección. Los `routine_deviation` que genera la nube tampoco lo
+  llevan; su propia protección contra duplicados es la de `baseline_runner.py`.
+
+Migración: `alembic/versions/c41e7d905b12_evento_event_id.py` agrega la columna (null) y la
+restricción. Los eventos que ya estaban quedan con `event_id` en NULL, que no cuenta como
+repetido. **No está aplicada en RDS ni desplegada**: para desplegar este cambio hay que correr
+`alembic upgrade head` contra la base antes de subir el código nuevo (el código nuevo consulta
+la columna). Probada en local con SQLite, ida y vuelta, con eventos ya cargados; `alembic check`
+confirma que el esquema migrado coincide con los modelos. No se probó contra Postgres.
+
 ## Autenticación
 
 Dos esquemas separados (`app/auth.py`):
@@ -78,6 +111,8 @@ Dos esquemas separados (`app/auth.py`):
   hash, la key cruda la muestra una sola vez `alta_kit.py`). Cada request autenticado actualiza
   `Kit.ultima_conexion_at`. Mientras el kit no esté vinculado a un hogar con residente,
   `POST /devices/events` responde **409** y la Pi reintenta en el próximo ciclo (no se pierde nada).
+  Si el hogar del kit se dio de baja responde **410** y la Pi descarta esos eventos (ver "Baja del
+  hogar").
 - **App móvil → nube**: `Authorization: Bearer <firebase_id_token>`, verificado con
   `firebase_admin.auth.verify_id_token`. **Si el proceso no tiene `GOOGLE_APPLICATION_CREDENTIALS`
   configurado, estos endpoints devuelven `501` con un mensaje claro** en vez de romper el arranque
@@ -103,6 +138,7 @@ en `main.py` y en cada `@router` (`tags`, `summary`); son solo metadatos de Open
 | `POST /kits/vincular` | Body `{codigo}` (del QR; acepta minúsculas, espacios, guiones). Crea el `Hogar` ("Mi hogar"), le asigna kit y cámaras y deja al familiar como `responsable_principal`. Devuelve `{hogar_id, numero_serie, cantidad_camaras, camaras}`. **404** código inexistente · **409** kit de otro hogar · **429** 5 intentos fallidos en 15 min (por familiar, en memoria del proceso). Reintento del mismo familiar = idempotente. |
 | `GET /hogares/{id}/camaras` | Cámaras del hogar. Cualquier familiar vinculado. |
 | `PATCH /hogares/{id}/camaras/{camara_id}` | Body `{ubicacion}` (2-40). RF10. **409** si repite la de otra cámara del hogar. Solo `responsable_principal`. |
+| `DELETE /hogares/{id}` | Baja del hogar (2026-10-13). **204**. Solo `responsable_principal` (**403** para un `familiar` común o alguien ajeno al hogar). Borra residente, eventos, línea base, vínculos de familiares y el hogar; el kit y sus cámaras quedan sin hogar para volver a vincularse. No se puede deshacer. Ver "Baja del hogar". |
 | `PUT /hogares/{id}/residente` | Body `{nombre, telefono}` (E.164 o null). Crea o actualiza; si el hogar se llamaba "Mi hogar" pasa a "Casa de {nombre}". **204**. Solo `responsable_principal`. Es el último paso: con residente, la app pasa a las pestañas y la Pi ya puede sincronizar eventos. |
 | `GET /hogares/{id}/eventos` · `/alertas` | Eventos del hogar. **403** si el familiar no está vinculado. `/eventos` acepta filtros opcionales `tipo`, `desde`, `hasta` (RF13, `occurred_at` ISO 8601). Cada evento trae `ubicacion` (de `Camara.ubicacion`, `null` si no vino de una cámara o no se cargó) y `resuelta` (`Evento.resuelta_at is not None`). |
 | `POST /hogares/{id}/eventos/{evento_id}/resolver` | "Marcar como resuelta" (mockup 03, RF8). Cualquier familiar vinculado (no solo `responsable_principal`). **204**, idempotente (no pisa quién la marcó primero). **404** si el evento no es de ese hogar. |
@@ -154,9 +190,199 @@ arranca con uvicorn y todos los días a las 03:00 de Argentina (UTC-3 fijo, no l
 contenedor) evalúa el día anterior de cada hogar. Antes no la corría nada en AWS (sin EventBridge,
 Lambdas ni cron, confirmado en la consola). Con Postgres toma `pg_try_advisory_lock` para que, si
 hay más de una instancia, no corra dos veces a la vez. Se desactiva con
-`LINEA_BASE_DIARIA_DESACTIVADA=1` (tests, desarrollo local). Este CLI queda para correr un día
+`LINEA_BASE_DIARIA_DESACTIVADA=1` (tests, desarrollo local). Después de la línea base, la misma
+tarea aplica la retención de eventos (ver "Retención de eventos"). Este CLI queda para correr un día
 puntual a mano (backfill/debug). Mismo criterio que `baseline/run_live.py`: nunca evalúa el día en
 curso, es idempotente (no duplica un desvío ya emitido).
+
+### La línea base por el camino de producción, medida (2026-10-13)
+
+Hasta ahora la detección de desvíos se había medido con los scripts de `baseline/`, no con el
+código que corre en la nube. `tests/test_linea_base_produccion.py` recorre el camino real: el
+historial entra por `POST /devices/events` con la clave del kit, en lotes de 200 como los manda
+`runner/cloud_sync.py`, y lo evalúa `linea_base_diaria.ejecutar_linea_base`, la función que
+llama el thread de las 03:00. Todo en local, con SQLite.
+
+**Datos.** 60 días seguidos del hogar `hh113` de CASAS (2011-09-05 a 2011-11-03, 1.514
+actividades; `tests/datos/casas_hh113_60dias.csv`, se regenera con
+`tests/datos/generar_casas_hh113.py`). Solo las actividades que la cámara puede clasificar,
+traducidas a su `activity_label` con el mapeo de `baseline/evaluate_classifier_noise.py`. Cada
+actividad se envía como lo haría el runner: un evento al empezar y uno cada 60 segundos mientras
+sigue (`ongoing`). Son 14.529 eventos en 73 lotes. Las horas de CASAS (hora local del hogar) se
+cargan como hora de Argentina. Son etiquetas limpias: esta prueba mide que el camino funciona,
+no cuánto acierta la cámara.
+
+**Desvío inyectado.** El último día (2011-11-03) no se envía ninguna actividad de comida (las
+7 `EatingDrinkingMedication` reales de ese día); el resto del día queda igual.
+
+| Qué se verificó | Resultado |
+|---|---|
+| El proceso diario crea el `routine_deviation` del desvío inyectado | Sí: detector `clase`, `cam_comida:ausencia`, `valor_hoy` 0, mediana histórica 7 |
+| Queda marcado como alerta | Sí (`es_alerta`), sin cámara asociada |
+| Aparece en `GET /hogares/{id}/alertas` | Sí, sin resolver, con su `fecha` y `clave` |
+| Correr el proceso otra vez sobre el mismo día | No duplica: las mismas alertas |
+| Mismo día con sus comidas reales (control) | No aparece ningún desvío de comida |
+| Día sin ningún evento | No se evalúa y no emite nada |
+
+Ese día el proceso emitió **4 alertas**. Dos se deben al desvío inyectado: `cam_comida:ausencia`
+y `forma_del_dia` del multivariado (z = 2,57, con `cam_comida_n` entre los tres factores que
+más pesan). Las otras dos son del detector de horario (`cam_cocina:horario`, 177 minutos fuera
+de lo habitual, y `cam_ocio_sentado:horario`, 160 minutos) **y salen igual en el control**, con
+el día real sin tocar. Sobre un día normal de este hogar, entonces, el camino de producción
+emite 2 alertas que nadie inyectó. Es un solo día de un solo hogar, no una tasa; coincide con lo
+que `baseline/README.md` ya dice del detector de horario ("estado parcial", 12 a 23 % de falsos
+positivos en varias clases).
+
+**Tiempo.** Con 60 días de historial, el proceso diario tardó 42 segundos por hogar en la PC de
+desarrollo (8 núcleos, sin otra carga). Casi todo es el detector de horario, que recalcula un
+KMeans por cada actividad de todo el historial (1.467 para este hogar) aunque solo importen las
+del día evaluado. El costo crece con el historial y con la cantidad de hogares; no se midió en
+la instancia `t3.micro` de AWS.
+
+**Segunda ronda, mismo día (2026-10-13).** Dos cosas sobre lo anterior:
+
+- *Tiempo, corregido.* `baseline_runner.py` le pide ahora al detector de horario solo el día
+  evaluado (`evaluate_only`; el historial se sigue usando como referencia). Mismo hogar, misma
+  PC: de 42 segundos a menos de 2 por hogar (3,6 segundos para dos hogares). Las alertas son
+  las mismas seis de antes, valor por valor, y una prueba nueva
+  (`test_evaluar_solo_el_dia_pedido_da_lo_mismo_que_evaluar_todo_el_historial`) compara los dos
+  caminos. Lo que más tarda ahora es el detector multivariado (1,4 segundos).
+- *Las dos alertas de horario sobre el día real, sin corregir.* Se midió con validación cruzada
+  por hogar si acotar las clases o calibrar por clase las evitaba sin perder detección: no (ver
+  "Actualización 2026-10-13 (3)" en `baseline/README.md`). El detector quedó como estaba. La
+  medición muestra que no es una rareza de este hogar: con las clases de cámara, dos de cada
+  tres días normales reciben alguna alerta de horario (207 de 315 días de 21 hogares). Dejar de
+  emitirlas es una decisión pendiente.
+
+**Tercera ronda, mismo día (2026-10-13): las alertas de horario quedan apagadas por defecto.**
+Decisión del usuario. `baseline_runner.py` ya no corre el detector de horario salvo que la
+variable de entorno `ALERTAS_DE_HORARIO_ACTIVADAS` valga `1` (también `true`, `si`, `yes`); sin
+la variable, o con cualquier otro valor, no emite ningún `routine_deviation` con
+`detector: "timing"`. Los detectores multivariado, por clase y de tendencia siguen igual. El
+código del detector no se borró.
+
+| Misma prueba, mismo hogar | Antes | Ahora (por defecto) | Con la variable encendida |
+|---|---|---|---|
+| Día sin comidas | 4 alertas | 2: `cam_comida:ausencia` y `forma_del_dia` | 4 |
+| El mismo día sin modificar (control) | 2 alertas, las dos de horario | ninguna | 2 |
+
+- `GET /hogares/{id}/rutina` y `/rutina/serie` (pantalla Reportes) no cambian: el horario
+  habitual de la primera comida lo calcula `app/rutina.py`, que no usa este detector.
+- Los `routine_deviation` de horario que ya estén guardados en una base no se tocan: siguen
+  apareciendo en `/eventos` y `/alertas` hasta que alguien los resuelva o los alcance la
+  retención.
+- **No está desplegado.** En AWS sigue corriendo el código anterior, que emite alertas de
+  horario. Al desplegar, alcanza con no definir la variable.
+
+No se probó: Postgres (la prueba usa SQLite), el envío del push (Firebase no está configurado
+en las pruebas) ni el thread que dispara el proceso a las 03:00 (se llama a la función
+directamente).
+
+## Retención de eventos (2026-10-13)
+
+El informe (capítulo 3, Viabilidad Legal) declara cuánto tiempo se conservan los eventos en la
+nube: **12 meses** los de actividad y **24 meses** los de caída, inmovilidad y desvío de rutina.
+`app/retencion.py` lo implementa como un paso más de la tarea diaria de las 03:00
+(`app/linea_base_diaria.py`).
+
+Los plazos no están escritos en el código. Salen de dos variables de entorno, en meses:
+
+| Variable | Eventos | Valor del informe |
+|---|---|---|
+| `RETENCION_ACTIVIDAD_MESES` | `activity` | `12` |
+| `RETENCION_ALERTAS_MESES` | `fall`, `immobility`, `routine_deviation` | `24` |
+
+- **Sin la variable, ese grupo no se borra.** Es a propósito: desplegar este código no borra
+  nada en producción. La retención empieza recién cuando alguien define las variables en el
+  environment de Elastic Beanstalk (Configuration → Software). Cada variable activa solo su
+  grupo.
+- Un valor que no sea un entero mayor que 0 (`0`, `-12`, `doce`, `1.5`) tampoco borra nada y
+  deja un error en el log. En particular, `0` no significa "borrar todo".
+- **Corre después de calcular la línea base, nunca antes**, y con el mismo candado de Postgres
+  tomado: el día recién evaluado se calcula con el historial completo y recién después se
+  borra lo vencido. Si la línea base de un hogar falla, la retención corre igual; si falla la
+  retención, queda en el log y se reintenta al día siguiente.
+- La antigüedad se mide con `occurred_at` (cuándo ocurrió el evento según el reloj de la
+  controladora), en meses de calendario. **Ojo:** un evento que llegue con el reloj de la
+  controladora muy atrasado nace vencido y se borra en la primera pasada.
+- `run_baseline_daily.py` (el CLI) no aplica la retención: solo la tarea diaria de la API.
+- Con `LINEA_BASE_DIARIA_DESACTIVADA=1` la tarea diaria no corre y, por lo tanto, tampoco la
+  retención.
+- Borrar es definitivo. La primera pasada después de activar las variables borra de una vez
+  todo lo acumulado más allá del plazo.
+
+Efecto sobre la rutina: `GET /rutina`, `GET /rutina/serie` y la línea base usan los eventos de
+actividad, así que con la retención activa trabajan con 12 meses de historial como máximo.
+
+**Estado:** implementado y probado en local con SQLite. No está desplegado ni activado en AWS.
+
+## Baja del hogar (2026-10-13)
+
+`DELETE /hogares/{hogar_id}` (`app/routers/mobile.py`, grupo Hogar de Swagger) es la baja que
+describe el informe (capítulo 3, Viabilidad Legal): el responsable del hogar puede pedir que se
+borren los datos del residente.
+
+- **Solo `responsable_principal`.** Un `familiar` común recibe 403 y no se borra nada. Si el
+  hogar tiene más de un responsable, cualquiera de ellos puede darlo de baja.
+- **Qué borra:** el residente, todos sus eventos (incluidos los desvíos de rutina), su línea
+  base, los vínculos de todos los familiares con ese hogar y el hogar mismo.
+- **Qué no borra:** las cuentas de los familiares (`Familiar` y su usuario de Firebase), que
+  pueden estar vinculadas a otros hogares. `GET /me` les devuelve la lista de hogares sin éste.
+- **El kit y sus cámaras quedan desvinculados:** `hogar_id` en NULL en los dos, `vinculado_por`
+  del kit en NULL y la `ubicacion` de cada cámara vacía. El mismo código QR y la misma API key
+  siguen sirviendo: `POST /kits/vincular` crea un hogar nuevo que no hereda nada del anterior.
+  `vinculado_at` se conserva a propósito: un kit sin hogar pero con esa fecha es un kit dado
+  de baja, y así se lo distingue de uno que nunca se vinculó sin tocar el esquema.
+- **No se puede deshacer** y la API no pide confirmación: eso le toca a la app.
+- Hasta que el kit se vuelva a vincular, la controladora recibe **410** en
+  `POST /devices/events` y descarta esos eventos en vez de guardarlos (ver "Retención local de
+  eventos" en `runner/README.md`). Si los acumulara, al vincular el kit de nuevo se subirían
+  al hogar siguiente. Un kit que nunca se vinculó sigue recibiendo 409, y ahí sí se guardan.
+- **Caso que queda sin cubrir:** si la controladora estaba sin conexión cuando se dio la baja
+  y recién vuelve a conectarse después de que el kit se vinculó a otro hogar, nunca ve el 410
+  y los eventos que tenía pendientes se suben al hogar nuevo.
+- No cambia el esquema de la base: no hizo falta ninguna migración.
+
+**Pendiente del lado de la app:** el endpoint todavía no está en `src/api/types.ts` ni en
+`docs/vinculacion-kit.md` del repo Frontend, y ninguna pantalla lo llama.
+
+**Estado:** implementado y probado en local con SQLite. No está desplegado en AWS.
+
+## Pruebas
+
+```
+pip install pytest
+pytest cloud/tests        # desde la raíz del repo
+```
+
+Corren siempre contra un SQLite temporal: `tests/conftest.py` pisa `DATABASE_URL` antes de
+importar la aplicación y se niega a seguir si el engine no es ese SQLite, así que no pueden
+tocar la base de producción aunque la terminal tenga la variable apuntando a RDS. Firebase se
+reemplaza por un token de prueba. SQLite se abre con las claves foráneas activadas, para que un
+borrado en el orden equivocado falle igual que fallaría en Postgres. Cubren (2026-10-13):
+
+- `test_retencion_nube.py`: sin las variables de entorno no se borra nada (ni llamando al paso
+  directamente ni desde la tarea diaria), cada grupo usa su propio plazo, un valor inválido no
+  borra nada y la retención corre después de la línea base.
+- `test_baja_hogar.py`: un familiar común no puede dar de baja el hogar, tampoco alguien de
+  otro hogar; el responsable sí, y después no quedan residente, eventos ni vínculos; el kit y
+  las cámaras quedan desvinculados y se pueden volver a vincular; no se tocan los datos de otro
+  hogar; después de la baja la controladora recibe 410 (y 409 un kit que nunca se vinculó); el
+  endpoint aparece en el grupo Hogar de Swagger.
+- `test_linea_base_produccion.py` (18 pruebas, ver "La línea base por el camino de producción,
+  medida"): 60 días de un hogar de CASAS cargados por `POST /devices/events`, un día sin
+  comidas genera la alerta `routine_deviation`, se ve en `/alertas` y no se duplica al correr
+  el proceso dos veces, y pedirle al detector de horario solo el día evaluado da lo mismo que
+  recorrer todo el historial. Tardaba dos minutos; con el cambio del 2026-10-13, unos 20 segundos.
+  Desde la tercera ronda del 2026-10-13 comprueba además que el día sin comidas emite
+  exactamente dos desvíos y ninguno de horario, que el mismo día sin modificar no emite nada,
+  que con `ALERTAS_DE_HORARIO_ACTIVADAS=1` vuelven las dos alertas de horario, y qué valores de
+  la variable la encienden (12 casos).
+- `test_ingestion_idempotente.py` (8 pruebas, ver "Ingestión idempotente"): reenviar el mismo
+  lote no duplica, un lote mezclado guarda solo lo nuevo, un evento repetido dentro del lote
+  se guarda una vez, una alerta reenviada no vuelve a avisar, los eventos sin identificador se
+  guardan siempre, el mismo identificador en otro kit no cuenta como repetido, la base rechaza
+  dos filas iguales, y la migración agrega la columna sin tocar los eventos que ya estaban.
 
 ## Zona horaria (días y horas del residente)
 

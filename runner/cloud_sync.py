@@ -6,7 +6,8 @@ Solo hace conexiones SALIENTES — la Pi nunca necesita exponer un puerto ni ten
 coherente con la arquitectura de red del informe. Ante un corte de conexión simplemente no marca
 nada como sincronizado y lo reintenta en el próximo ciclo; los eventos siguen disponibles
 localmente mientras tanto (`events/events.db` es la fuente de verdad hasta que se confirma el
-envío).
+envío). La única respuesta que hace descartar eventos sin enviarlos es un 410: el hogar del kit se
+dio de baja (ver `sync_once`).
 
 Deshabilitado por default: sin la sección `cloud:` en `cameras.yaml` no hace nada (instalaciones
 sin nube no se ven afectadas). Pensado para correr como thread de fondo dentro de `runner/main.py`
@@ -32,6 +33,8 @@ from store import EventStore  # noqa: E402  (de events/)
 
 _BATCH_SIZE = 200
 _REQUEST_TIMEOUT_S = 15.0
+# Cada cuánto, como mucho, se purgan los eventos ya enviados (ver `CloudSyncThread._purge_if_due`).
+_PURGE_INTERVAL_S = 3600.0
 
 
 def sync_once(store: EventStore, url: str, api_key: str) -> int:
@@ -58,6 +61,17 @@ def sync_once(store: EventStore, url: str, api_key: str) -> int:
                 logger.warning("cloud_sync: respuesta inesperada %s", resp.status)
                 return 0
     except urllib.error.HTTPError as exc:
+        if exc.code == 410:
+            # El hogar de este kit se dio de baja (ver cloud/README.md, "Baja del hogar"): la
+            # nube no va a aceptar estos eventos nunca y son de un hogar que pidió borrar sus
+            # datos. Se descartan; si quedaran pendientes se subirían al hogar siguiente cuando
+            # el kit se vuelva a vincular.
+            descartados = store.discard(ids)
+            logger.warning(
+                "cloud_sync: el hogar de este kit se dio de baja — %d eventos descartados sin enviar",
+                descartados,
+            )
+            return 0
         # 404 típico: una cámara de este lote no está registrada todavía del lado cloud (ver
         # cloud/README.md, "POST /devices/camaras") — se loguea el detalle para que sea
         # accionable, no se reintenta infinito en silencio.
@@ -75,28 +89,54 @@ def sync_once(store: EventStore, url: str, api_key: str) -> int:
 
 class CloudSyncThread(threading.Thread):
     """Thread de fondo opcional que llama a `sync_once` cada `interval_s`. Arrancado desde
-    `runner/main.py` solo si `cameras.yaml` tiene una sección `cloud:` configurada."""
+    `runner/main.py` solo si `cameras.yaml` tiene una sección `cloud:` configurada.
+
+    Además aplica la retención local: una vez por hora como mucho borra los eventos que la nube
+    confirmó hace más de `retencion_local_dias` (`EventStore.purge_synced`). Como este thread
+    solo existe con la sección `cloud:`, en una instalación 100% local no se purga nada."""
 
     def __init__(self, db_path: Path, url: str, api_key: str, interval_s: float = 30.0,
-                 stop_event: threading.Event | None = None):
+                 stop_event: threading.Event | None = None, retencion_local_dias: float = 7.0):
         super().__init__(name="cloud-sync", daemon=True)
         self._db_path = db_path
         self._url = url
         self._api_key = api_key
         self._interval = interval_s
-        self._stop = stop_event or threading.Event()
+        self._retencion_local_dias = retencion_local_dias
+        self._last_purge: float | None = None
+        # OJO: no llamar self._stop — threading.Thread ya usa ese nombre internamente (método
+        # privado), pisarlo rompe Thread.join(). Mismo aviso que en camera_worker.py.
+        self._stop_event = stop_event or threading.Event()
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
+
+    def _purge_if_due(self, store: EventStore, now: float | None = None) -> int | None:
+        """Purga los eventos ya enviados si pasó `_PURGE_INTERVAL_S` desde la última vez (o si es
+        la primera del proceso). Devuelve cuántos borró, o None si todavía no tocaba. `now` es
+        reloj monotónico y solo se pasa en las pruebas."""
+        if now is None:
+            now = time.monotonic()
+        if self._last_purge is not None and now - self._last_purge < _PURGE_INTERVAL_S:
+            return None
+        self._last_purge = now
+        borrados = store.purge_synced(self._retencion_local_dias)
+        if borrados:
+            logger.info(
+                "cloud_sync: %d eventos ya enviados borrados del store local (retención de %g días)",
+                borrados, self._retencion_local_dias,
+            )
+        return borrados
 
     def run(self) -> None:
         store = EventStore(self._db_path)
         try:
-            while not self._stop.is_set():
+            while not self._stop_event.is_set():
                 try:
                     sync_once(store, self._url, self._api_key)
+                    self._purge_if_due(store)
                 except Exception:
                     logger.exception("cloud_sync: error inesperado en el ciclo de sincronización")
-                self._stop.wait(self._interval)
+                self._stop_event.wait(self._interval)
         finally:
             store.close()

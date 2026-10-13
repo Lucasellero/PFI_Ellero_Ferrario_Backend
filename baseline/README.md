@@ -186,6 +186,11 @@ alinear este detector al mismo criterio de período de silencio en días cuando 
 
 ## Horario habitual (`src/timing_deviations.py`) — estado parcial, en curso
 
+**Estado al 2026-10-13: implementado, pero sus alertas están apagadas por defecto** en el
+proceso diario (ver "Actualización 2026-10-13 (3)" y "(4)"): medido con validación cruzada por
+hogar, con las clases de cámara avisa en dos de cada tres días normales. Lo que sigue es el
+registro de cómo se desarrolló.
+
 Detector adicional (2026-09-05, agregado a pedido del usuario): además de cuánto/cuántas veces y
 la forma general del día, mira **a qué hora** ocurre cada actividad, aprendiendo el horario
 habitual de cada `(hogar, actividad)` de su propio historial (clustering circular de horarios en
@@ -562,6 +567,404 @@ calibración probadas con evidencia (semana/finde, persistencia en exceso/defici
 ausencia, sacar el multivariado) y solo una ayudó un poco.** El próximo candidato real es el
 ajuste estadístico de "qué tan raro es raro" (ver abajo), no otra variación sobre qué se combina.
 
+### Actualización 2026-10-13 — pruebas para el informe: ruido del clasificador y período de aprendizaje
+
+Corridas en una máquina recién clonada: CASAS se bajó de nuevo de Zenodo (`labeled_data.zip`,
+mismo md5 que publica el repositorio) y se regeneró con `etl.py` + `build_table.py`. Da los
+mismos 319.229 eventos y 80 hogares del manifiesto versionado, y el set de desvíos
+(`inject_synthetic_deviations.py`, semilla 0) es el mismo de siempre: 4362 días, 640 etiquetas
+(220 positivas), 21 hogares.
+
+#### Antes de medir: `--cv 5` ya no reproduce los números citados
+
+`evaluate_deviations.py --cv 5`, tal como está en el repo, **no da 72,8 %/13,1 % ni
+69,5 %/13,8 %**. Da 71,0 %/14,2 % (sensor) y 67,3 %/16,0 % (cámara). Motivo: el 2026-10-08, al
+probar el método binomial, sus candidatos quedaron dentro del barrido de `cross_validate`
+(`_grid_configs`) y cambió el orden en que se recorren los candidatos, que es el que decide los
+empates de recall. El 71,0 %/14,2 % es el mismo que la "Actualización 2026-10-08" informa para
+el barrido con binomial; en modo cámara ese barrido nunca se había medido.
+
+Con el barrido del 2026-09-20 (solo candidatos `umbral`, en el orden de entonces) se reproducen
+los dos números exactos: **72,8 %/13,1 % (158 de 217, 49 de 373) y 69,5 %/13,8 % (153 de 220,
+58 de 420)**. Todo lo de esta sección usa ese criterio, para que sea comparable.
+
+| Criterio de selección en cada partición | Sensor | Cámara |
+|---|---|---|
+| "documentado": solo `umbral`, orden del 2026-09-20 | 72,8 % / 13,1 % | 69,5 % / 13,8 % |
+| Solo `umbral`, orden actual de `_grid_configs` | 72,8 % / 13,1 % | 68,2 % / 14,0 % |
+| "actual": `umbral` + `binomial` (lo que corre hoy `--cv 5`) | 71,0 % / 14,2 % | 67,3 % / 16,0 % |
+
+La fila del medio muestra que en modo cámara el resultado depende de un empate: con los mismos
+candidatos, cambiar solo el orden mueve 1,3 puntos de detección. Es una medida de cuánto ruido
+tiene el propio protocolo con 21 hogares.
+
+`cv_grid.py` (nuevo) hace la misma validación cruzada evaluando cada candidato una sola vez
+sobre todos los hogares, en vez de una vez por partición, y permite elegir el criterio
+(`CRITERIOS`: `"documentado"` o `"actual"`). Da lo mismo que `cross_validate` porque los
+detectores tratan cada hogar por separado. Comprobado de dos formas: `verify_cv_grid.py`
+(barrido reducido, particiones idénticas en los dos modos) y 12 corridas completas de
+`cross_validate` con el barrido actual (4 de la prueba de ruido, 8 de la de período de
+aprendizaje), que coinciden al decimal con el criterio `"actual"` de `cv_grid.py`. `cross_validate`
+no se tocó, salvo el parámetro opcional `min_window_days` (`--min-window-days`).
+
+**Resuelto el mismo día**, ver "Actualización 2026-10-13 (2)" más abajo: `--cv 5` volvió a usar
+por defecto el barrido de la fila "documentado". En el código ese criterio se llama ahora
+`"umbral"` y el "actual" de esta sección, `"con_binomial"` (`--binomial`).
+
+#### Prueba 1 — línea base con el error real del clasificador de la cámara
+
+Hasta acá el modo cámara se evaluó con etiquetas limpias de CASAS: como si la cámara nunca
+confundiera una actividad con otra. `evaluate_classifier_noise.py` (nuevo) contamina esas
+etiquetas con la matriz de confusión medida del clasificador (`vlm/README.md`, "Matriz de
+confusión de esta corrida", 2026-09-20, 6 categorías) antes de armar las columnas `cam_*` del
+vector de día, y repite la validación cruzada por hogar en modo cámara.
+
+**Cómo se mapeó.** Cada clase canónica de CASAS se asoció a la categoría del clasificador que
+la contiene (según las clases finas de `vlm/src/clip_classifier.py::COARSE_CATEGORIES`). Por
+cada evento se sortea la categoría predicha con la fila de la matriz de su categoría real. Si
+acierta, el evento queda en su clase de cámara de siempre (`activity_map.COARSE`); si falla,
+pasa a la clase de cámara de la categoría predicha, con el mapeo que ya usa producción
+(`camera_events.CAMERA_ACTIVITY_MAP`).
+
+| Clase canónica de CASAS | Categoría del clasificador (fila de la matriz) | Acierto publicado | Clase de cámara si acierta |
+|---|---|---|---|
+| `cocinar`, `lavar_platos` | `Cooking` | 80 % | `cocina` |
+| `comer` | `EatingDrinkingMedication` | 57 % | `comida_mesa` |
+| `beber`, `medicacion` | `EatingDrinkingMedication` | 57 % | `comida` |
+| `descansar` | `Resting` | 67 % | `descanso_sofa` |
+| `ver_tv` | `Resting` (incluye `WatchTV`) | 67 % | `ocio_sentado` |
+| `leer`, `trabajo` | `ReadingScreen` | 64 % | `ocio_sentado` |
+| `telefono` | `Phone` | 59 % | `ocio_sentado` |
+
+| Categoría predicha por error | Clase de cámara a la que va el evento |
+|---|---|
+| `Cooking` | `cocina` |
+| `EatingDrinkingMedication` | `comida` (nunca `comida_mesa`: sin acierto no hay zona de mesa confirmada) |
+| `Resting` | `descanso_sofa` |
+| `ReadingScreen`, `Phone` | `ocio_sentado` |
+| `Moving` | `moverse` (no está entre las clases que se siguen: el evento se pierde) |
+
+**Clases que quedaron sin ruido**, porque el clasificador no tiene una categoría equivalente:
+`dormir`, `aseo`, `bano`, `bano_nocturno`, `salir_casa`, `entrar_casa`, `tareas_hogar`,
+`visitas` y `otro`. Hoy la cámara no produce ninguna de esas clases (ver "Vocabulario de
+cámara"), así que para ellas no hay error medido que aplicar. Consecuencia: de las cuatro
+clases que sigue el modo cámara, `cam_comida` y `cam_comida_mesa` reciben ruido;
+`cam_salir_casa` y `cam_aseo` no. `Moving` tampoco tiene equivalente en CASAS: aparece solo
+como destino de un error.
+
+**Cuánto ruido es.** De los 162.534 eventos de los 21 hogares, 84.659 (52,1 %) tienen
+equivalente. De esos, entre 28,5 % y 28,7 % cambian de etiqueta según la semilla. En cada
+corrida se pierden cerca de 7.000 comidas reales (pasan a otra clase) y aparecen cerca de
+6.800 comidas falsas (otra actividad confundida con comer). El desvío se inyecta antes que el
+ruido: un día sin ninguna comida real puede igual mostrar comidas. Con la semilla 0, de los 21
+días de `comida_camara_ausente` solo 4 quedan realmente en cero; los otros 17 muestran entre 1
+y 20 comidas falsas.
+
+**Resultado** (validación cruzada por hogar, 5 particiones, criterio "documentado", 220
+positivos y 420 negativos; el ruido se repitió con 3 semillas, la inyección y las particiones
+son las mismas en todas las corridas):
+
+| | Sin ruido | Con ruido, semilla 0 | Semilla 1 | Semilla 2 | Rango con ruido |
+|---|---|---|---|---|---|
+| **Detección global** | **69,5 %** | 65,5 % | 65,5 % | 65,0 % | **65,0 – 65,5 %** |
+| **Falsos positivos** | **13,8 %** | 15,0 % | 17,4 % | 15,0 % | **15,0 – 17,4 %** |
+| `semana_sin_salir` (147 días) | 78,9 % | 78,2 % | 78,2 % | 76,9 % | 76,9 – 78,2 % |
+| `comida_camara_ausente` (21) | 95,2 % | 66,7 % | 71,4 % | 66,7 % | 66,7 – 71,4 % |
+| `bano_nocturno_excesivo` (21) | 52,4 % | 38,1 % | 33,3 % | 52,4 % | 33,3 – 52,4 % |
+| `comida_salteada` (21) | 14,3 % | 23,8 % | 23,8 % | 19,0 % | 19,0 – 23,8 % |
+| `sin_medicacion` (10) | 30,0 % | 20,0 % | 10,0 % | 20,0 % | 10,0 – 20,0 % |
+
+Lectura:
+
+- La detección global baja entre 4,0 y 4,5 puntos y los falsos positivos suben entre 1,2 y 3,6.
+- Casi toda la pérdida está en `comida_camara_ausente`: de 20 de 21 días detectados pasa a 14
+  o 15. Es el escenario que depende de ver un cero, y las comidas falsas lo tapan.
+- `semana_sin_salir` casi no cambia. Esperable: no recibe ruido. Pero también significa que
+  esta prueba **no mide** el error de detectar entradas y salidas, que hoy la cámara no hace.
+- `bano_nocturno_excesivo` tampoco recibe ruido y aun así se mueve entre 33 % y 52 %. Ese
+  movimiento no es efecto directo del ruido: al cambiar los datos de comida, cada partición
+  elige otros parámetros, y con 21 casos cada día pesa 4,8 puntos. Lo mismo vale para la suba
+  de `comida_salteada` (3 a 5 días detectados de 21). No leer esas dos filas como mejora o
+  empeoramiento.
+- Con el criterio "actual" el rango con ruido es más ancho: 62,7 – 68,6 % de detección y
+  12,9 – 14,0 % de falsos positivos (sin ruido: 67,3 %/16,0 %), con `comida_camara_ausente` en
+  42,9 – 47,6 %.
+
+Límites de la prueba: el ruido es independiente entre eventos (una cámara real se equivoca en
+rachas, con la misma persona y la misma escena); la matriz es la del probe sin contexto de
+zona, la única publicada (el de producción, con zona, acierta algo más en `Cooking`); y supone
+que cada actividad de CASAS genera un solo evento de cámara.
+
+#### Prueba 2 — cuántos días de historial hacen falta
+
+`evaluate_learning_period.py` (nuevo) repite la validación cruzada variando `min_window_days`
+(7, 14, 21 y 30) en los dos detectores. Criterio "documentado".
+
+| Modo | Días de aprendizaje | Detección | Falsos positivos | Etiquetas sin evaluar (de 640) |
+|---|---|---|---|---|
+| Sensor | 7 | 72,8 % (158 de 217) | 13,1 % (49 de 373) | 50 |
+| Sensor | 14 | 72,1 % (155 de 215) | 16,6 % (55 de 331) | 94 |
+| Sensor | 21 | 72,3 % (149 de 206) | 16,4 % (46 de 280) | 154 |
+| Sensor | 30 | no medible: 8 de 16 y 9 de 42 | | 582 |
+| Cámara | 7 | 69,5 % (153 de 220) | 13,8 % (58 de 420) | 0 |
+| Cámara | 14 | 72,3 % (159 de 220) | 15,2 % (64 de 420) | 0 |
+| Cámara | 21 | 67,3 % (148 de 220) | 13,3 % (56 de 420) | 0 |
+| Cámara | 30 | 60,5 % (133 de 220) | 12,4 % (52 de 420) | 0 |
+
+Por escenario (detección; entre paréntesis, días evaluados cuando no son todos):
+
+| Modo | Días | `semana_sin_salir` | `comida_camara_ausente` | `sin_medicacion` | `bano_nocturno_excesivo` | `comida_salteada` |
+|---|---|---|---|---|---|---|
+| Sensor | 7 | 78,9 % | 90,0 % (20) | 88,9 % (9) | 47,6 % | 30,0 % (20) |
+| Sensor | 14 | 75,5 % | 89,5 % (19) | 88,9 % (9) | 57,1 % | 36,8 % (19) |
+| Sensor | 21 | 75,5 % | 93,8 % (16) | 87,5 % (8) | 52,9 % (17) | 38,9 % (18) |
+| Cámara | 7 | 78,9 % | 95,2 % | 30,0 % | 52,4 % | 14,3 % |
+| Cámara | 14 | 80,3 % | 90,5 % | 30,0 % | 61,9 % | 28,6 % |
+| Cámara | 21 | 78,9 % | 76,2 % | 10,0 % | 42,9 % | 28,6 % |
+| Cámara | 30 | 70,1 % | 57,1 % | 20,0 % | 42,9 % | 33,3 % |
+
+Lectura, con dos advertencias sobre cómo cuenta el protocolo:
+
+- **Los dos modos no cuentan igual los días que caen dentro del período de aprendizaje.** En
+  modo sensor una etiqueta sin score del multivariado se saca de la cuenta ("sin evaluar"); en
+  modo cámara se queda y cuenta como no detectada (o como no falso positivo). Con 30 días, 223
+  de las 640 etiquetas (36 positivas, 187 negativas) caen antes de que el detector pueda
+  opinar. Buena parte de la caída del modo cámara a 30 días (69,5 % → 60,5 %) es eso: días en
+  los que el sistema todavía está callado, no días que evaluó mal. La baja de falsos positivos
+  tiene la misma causa.
+- **Sensor con 30 días no se puede medir con este protocolo.** `window_days` también es 30, así
+  que el detector exige los 30 días previos completos, y los días con desvío inyectado se
+  excluyen de la referencia: cualquier día con uno inyectado en los 30 anteriores queda sin
+  score. Quedan 58 etiquetas de 640. Medirlo bien requiere agrandar `window_days` junto con el
+  período de aprendizaje, que es otro experimento.
+- Con esas salvedades: entre 7 y 21 días el modo sensor detecta lo mismo (72,1 – 72,8 %) y
+  con 14 o 21 tiene más falsos positivos (13,1 % → 16,4 – 16,6 %), sobre menos días evaluados.
+  En modo cámara, 14 días da la mejor detección (72,3 %) con algo más de falsos positivos
+  (15,2 %); la diferencia con 7 días son 6 días detectados de 220 y 6 falsos positivos de 420,
+  del orden de lo que mueve un empate (ver la tabla de criterios, arriba).
+- **Conclusión que los datos sostienen:** esperar más de 7 días no mejora la detección de
+  forma medible y retrasa el arranque. El período de silencio de 7 días queda como está. Lo
+  que estos datos no permiten afirmar es que 14 sea mejor que 7.
+
+### Actualización 2026-10-13 (2) — `--cv 5` vuelve a dar los números citados por defecto
+
+Decisión tomada con el usuario a partir del hallazgo de la sección anterior: el comportamiento
+por defecto de `evaluate_deviations.py --cv 5` es otra vez el barrido del 2026-09-20, y los
+candidatos del método binomial pasan a una opción explícita.
+
+| Comando | Barrido | Sensor | Cámara (`--camera`) |
+|---|---|---|---|
+| `evaluate_deviations.py --cv 5` (**default, número a citar**) | Solo `ausencia_metodo="umbral"`, 384 candidatos, `frac_historica_min` como bucle de más afuera | **72,8 % / 13,1 %** | **69,5 % / 13,8 %** |
+| `evaluate_deviations.py --cv 5 --binomial` | Lo anterior más los candidatos binomiales, 672 en total, en el orden del experimento del 2026-10-08 | 71,0 % / 14,2 % | 67,3 % / 16,0 % |
+
+Qué cambió en el código:
+
+- `_grid_configs(min_window_days=None, binomial=False)`: sin `binomial` genera solo los
+  candidatos de umbral, en el orden que tenía `cross_validate` el 2026-09-20. Ese orden no hay
+  que tocarlo: con empate de recall gana el primer candidato, y en modo cámara reordenar los
+  mismos candidatos mueve el resultado de 69,5 %/13,8 % a 68,2 %/14,0 % (ver la tabla de
+  criterios de la sección anterior).
+- `cross_validate(..., binomial=False)` y la opción `--binomial` de la línea de comandos.
+- El método binomial en sí (`ausencia_metodo="binomial"` en `ClassDeviationConfig`) no cambió:
+  sigue implementado y se puede medir con `--binomial`. Lo único que cambia es que ya no
+  compite por defecto. El barrido simple sin `--cv` tampoco cambió (nunca incluyó binomial).
+- `cv_grid.py` sigue el mismo criterio: `cross_validate_from_grid(grid, binomial=False)`, y
+  `CRITERIOS` pasó a llamarse `"umbral"` (antes `"documentado"`) y `"con_binomial"` (antes
+  `"actual"`). Los barridos guardados (`synthetic_eval/cv_grid_*.pkl`) siguen sirviendo.
+
+**Verificación** (`verify_cv_grid.py --completo`, 2026-10-13):
+
+- `cross_validate` real, con el barrido completo por defecto, en los dos modos: sensor 72,8 %
+  / 13,1 % (158 de 217, 49 de 373) y cámara 69,5 % / 13,8 % (153 de 220, 58 de 420). Son los
+  cuatro conteos de referencia; el script falla si alguno difiere.
+- `cv_grid.py` contra `cross_validate`, barrido reducido: particiones idénticas en 8 casos
+  (sensor y cámara, 7 y 21 días de aprendizaje, con y sin `binomial`).
+- `evaluate_classifier_noise.py` y `evaluate_learning_period.py`, vueltos a correr después del
+  cambio, dan las mismas tablas de la sección anterior.
+
+No se volvió a correr `--cv 5 --binomial` completo después del cambio (media hora por modo): esa
+rama del código no se modificó, sus 12 corridas completas de la mañana coinciden con `cv_grid.py`
+y el barrido reducido con `binomial` da igual por los dos caminos.
+
+Los números de las tablas de la "Actualización 2026-10-08" que comparan contra "72,8 %/13,1 %
+(actual)" siguen siendo válidos: esa referencia era, y vuelve a ser, la del barrido por defecto.
+
+### Actualización 2026-10-13 (3) — detector de horario medido con validación cruzada, y pérdida de eventos de puerta
+
+Segunda ronda del mismo día, sobre dos puntos que la primera dejó flojos.
+
+#### Detector de horario: acotar clases y calibrar por clase NO se adoptó
+
+Motivo de la prueba: por el camino de producción el detector de horario dispara dos alertas
+sobre un día real sin modificar (`cloud/README.md`, "La línea base por el camino de producción,
+medida"). Se probó lo que proponía "Pendiente": acotar las clases que sigue a las de horario
+disciplinado y calibrarlo por clase. Criterio acordado: adoptar solo si baja los falsos
+positivos sin perder detección.
+
+`evaluate_timing_cv.py` (nuevo). Mismo banco de pruebas que `evaluate_timing_deviations.py` (a
+3 eventos reales por hogar y clase se les corre el horario 3 horas; 8 sin tocar son los
+negativos), con tres cambios: los 21 hogares con historial suficiente en vez de 7, tres semillas
+de inyección juntas, y validación cruzada por hogar en 5 particiones (los parámetros se eligen
+con unos hogares y se miden con otros). Barrido por clase: `window_events` 40/60/90,
+`k_time_slots` 1/2/3, `excess_k` 2,0 a 5,0 (54 candidatos). Dos vocabularios: el de producción
+(`cam_*`, armado desde CASAS con el mapeo de `evaluate_classifier_noise.py`, etiquetas limpias)
+y el canónico de CASAS (`DEFAULT_TRACKED_CLASSES`).
+
+Además de la tasa por etiqueta se midió la **falsa alarma por día**: de 315 días reales sin
+tocar (5 por hogar y semilla), cuántos reciben al menos una alerta de horario. Es lo que ve un
+familiar.
+
+Variantes, todas sobre las mismas etiquetas:
+
+- **Actual:** todas las clases con `TimingConfig()` (ventana 60, 2 franjas, `excess_k` 3,0).
+- **Misma detección:** por clase, los parámetros de menos falsos positivos entre los que en
+  entrenamiento detectan al menos lo mismo que la actual. Es la prueba directa del criterio.
+- **Calibrado:** por clase, la mayor detección con falsos positivos ≤ 5 % en entrenamiento (si
+  ninguno llega, el de menos falsos positivos).
+- **Acotado:** como calibrado, pero una clase solo se sigue si en entrenamiento llega a falsos
+  positivos ≤ 5 % con detección ≥ 30 %. Los dos umbrales se fijaron antes de medir.
+
+Vocabulario de producción (692 positivos, 1.683 negativos):
+
+| Variante | Detección | Falsos positivos | Días normales con alguna alerta |
+|---|---|---|---|
+| Actual | 51,3 % (355) | 36,8 % (620) | 65,7 % (207 de 315) |
+| Misma detección | 47,0 % (325) | 36,6 % (616) | 63,2 % (199) |
+| Calibrado | 15,8 % (109) | 11,9 % (200) | 23,2 % (73) |
+| Acotado | 0 % | 0 % | 0 % |
+
+| Clase (detección / falsos positivos) | Actual | Calibrado |
+|---|---|---|
+| `cam_cocina` | 63 % / 43 % | 26 % / 13 % |
+| `cam_comida` | 47 % / 33 % | 8 % / 8 % |
+| `cam_descanso_sofa` | 49 % / 33 % | 19 % / 16 % |
+| `cam_ocio_sentado` | 45 % / 39 % | 10 % / 10 % |
+
+Vocabulario canónico de CASAS (801 positivos, 1.964 negativos):
+
+| Variante | Detección | Falsos positivos | Días normales con alguna alerta |
+|---|---|---|---|
+| Actual | 44,8 % (359) | 21,9 % (430) | 58,1 % (183 de 315) |
+| Misma detección | 42,9 % (344) | 19,2 % (378) | 48,3 % (152) |
+| Calibrado | 17,6 % (141) | 6,6 % (129) | 16,8 % (53) |
+| Acotado (queda solo `medicacion`) | 4,0 % (32) | 0,6 % (11) | 0,6 % (2) |
+
+| Clase (detección / falsos positivos) | Actual | Calibrado |
+|---|---|---|
+| `medicacion` | 67 % / 10 % | 40 % / 5 % |
+| `comer` | 55 % / 18 % | 35 % / 9 % |
+| `dormir` | 40 % / 32 % | 3 % / 5 % |
+| `salir_casa` | 39 % / 22 % | 11 % / 6 % |
+| `beber` | 35 % / 22 % | 11 % / 7 % |
+
+Lectura:
+
+- **Ninguna variante cumple el criterio.** La pensada para no perder detección tampoco lo
+  logra fuera de los hogares con los que se eligió: en producción pierde 4,3 puntos de
+  detección sin bajar los falsos positivos (36,8 % → 36,6 %); en el canónico baja 2,7 puntos de
+  falsos positivos y pierde 1,9 de detección. Las otras dos bajan mucho los falsos positivos,
+  pero porque detectan mucho menos.
+- **Decisión: el detector quedó como estaba** (`TimingConfig()` y las mismas clases, en
+  `baseline/run_live.py` y en `cloud/app/baseline_runner.py`). No se cambió ningún default.
+- **Lo que la medición sí deja claro, y es peor de lo que se sabía:** con las clases que la
+  cámara produce hoy, el detector de horario marca al menos una alerta en **dos de cada tres
+  días normales** (65,7 %). Ninguna clase de cámara tiene horario disciplinado: con el criterio
+  de "acotado" no queda ninguna (en las 5 particiones y con todos los hogares juntos). La única
+  clase que califica es `medicacion` (40 % de detección con 5 % de falsos positivos fuera de
+  muestra), y la cámara no la distingue (ver "Vocabulario de cámara").
+- **Queda una decisión de producto que este criterio no cubre:** seguir emitiendo alertas de
+  horario en producción con esa tasa de falsas alarmas, o dejar de emitirlas y resignar el
+  51 % de detección de corrimientos de 3 horas. Los datos apuntan a lo segundo, pero es perder
+  detección y por eso no se aplicó.
+- `cam_moverse` no tiene equivalente en CASAS: no se pudo medir.
+
+Límites: etiquetas limpias (sin el error del clasificador), un solo tamaño de corrimiento (3
+horas), y un negativo cuenta como falso positivo si cualquier evento de esa clase en ese día
+queda marcado, que es como se comporta el detector (una alerta por evento).
+
+**Lo que sí se adoptó, porque no cambia ningún resultado:**
+
+- `score_timing_deviations(..., evaluate_only={(hogar, fecha)})`: evalúa solo los eventos de
+  esos días y usa el resto del historial como referencia. Cada evento se compara solo contra
+  los anteriores, así que el resultado para esos días es idéntico. El proceso diario lo usa
+  con el día evaluado. Comprobado: salida idéntica a la del código anterior en dos hogares
+  completos (138 y 384 eventos marcados, dos configuraciones), idéntica con y sin
+  `evaluate_only`, y las mismas 6 alertas en la prueba por el camino de producción. El proceso
+  diario pasó de 42 segundos por hogar a menos de 2 (60 días de historial, misma PC).
+- `timing_statistics()`: la parte cara (el clustering) separada del umbral, para probar varios
+  `excess_k` sin repetirla. `TimingConfig.por_clase` permite parámetros distintos por clase;
+  está vacío por defecto y nada lo usa en producción.
+
+#### Sensibilidad a entradas y salidas perdidas
+
+La prueba de ruido no le aplica error a `salir_casa`/`entrar_casa` porque no hay un detector
+de puerta medido. Sin un error medido, `evaluate_door_event_loss.py` (nuevo) hace un análisis
+de sensibilidad con tres niveles **supuestos**: cada evento de `salir_casa` y de `entrar_casa`
+se pierde, de forma independiente, con probabilidad 10 %, 20 % o 30 %. El resto queda limpio.
+Validación cruzada por hogar en modo cámara, barrido por defecto, 220 positivos y 420
+negativos; 3 semillas por nivel (la inyección y las particiones no cambian).
+
+| Eventos de puerta perdidos | `semana_sin_salir` (147 días) | Detección global | Falsos positivos |
+|---|---|---|---|
+| 0 % (referencia) | 78,9 % (116) | 69,5 % (153) | 13,8 % (58) |
+| 10 % | 76,9 – 80,3 % (113 – 118) | 68,2 – 70,9 % (150 – 156) | 14,0 – 16,0 % (59 – 67) |
+| 20 % | 76,2 – 80,3 % (112 – 118) | 67,3 – 71,4 % (148 – 157) | 14,0 – 16,2 % (59 – 68) |
+| 30 % | 76,2 – 77,6 % (112 – 114) | 66,8 – 69,5 % (147 – 153) | 14,0 – 16,0 % (59 – 67) |
+
+Rangos: mínimo y máximo entre las 3 semillas. Con 30 % de pérdida quedan unas 5.380 de las
+7.716 salidas, y entre 91 y 102 de los 1.929 días con alguna salida quedan sin ninguna.
+
+Lectura:
+
+- `semana_sin_salir` aguanta: con 30 % de eventos perdidos baja entre 1,3 y 2,7 puntos (2 a 4
+  días de 147). Se detecta por ausencia sostenida, y para que un día normal parezca "sin
+  salir" hay que perder todas sus salidas, cosa que con 30 % pasa en 1 de cada 20 días.
+- El costo aparece en los falsos positivos: suben entre 0,2 y 2,4 puntos (1 a 10 días de 420),
+  por los días normales que quedan sin ninguna salida registrada. No crece de forma ordenada
+  con la pérdida: dentro de cada nivel la semilla mueve tanto como el nivel.
+- Con 10 % y 20 % el efecto sobre la detección no se distingue del ruido entre semillas (el
+  rango incluye el valor de referencia).
+
+Límites, que pesan más que en la prueba de ruido: los niveles son supuestos, no medidos; las
+pérdidas son independientes entre eventos, y una cámara real falla de forma sistemática (si no
+ve la puerta, pierde todas); y no se modelan entradas o salidas inventadas, que atacarían
+justo lo que hace robusto al escenario (ver un cero). Hoy la cámara no produce estos eventos
+(ver "Vocabulario de cámara"): esto acota cuánto error toleraría un detector de puerta, no
+dice que exista.
+
+### Actualización 2026-10-13 (4) — las alertas del detector de horario quedan apagadas por defecto
+
+Decisión del usuario sobre lo que la sección anterior dejó abierto: el proceso diario deja de
+emitir desvíos originados por el detector de horario. Se resigna su detección de corrimientos
+de horario (51,3 % en la medición de arriba) a cambio de no avisar en dos de cada tres días
+normales (65,7 %).
+
+- **En la nube** (`cloud/app/baseline_runner.py`, el camino de producción): el detector de
+  horario solo corre si la variable de entorno `ALERTAS_DE_HORARIO_ACTIVADAS` vale `1` (también
+  `true`, `si`, `yes`). Sin la variable, o con cualquier otro valor, está apagado.
+- **En local** (`run_live.py`): mismo criterio, con la opción `--timing`. Apagado sin ella.
+- **No se borró nada**: `src/timing_deviations.py`, `evaluate_timing_deviations.py` y
+  `evaluate_timing_cv.py` siguen igual y se pueden seguir midiendo.
+- **Los otros tres detectores no cambian**: multivariado (clustering), por clase (por
+  actividad) y tendencia siguen emitiendo como antes.
+- **El horario habitual de la pantalla de Reportes no se toca**: lo calcula `cloud/app/rutina.py`
+  con su propia cuenta (mediana y MAD de la primera comida), que nunca usó este detector.
+- Los `routine_deviation` de horario que ya estuvieran guardados no se borran ni se modifican.
+
+**No cambia ningún número de validación cruzada.** `evaluate_deviations.py --cv 5` **no incluye
+el detector de horario** y nunca lo incluyó: el 72,8 %/13,1 % (sensor) es el detector por clase
+combinado con el multivariado, y el 69,5 %/13,8 % (cámara) es el detector por clase solo.
+Tampoco incluyen el detector de tendencia. Los cuatro escenarios con los que se miden esos
+números (ausencias, excesos y déficits de un día, y una semana sin salir) no corren ningún
+horario, así que el detector de horario no tenía nada que detectar ahí. Por lo mismo, tampoco
+cambian las pruebas de ruido del clasificador, de período de aprendizaje ni de pérdida de
+eventos de puerta. Los únicos números del detector de horario son los de
+`evaluate_timing_deviations.py` y `evaluate_timing_cv.py`, que se miden aparte.
+
+Lo que sí cambia es lo que emite el proceso diario, medido en la prueba por el camino de
+producción (`cloud/README.md`): el día sin comidas pasa de 4 alertas a 2 (las dos que provoca
+el desvío inyectado) y el mismo día sin modificar pasa de 2 alertas a ninguna.
+
 ## Patrones identificados pero no priorizados (quedan documentados para no perderlos)
 
 - **Secuencia/orden de la rutina** (ej. medicación sin haber desayunado antes) — el más complejo
@@ -659,7 +1062,11 @@ rápida de entender qué mide cada uno sin leer todo el código primero.
   se lee como "desvío" cuando no lo es).
 - `timing_deviations.py`: acotar `DEFAULT_TRACKED_CLASSES` a las clases con horario disciplinado
   (`medicacion` es la más clara) y calibrar por clase en vez de parámetros compartidos — ver
-  "Horario habitual" arriba, estado parcial.
+  "Horario habitual" arriba, estado parcial. **Medido el 2026-10-13 con validación cruzada por
+  hogar, no se adoptó** (ver "Actualización 2026-10-13 (3)"): baja los falsos positivos solo a
+  costa de la detección. Lo que quedó abierto es si conviene seguir emitiendo alertas de
+  horario con las clases de cámara (66 % de los días normales reciben alguna). **Decidido el
+  mismo día: quedan apagadas por defecto** (ver "Actualización 2026-10-13 (4)").
 - Alinear el período de silencio de `timing_deviations.py` (event-count) y `trend_deviations.py`
   (semanas: la tendencia necesita ~11 semanas de historial antes de poder evaluarse, mucho más que
   los 7-10 días de los otros dos detectores) a un criterio único, documentado hacia el usuario
@@ -732,9 +1139,18 @@ py -3 evaluate_deviations.py --full-grid   # + barrido de DriftConfig (lento, no
 py -3 evaluate_deviations.py --camera      # versión "sin sensor dedicado" (CAMERA_TRACKED_CLASSES, columnas cam_*)
 py -3 evaluate_deviations.py --cv 5        # NÚMERO A CITAR: cross-validation por hogar, modo sensor
 py -3 evaluate_deviations.py --cv 5 --camera  # ídem, modo cámara
+py -3 evaluate_deviations.py --cv 5 --binomial  # experimento del 2026-10-08 (71,0/14,2 sensor), NO es el número a citar
+
+# pruebas del 2026-10-13 (guardan cada barrido en synthetic_eval/cv_grid_*.pkl; borrarlos si se regenera el set)
+py -3 evaluate_classifier_noise.py         # modo cámara con el error real del clasificador, 3 semillas
+py -3 evaluate_learning_period.py          # min_window_days = 7, 14, 21 y 30, modos sensor y cámara
+py -3 verify_cv_grid.py                    # comprueba que cv_grid.py da lo mismo que cross_validate
+py -3 verify_cv_grid.py --completo         # además exige que --cv 5 dé 72,8/13,1 y 69,5/13,8 (unos 20 min)
 
 # horario habitual por actividad
 py -3 evaluate_timing_deviations.py        # genera e inyecta internamente, no requiere paso previo
+py -3 evaluate_timing_cv.py                # 2026-10-13: validación cruzada por hogar, por clase, vocabularios cámara y sensor (~35 min la primera vez)
+py -3 evaluate_door_event_loss.py          # 2026-10-13: modo cámara perdiendo 10/20/30 % de salir_casa y entrar_casa
 
 # tendencia gradual (semanas)
 py -3 inject_gradual_trend.py              # genera synthetic_eval/day_vectors_trend_perturbed.parquet + labels_trend.parquet

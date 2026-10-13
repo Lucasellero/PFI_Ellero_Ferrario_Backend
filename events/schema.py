@@ -9,6 +9,13 @@ inicio del archivo), no un timestamp de reloj real. Ver README.md.
 batch sobre `videos/` (no tiene sentido ahí), poblado por `runner/` cuando
 procesa un stream real. `baseline/` lo necesita para saber a qué día/hora
 del mundo real pertenece cada evento de actividad.
+
+`event_id` identifica al evento de forma única (UUID en hexadecimal). Lo
+asigna `events/store.py` al guardarlo en la controladora, así que quien crea
+el evento no necesita pasarlo. Viaja a la nube con el evento para que
+`POST /devices/events` reconozca uno que ya recibió y no lo guarde dos veces
+(ver "Ingestión idempotente" en `cloud/README.md`). `None` en un evento que
+todavía no pasó por el store.
 """
 from __future__ import annotations
 
@@ -29,4 +36,5 @@ class MonitoringEvent(BaseModel):
     event_type: EventType
     video_timestamp_s: float
     wall_clock_ts: float | None = None
+    event_id: str | None = None
     metadata: dict = Field(default_factory=dict)

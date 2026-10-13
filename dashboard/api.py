@@ -38,13 +38,13 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from runner.focus_state import write_focused_camera
 from runner.motion_state import read_all_motion_state
 from runner.overlay_state import read_overlay_enabled, write_overlay_enabled
+from runner.preview_file import FRAMES_DIR, delete_preview
 
 ROOT = Path(__file__).resolve().parents[1]
 CAMERAS_YAML = ROOT / "cameras.yaml"
 DB_PATH = ROOT / "events" / "events.db"
 VIDEOS_DIR = ROOT / "videos"
 UPLOADS_DIR = VIDEOS_DIR / "uploads"
-FRAMES_DIR = ROOT / "frames"
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = FastAPI(title="Monitor Dashboard")
@@ -225,6 +225,10 @@ async def stop_runner() -> dict:
         raise HTTPException(400, "El runner no está en ejecución")
     runner_proc.terminate()
     await runner_proc.wait()
+    # El runner borra la vista previa de cada cámara al detenerse, pero en Windows `terminate()`
+    # lo mata sin darle tiempo: se borra también acá para que la imagen no quede en disco.
+    for cam in _read_cameras_yaml().get("cameras") or []:
+        delete_preview(str(cam.get("id", "")), FRAMES_DIR)
     return {"status": "stopped"}
 
 
@@ -370,7 +374,7 @@ async def set_focus(body: dict) -> dict:
 @app.get("/api/frame-stream/{cam_id}")
 async def stream_frame(cam_id: str) -> StreamingResponse:
     """Stream MJPEG (multipart/x-mixed-replace) del preview que ya escribe
-    runner/ en frames/{cam_id}.jpg (con overlay de pose si está activado) —
+    runner/ en runner_state/frames/{cam_id}.jpg (con overlay de pose si está activado) —
     tailea el archivo por mtime y empuja cada versión nueva. Fluido solo
     mientras esa cámara está enfocada (ver /api/focus); si no, se actualiza a
     la tasa reducida de siempre (1 de cada 5 frames)."""

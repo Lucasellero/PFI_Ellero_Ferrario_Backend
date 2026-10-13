@@ -16,6 +16,7 @@ Uso:
   py -3 evaluate_deviations.py --camera     # versión "sin sensor dedicado"
   py -3 evaluate_deviations.py --cv 5               # cross-validation por hogar, modo sensor
   py -3 evaluate_deviations.py --cv 5 --camera       # ídem, modo cámara
+  py -3 evaluate_deviations.py --cv 5 --binomial     # sumar los candidatos del método binomial (no es el número a citar)
 """
 from __future__ import annotations
 
@@ -47,10 +48,37 @@ AUSENCIA_REQUIERE_RACHA_GRID = (False, True)
 AUSENCIA_ALPHA_GRID = (0.01, 0.02, 0.05)
 
 
-def _grid_configs():
-    """Genera los `ClassDeviationConfig` candidatos del barrido — unión del esquema original
-    (`ausencia_metodo="umbral"`, barre `frac_historica_min`) y el binomial (barre `ausencia_alpha`
-    en su lugar)."""
+def _grid_configs(min_window_days: int | None = None, binomial: bool = False):
+    """Genera los `ClassDeviationConfig` candidatos del barrido de `cross_validate`.
+
+    Por defecto es el barrido del 2026-09-20: solo `ausencia_metodo="umbral"`, con
+    `frac_historica_min` como bucle de más afuera. Es el que da los números citados (72,8 %/13,1 %
+    sensor, 69,5 %/13,8 % cámara). El orden importa: cuando dos candidatos empatan en recall gana
+    el primero, así que no hay que reordenar estos bucles.
+
+    `binomial=True` (`--binomial`) es el barrido del experimento del 2026-10-08: suma los
+    candidatos `ausencia_metodo="binomial"` (barre `ausencia_alpha` en lugar de
+    `frac_historica_min`) y recorre todo en el orden de ese experimento, con `excess_k` afuera. Da
+    71,0 %/14,2 % (sensor) y 67,3 %/16,0 % (cámara). Entre el 2026-10-08 y el 2026-10-13 fue el
+    comportamiento por defecto sin que quedara anotado; ver "Actualización 2026-10-13 (2)" en
+    README.md.
+
+    `min_window_days` (período de aprendizaje) no se barre: `None` deja el default del dataclass;
+    un valor lo fija en todos los candidatos (ver `--min-window-days`)."""
+    fijos = {} if min_window_days is None else {"min_window_days": min_window_days}
+    if not binomial:
+        for frac in FRAC_HISTORICA_GRID:
+            for excess_k in EXCESS_K_GRID:
+                for dias_cons in DIAS_CONSECUTIVOS_GRID:
+                    for sep in SEPARAR_FINDE_GRID:
+                        for ded in DIAS_CONSECUTIVOS_EXCESO_DEFICIT_GRID:
+                            for req in AUSENCIA_REQUIERE_RACHA_GRID:
+                                yield ClassDeviationConfig(
+                                    frac_historica_min=frac, excess_k=excess_k, dias_consecutivos_ausencia=dias_cons,
+                                    separar_fin_de_semana=sep, dias_consecutivos_exceso_deficit=ded,
+                                    ausencia_requiere_racha=req, ausencia_metodo="umbral", **fijos,
+                                )
+        return
     for excess_k in EXCESS_K_GRID:
         for dias_cons in DIAS_CONSECUTIVOS_GRID:
             for sep in SEPARAR_FINDE_GRID:
@@ -59,7 +87,7 @@ def _grid_configs():
                         comunes = dict(
                             excess_k=excess_k, dias_consecutivos_ausencia=dias_cons,
                             separar_fin_de_semana=sep, dias_consecutivos_exceso_deficit=ded,
-                            ausencia_requiere_racha=req,
+                            ausencia_requiere_racha=req, **fijos,
                         )
                         for frac in FRAC_HISTORICA_GRID:
                             yield ClassDeviationConfig(frac_historica_min=frac, ausencia_metodo="umbral", **comunes)
@@ -145,6 +173,8 @@ def cross_validate(
     seed: int = 0,
     max_fp: float = 0.15,
     metric: str = "combinado",
+    min_window_days: int | None = None,
+    binomial: bool = False,
 ) -> tuple[pd.DataFrame, dict]:
     """K-fold por HOGAR (no por día — mismo criterio que `GroupKFold` por video en
     `vision/`/`fusion/`): en cada fold, la grilla de `ClassDeviationConfig` se elige mirando solo
@@ -158,6 +188,13 @@ def cross_validate(
     multivariado por completo — ver "Actualización 2026-10-08" en README.md: en modo sensor, 26%
     del FP medido viene solo del multivariado, que aporta poco recall propio; esto mide si sacarlo
     mejora el trade-off recall/FP out-of-fold). Sin efecto en modo cámara (nunca usa multivariado).
+
+    `min_window_days`: período de aprendizaje a evaluar, en días. `None` (default) usa el de los
+    dataclasses (7). Un valor lo fija en los dos detectores (`DriftConfig` y todos los candidatos
+    de `ClassDeviationConfig`) — ver "Actualización 2026-10-13" en README.md.
+
+    `binomial`: `False` (default) elige entre los candidatos de umbral del barrido del 2026-09-20,
+    el de los números citados. `True` suma los del método binomial (ver `_grid_configs`).
     """
     if metric not in ("combinado", "por_clase"):
         raise ValueError(f"metric tiene que ser 'combinado' o 'por_clase', no {metric!r}")
@@ -170,7 +207,8 @@ def cross_validate(
     scored_all = None
     if not camera:
         exclude_all = {(r.hogar, r.fecha) for r in labels.itertuples() if r.es_positivo}
-        scored_all = score_days(perturbed, DriftConfig(), exclude_from_reference=exclude_all)
+        drift_config = DriftConfig() if min_window_days is None else DriftConfig(min_window_days=min_window_days)
+        scored_all = score_days(perturbed, drift_config, exclude_from_reference=exclude_all)
 
     def _eval(perturbed_sub, labels_sub, cfg):
         if camera:
@@ -193,7 +231,7 @@ def cross_validate(
         train_perturbed = perturbed[perturbed.index.get_level_values("hogar").isin(train_homes)]
 
         grid_results = []
-        for cfg in _grid_configs():
+        for cfg in _grid_configs(min_window_days, binomial=binomial):
             r, _ = _eval(train_perturbed, train_labels, cfg)
             grid_results.append((r[fp_key], r[recall_key], cfg))
 
@@ -236,6 +274,7 @@ def cross_validate(
         "n_pos": int(len(pos)),
         "n_neg": int(len(neg)),
         "recall_por_escenario": pos.groupby("escenario")[hit_col].mean().to_dict() if len(pos) else {},
+        "n_por_escenario": pos.groupby("escenario")[hit_col].size().to_dict() if len(pos) else {},
     }
     return pd.DataFrame(fold_rows), pooled_summary
 
@@ -278,6 +317,19 @@ def main() -> None:
         default="combinado",
         help="solo con --cv, modo sensor: 'por_clase' ignora el multivariado (ver Actualización 2026-10-08 en README.md)",
     )
+    ap.add_argument(
+        "--min-window-days",
+        type=int,
+        default=None,
+        metavar="DIAS",
+        help="solo con --cv: período de aprendizaje a evaluar (default: el de los dataclasses, 7)",
+    )
+    ap.add_argument(
+        "--binomial",
+        action="store_true",
+        help="solo con --cv: sumar al barrido los candidatos del método binomial para `ausencia` (experimento del "
+        "2026-10-08). Sin esto se usa el barrido de umbral del 2026-09-20, el de los números citados",
+    )
     args = ap.parse_args()
 
     if not (args.dir / "day_vectors_perturbed.parquet").exists():
@@ -292,6 +344,7 @@ def main() -> None:
         print(f"Cross-validation por hogar, {args.cv} folds, modo {modo} ...")
         fold_df, pooled = cross_validate(
             perturbed, labels, n_folds=args.cv, camera=args.camera, max_fp=args.max_fp, metric=args.metric,
+            min_window_days=args.min_window_days, binomial=args.binomial,
         )
         pd.set_option("display.width", 200)
         print()
@@ -303,7 +356,7 @@ def main() -> None:
         print(f"  n_pos = {pooled['n_pos']}   n_neg = {pooled['n_neg']}")
         print("  por escenario:")
         for esc, v in pooled["recall_por_escenario"].items():
-            print(f"    {esc}: {v:.1%}")
+            print(f"    {esc}: {v:.1%}  (n = {pooled['n_por_escenario'][esc]})")
         return
 
     if args.camera:

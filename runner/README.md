@@ -22,7 +22,10 @@ runner/
 ├── camera_worker.py    # thread por cámara: gate de movimiento + pose pipeline + CLIP periódico + frame preview
 ├── motion_gate.py       # detector de movimiento barato (MOG2) que pausa YOLO/CLIP sin nadie en cuadro
 ├── motion_state.py      # publica awake/dormida por cámara en runner_state/motion/, para que dashboard/ lo muestre
-└── overlay_state.py     # lee/escribe runner_state/overlay.json (toggle de overlay compartido con dashboard/)
+├── overlay_state.py     # lee/escribe runner_state/overlay.json (toggle de overlay compartido con dashboard/)
+├── preview_file.py      # ruta y borrado de la vista previa runner_state/frames/{id}.jpg (ver "Frame preview")
+├── cloud_sync.py        # thread opcional: envía eventos a la nube y purga los ya enviados
+└── tests/               # pruebas con pytest (ver "Pruebas")
 ```
 
 Un `CameraWorker` (thread) por cámara. Cada worker corre su propia instancia
@@ -353,7 +356,7 @@ mismo patrón que `overlay_state.py` — un archivo porque `dashboard/` corre
 en un proceso separado del runner). Un archivo por cámara, no uno
 compartido: varios threads (uno por cámara) escribirían al mismo archivo si
 fuera uno solo, y cada worker sanitiza su propio id para el nombre de
-archivo igual que ya hace para el frame preview (`frames/{id}.jpg`). Se
+archivo igual que ya hace para el frame preview (`runner_state/frames/{id}.jpg`). Se
 escribe en las transiciones de despertar/dormir (para que el dashboard
 reaccione al toque) y además cada `_FRAME_PREVIEW_EVERY_N` frames como
 heartbeat mientras está despierta. `dashboard/` expone ese estado en
@@ -389,7 +392,8 @@ literalmente el comportamiento de antes de que existiera `fusion/`.
 
 ## Frame preview
 
-Cada worker guarda 1 de cada 5 frames como `../frames/<cam_id>.jpg`
+Cada worker, mientras su cámara está despierta, guarda 1 de cada 5 frames como
+`../runner_state/frames/<cam_id>.jpg`
 (escritura atómica vía archivo temporal + `replace`), que expone
 `dashboard/` en `GET /api/frame/{cam_id}` para mostrar la cámara en vivo en
 el panel. Si YOLO detectó a alguien en ese frame, el preview incluye el
@@ -415,6 +419,49 @@ Dibujar ese overlay es opcional: cada worker consulta
 `runner/` corren en procesos separados, el archivo es la forma más simple de
 que el toggle de la UI afecte a todas las cámaras ya en ejecución sin que un
 proceso importe código del otro.
+
+### La vista previa no queda en disco (2026-10-13)
+
+`runner_state/frames/<cam_id>.jpg` es la única imagen del hogar que la
+controladora escribe en disco. El informe (capítulo 3, Viabilidad Legal) declara que no se conserva,
+así que ahora solo existe mientras la cámara se está analizando
+(`preview_file.py`, llamado desde `camera_worker.py`):
+
+- **Se borra cuando el runner se detiene.** Cada worker la borra en el
+  `finally` de `run()`, que corre con Ctrl+C, con `SIGTERM`, cuando la fuente
+  termina y cuando hay un error.
+- **Se borra cuando la cámara se duerme** por el gate de movimiento
+  (`_sleep()`), y **mientras está dormida no se vuelve a escribir**. Antes una
+  cámara dormida seguía guardando 1 de cada 5 frames (y todos si estaba en
+  foco); si eso se mantenía, el borrado duraba cinco frames. Vuelve a
+  escribirse cuando la cámara despierta.
+- **Se borra al arrancar**, por si la corrida anterior no llegó a limpiar
+  (corte de luz, proceso matado). Con el gate activo la cámara arranca dormida,
+  así que sin esto el panel mostraría una imagen vieja como si fuera actual.
+- Se borra también el temporal `<cam_id>.tmp.jpg` si quedó uno a medio
+  escribir. No se toca ningún otro archivo.
+
+Consecuencias para el panel, verificadas (ver `dashboard/README.md`): con el
+runner detenido o la cámara dormida, `GET /api/frame/{cam_id}` responde 404 y
+la celda muestra su placeholder; el stream de la vista única espera sin cortar
+la conexión y retoma solo cuando la cámara despierta. Una cámara que arranca
+dormida no muestra imagen hasta el primer movimiento: para revisar el encuadre
+durante la instalación hay que moverse delante de la cámara o poner
+`motion_gate_enabled: false`.
+
+**Límite conocido en Windows:** `dashboard/` detiene el runner con
+`terminate()`, que en Windows mata el proceso sin ejecutar el `finally`. Por
+eso `POST /api/stop` borra también la vista previa de cada cámara de
+`cameras.yaml`. En Linux (la Pi) `terminate()` es `SIGTERM` y el runner limpia
+solo. Lo que no se puede cubrir es un corte de luz: la imagen queda en disco
+hasta el próximo arranque.
+
+**La vista previa ya no vive en `frames/`.** Antes se escribía en
+`frames/<cam_id>.jpg`, la misma carpeta de las imágenes de demo versionadas en
+git. Como `cameras.yaml` tiene una cámara con `id: webcam`, el runner pisaba
+`frames/webcam.jpg` en cada corrida y, con el borrado, además lo eliminaba. Ahora
+se escribe en `runner_state/frames/`, que git ignora, y `frames/` queda solo con
+las imágenes de demo: el runner no la toca más.
 
 ## Setup
 
@@ -443,6 +490,128 @@ tiene una sección `cloud:`) que lee eventos locales no sincronizados
 conexión no pierde nada: los eventos siguen en `events/events.db` hasta que se confirma el envío
 (RNF6/RNF7 del informe). Sin esa sección en `cameras.yaml`, el runner funciona exactamente igual
 que antes — 100% local.
+
+```yaml
+cloud:
+  url: https://monitor-api.ejemplo.com   # base del backend, sin /devices/events
+  api_key: "la-api-key-del-kit"          # la muestra una sola vez cloud/alta_kit.py
+  interval_s: 30                         # segundos entre sincronizaciones (default 30)
+  retencion_local_dias: 7                # ver "Retención local de eventos" (default 7)
+```
+
+### Retención local de eventos (2026-10-13)
+
+El informe (capítulo 3, Viabilidad Legal) declara que la controladora borra los eventos una vez
+que están en la nube. Lo hace este mismo thread: después de cada sincronización llama a
+`_purge_if_due`, que **una vez por hora como mucho** (`_PURGE_INTERVAL_S`; la primera, al
+arrancar) borra los eventos que la nube confirmó hace más de `retencion_local_dias` días
+(`EventStore.purge_synced`, ver `events/README.md`). No corre en cada ciclo de 30 segundos.
+
+- `retencion_local_dias` va dentro de `cloud:`, default **7**. Admite decimales. Un valor de 0
+  o negativo hace que el runner no arranque (`ValueError` al leer la config): 0 borraría cada
+  evento apenas se envía, y se prefirió rechazarlo antes que adivinar la intención.
+- **La purga nunca borra un evento que no se envió.** Si no hay conexión, o la nube responde
+  409 porque el kit todavía no está vinculado, los eventos quedan pendientes hasta que se
+  puedan enviar.
+- **Hogar dado de baja:** si el hogar del kit se dio de baja en la nube (`DELETE /hogares/{id}`,
+  ver `cloud/README.md`), la nube responde **410** y `sync_once` descarta ese lote sin enviarlo
+  (`EventStore.discard`). Es el único caso en que se borra un evento no enviado. La cámara
+  sigue analizando, pero lo que genera se descarta en el ciclo siguiente (30 segundos), así
+  que no se acumula nada. Cuando el kit se vuelve a vincular, la nube deja de responder 410 y
+  todo sigue normal, sin heredar eventos del hogar anterior.
+- **Sin sección `cloud:` no se purga nada**: el thread no existe, así que una instalación 100%
+  local conserva todo su historial como antes.
+- La arquitectura no cambia: los eventos se siguen guardando en SQLite antes de sincronizar y
+  el panel local sigue leyendo esa base.
+
+De paso se corrigió un error que ya estaba en este thread: guardaba su `Event` de parada en
+`self._stop`, el nombre de un método interno de `threading.Thread` en Python 3.12, y eso hacía
+fallar `join()` al cerrar el runner con la nube configurada. Ahora se llama `_stop_event`, como
+en `camera_worker.py`.
+
+### Corte y reconexión con la nube, medido (2026-10-13)
+
+Prueba de RNF6 y RNF7 de punta a punta, automatizada en
+`tests/test_cloud_sync_corte_reconexion.py`. No simula la red: levanta el backend `cloud/` real
+(FastAPI + uvicorn, `tests/backend_nube_local.py`) en un proceso aparte contra un SQLite
+temporal, y `cloud_sync.py` le habla por HTTP. "Backend apagado" es ese proceso detenido, con
+el puerto cerrado. Lo único reemplazado es la verificación del token de Firebase que usa la app
+para vincular el kit. Nada toca AWS ni la base de producción.
+
+Cada caso compara, evento por evento (un número en `metadata`), lo que hay en la base local
+de la controladora con lo que devuelve `GET /hogares/{id}/eventos`, y además cuenta las filas
+directo en el SQLite de la nube.
+
+| Caso | Eventos generados | Pendientes durante el corte | Llegaron a la nube | Duplicados | Marcados como enviados |
+|---|---|---|---|---|---|
+| Backend apagado, 3 intentos de envío, después se enciende | 60 | 60 | 60 | 0 | 60 |
+| El backend se cae entre dos lotes (lote = 200) y se generan 30 eventos más durante el corte | 480 | 280 | 480 | 0 | 480 |
+| Kit sin vincular (409), después vinculado sin residente (409), después con residente | 40 | 40 | 40 | 0 | 40 |
+| Thread `CloudSyncThread` corriendo durante el corte, sin reiniciarlo | 25 | 25 | 25 | 0 | 25 |
+
+En los cuatro casos no se perdió ningún evento, cada uno llegó una sola vez y quedó marcado
+como enviado (`cloud_synced_at`). Repetir la sincronización después no envió nada más. En el
+primer caso, la caída y la inmovilidad grave del lote aparecen en `GET /hogares/{id}/alertas`.
+En el del kit sin vincular, la nube no guardó ninguna fila mientras respondía 409.
+
+**Límite encontrado, no cubierto por la prueba automatizada.** "Una sola vez" vale mientras la
+controladora reciba la respuesta de la nube. Si la nube guarda el lote pero la respuesta se
+pierde (corte justo después del `commit`, o más de 15 segundos de demora), la controladora no
+lo marca como enviado y lo manda de nuevo: `POST /devices/events` no reconoce un evento
+repetido. Se verificó a mano contra el backend local: 10 eventos con la respuesta descartada
+quedaron como 20 filas en la nube. La entrega es "al menos una vez", no "exactamente una vez".
+No se pierde nada, pero puede duplicarse un lote. Corregirlo requiere que cada evento lleve
+un identificador propio y que la nube ignore los que ya tiene; no está hecho.
+
+**Corregido el mismo día (2026-10-13, segunda ronda).** Cada evento lleva ahora un
+identificador único (`MonitoringEvent.event_id`) que `events/store.py` genera al guardarlo en
+la controladora y que no cambia en los reenvíos; la nube no vuelve a guardar un evento cuyo
+identificador ya recibió de ese kit (ver "Ingestión idempotente" en `cloud/README.md`).
+`cloud_sync.py` no cambió: sigue reenviando lo que no pudo marcar como enviado, y la nube
+responde 201 con los repetidos contados en `duplicados`, así que la controladora los marca y
+deja de insistir.
+
+Quedó como prueba automatizada (`test_respuesta_perdida_no_deja_filas_duplicadas`), contra el
+backend real en local: 250 eventos en dos lotes; la nube guarda el primero (200) y la respuesta
+se descarta, dos veces seguidas; la controladora sigue con los 250 pendientes. Al volver la
+conexión reenvía el primer lote y manda el segundo.
+
+| | Antes del cambio (verificación a mano, 10 eventos) | Ahora (250 eventos, 2 respuestas perdidas) |
+|---|---|---|
+| Filas en la nube | 20 | 250 |
+| Filas duplicadas | 10 | 0 |
+| Eventos perdidos | 0 | 0 |
+| Alertas en `/alertas` (1 caída + 1 inmovilidad enviadas) | no medido | 2 |
+
+Las cuatro pruebas de corte y reconexión de la tabla de arriba siguen pasando sin cambios.
+La protección depende de que la controladora mande `event_id`: una con el código anterior a
+este cambio no lo manda y sigue como antes (se guarda todo, sin detectar repetidos).
+
+Tampoco se midió qué pasa si se corta la energía de la controladora mientras escribe en su
+SQLite.
+
+## Pruebas
+
+```
+pip install pytest
+pytest runner/tests        # desde la raíz del repo
+```
+
+No necesitan YOLO, PyTorch ni cámaras: `tests/conftest.py` reemplaza `vision/` por un detector
+falso, y todo se escribe en carpetas temporales (nunca en `runner_state/` ni en `events/events.db`).
+Cubren (2026-10-13):
+
+- `test_cloud_sync_retencion.py`: la purga usa los días configurados, corre una vez por hora
+  como mucho, no borra lo que no se pudo enviar, `retencion_local_dias` se lee de `cloud:` con
+  default 7, y sin sección `cloud:` el runner no purga nada. Con un 410 de la nube los eventos
+  pendientes se descartan; con cualquier otro error (409 incluido) se conservan.
+- `test_vista_previa.py`: la vista previa se borra al detenerse el runner, al terminar o fallar
+  la fuente y al dormirse la cámara; dormida no se escribe (ni en foco) y vuelve al despertar.
+- `test_cloud_sync_corte_reconexion.py` (5 pruebas, ver "Corte y reconexión con la nube,
+  medido"): es la única que levanta otro proceso (el backend `cloud/` en un puerto local
+  libre), así que además necesita las dependencias de `cloud/requirements.txt`. Tarda cerca de
+  medio minuto. La quinta (respuesta perdida, 2026-10-13) comprueba que un lote reenviado no
+  deja filas duplicadas.
 
 ## Fuera de alcance por ahora
 

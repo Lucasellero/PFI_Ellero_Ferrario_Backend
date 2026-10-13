@@ -13,6 +13,10 @@ misma función que usa el CLI.
   hay más de una instancia, la que no consigue el candado no hace nada. Si dos instancias corren
   una después de la otra, la segunda no duplica desvíos: `process_hogar` ya es idempotente por
   `(fecha, detector, clave)`. Con SQLite (desarrollo) no hay candado.
+- **Retención**: después de evaluar todos los hogares, y con el mismo candado tomado, se borran
+  los eventos vencidos (`retencion.aplicar_retencion`). Solo corre si están definidas sus
+  variables de entorno; sin ellas no borra nada. Va después de la línea base a propósito: el
+  día recién evaluado se calcula con el historial completo.
 - **Desactivar**: `LINEA_BASE_DIARIA_DESACTIVADA=1` (también acepta `true`/`si`), para tests y
   desarrollo local. El CLI `run_baseline_daily.py` sigue sirviendo para correr un día puntual a
   mano.
@@ -30,6 +34,7 @@ from .baseline_runner import process_hogar
 from .db import SessionLocal, engine
 from .horario import ZONA_ARGENTINA
 from .models import Hogar
+from .retencion import aplicar_retencion
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +63,8 @@ def dia_a_evaluar(ahora: datetime) -> date:
 
 
 def ejecutar_linea_base(fecha: date) -> bool:
-    """Evalúa `fecha` en todos los hogares. Devuelve False si otra instancia tenía el candado."""
+    """Evalúa `fecha` en todos los hogares y después aplica la retención de eventos. Devuelve
+    False si otra instancia tenía el candado."""
     usa_candado = engine.dialect.name == "postgresql"
     with engine.connect() as conexion:
         if usa_candado:
@@ -76,6 +82,11 @@ def ejecutar_linea_base(fecha: date) -> bool:
                         # Un hogar con datos raros no debe frenar al resto.
                         db.rollback()
                         logger.exception("linea_base_diaria: falló el hogar %s el %s", hogar.id, fecha)
+                try:
+                    aplicar_retencion(db, datetime.now(timezone.utc))
+                except Exception:
+                    db.rollback()
+                    logger.exception("linea_base_diaria: falló la retención de eventos")
             finally:
                 db.close()
         finally:
