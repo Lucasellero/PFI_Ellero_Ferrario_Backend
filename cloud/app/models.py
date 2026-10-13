@@ -150,6 +150,11 @@ class Camara(Base):
 
 class Evento(Base):
     __tablename__ = "eventos"
+    # Ingestión idempotente: una cámara no puede tener dos filas con el mismo `event_id`. Como
+    # cada cámara es de un solo kit, equivale a "único por kit". Los eventos sin `event_id`
+    # (los `routine_deviation`, o los de una controladora vieja) no chocan entre sí: NULL no
+    # cuenta como repetido ni en Postgres ni en SQLite.
+    __table_args__ = (UniqueConstraint("camara_id", "event_id", name="uq_eventos_camara_event_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     # nullable: los eventos `routine_deviation` los genera `baseline_runner.py` a partir del
@@ -168,6 +173,9 @@ class Evento(Base):
     # "Marcar como resuelta" en la app: cuándo y quién atendió la alerta
     resuelta_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resuelta_por: Mapped[int | None] = mapped_column(ForeignKey("familiares.id"), nullable=True)
+    # `MonitoringEvent.event_id`: lo genera la controladora al guardar el evento y lo repite en
+    # cada reenvío (ver `routers/devices.py`)
+    event_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     camara: Mapped[Camara] = relationship()
     residente: Mapped[Residente] = relationship()

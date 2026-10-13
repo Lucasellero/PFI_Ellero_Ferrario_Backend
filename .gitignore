@@ -94,3 +94,6 @@ baseline/synthetic_eval/
 evaluation/output/
 *.onnx
 *.onnx.data
+
+# Cache de pytest (ver pytest.ini)
+.pytest_cache/

@@ -7,9 +7,16 @@ No se duplica la lógica de `baseline/src/` — se la importa tal cual (mismo pa
 `sys.path.insert` que ya usa `runner/` para importar `vision/`/`vlm/`) y la única pieza nueva acá
 es la conversión `Evento` (fila ORM) -> `MonitoringEvent` (el mismo objeto que ya consume
 `baseline/src/camera_events.py`), para no reescribir esa lógica contra un segundo formato.
+
+Desde el 2026-10-13 el detector de horario (`timing_deviations`) **no emite alertas por defecto**:
+medido con validación cruzada por hogar, con las clases que produce la cámara marca alguna
+alerta en dos de cada tres días normales (ver "Actualización 2026-10-13 (4)" en
+`baseline/README.md`). Se vuelve a encender con la variable de entorno
+`ALERTAS_DE_HORARIO_ACTIVADAS=1`. Los otros tres detectores no cambian.
 """
 from __future__ import annotations
 
+import os
 import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -42,6 +49,13 @@ from .alertas import es_alerta as _es_alerta
 from .horario import ZONA_ARGENTINA
 from .models import Evento, Hogar
 from .notifications import enviar_push_alerta
+
+VARIABLE_ALERTAS_DE_HORARIO = "ALERTAS_DE_HORARIO_ACTIVADAS"
+
+
+def alertas_de_horario_activadas() -> bool:
+    """Apagadas salvo que la variable de entorno diga lo contrario (ver docstring del módulo)."""
+    return os.environ.get(VARIABLE_ALERTAS_DE_HORARIO, "").strip().lower() in {"1", "true", "si", "sí", "yes"}
 
 
 def _evento_to_monitoring_event(evento: Evento) -> MonitoringEvent:
@@ -130,9 +144,18 @@ def process_hogar(db: Session, hogar: Hogar, target_date: date) -> None:
                 },
             )
 
-    events_df = build_events_df_from_events(eventos, hogar=str(hogar.id), tz=ZONA_ARGENTINA)
+    events_df = (
+        build_events_df_from_events(eventos, hogar=str(hogar.id), tz=ZONA_ARGENTINA)
+        if alertas_de_horario_activadas() else pd.DataFrame()
+    )
     if not events_df.empty:
-        timing = score_timing_deviations(events_df, tracked_classes=tracked, config=TimingConfig())
+        # `evaluate_only`: solo se evalúan los eventos del día pedido; el historial se usa igual
+        # como referencia, así que el resultado para ese día no cambia. Sin esto se recalculaba
+        # un KMeans por cada evento de todo el historial (42 s por hogar con 60 días).
+        timing = score_timing_deviations(
+            events_df, tracked_classes=tracked, config=TimingConfig(),
+            evaluate_only={(str(hogar.id), target_date)},
+        )
         if not timing.empty:
             timing = timing[timing["fecha"] == target_date]
             for _, row in timing.iterrows():

@@ -21,8 +21,11 @@ clip_heartbeat_s: 0
 # runner/cloud_sync.py). Sin esta clave, el sistema funciona igual que hoy — 100% local, nada
 # sale de la Pi. "url" es la base del backend (sin /devices/events al final), "api_key" es la
 # que muestra una sola vez el alta del kit (cloud/alta_kit.py, ver "Correr localmente" en cloud/README.md).
+# "retencion_local_dias" (default 7): días que un evento ya enviado a la nube sigue en
+# events/events.db antes de borrarse; los que todavía no se enviaron no se borran nunca.
 # Ejemplo (comentado, no activo):
 # cloud:
 #   url: https://monitor-api.ejemplo.com
 #   api_key: "la-api-key-del-kit"
 #   interval_s: 30
+#   retencion_local_dias: 7

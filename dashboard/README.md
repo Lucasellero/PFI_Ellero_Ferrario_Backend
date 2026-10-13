@@ -38,14 +38,14 @@ para logs) y del store de eventos (SQLite) para los datos, igual que
 | `GET /logs` | sirve el panel de logs del sistema (`static/logs.html`) |
 | `GET /api/status` | si el runner está corriendo, y su PID |
 | `POST /api/start` | arranca `runner/` como subproceso |
-| `POST /api/stop` | lo detiene (`terminate()` + espera) |
+| `POST /api/stop` | lo detiene (`terminate()` + espera) y borra la vista previa de cada cámara |
 | `GET /api/cameras` | lee `cameras.yaml` |
 | `POST /api/cameras/add` | agrega una cámara al YAML |
 | `DELETE /api/cameras/{id}` | la saca del YAML |
 | `GET /api/videos` | lista videos disponibles en `videos/` |
 | `POST /api/upload-video` | sube un archivo a `videos/uploads/` |
 | `GET /api/video-file/{path}` | sirve un video para reproducirlo en el browser |
-| `GET /api/frame/{cam_id}` | último frame preview de esa cámara (`frames/{id}.jpg`, con esqueleto de YOLO dibujado encima si hay detección y el overlay está activado) |
+| `GET /api/frame/{cam_id}` | último frame preview de esa cámara (`runner_state/frames/{id}.jpg`, con esqueleto de YOLO dibujado encima si hay detección y el overlay está activado) |
 | `GET /api/frames/list` | qué cámaras tienen preview disponible |
 | `GET /api/events` | eventos del store, paginado por `since_id` |
 | `GET /api/overlay` | estado actual del toggle de overlay de pose (bbox + keypoints) |
@@ -120,6 +120,30 @@ falta tener instalado un `torch` con build CUDA (no la `+cpu`).
 Al salir de la vista única (`setViewMode('multi')`) se manda
 `POST /api/focus {"cam_id": null}` para que esa cámara vuelva a la tasa
 reducida y no quede escribiendo a disco en cada frame sin que nadie la mire.
+
+## Sin vista previa (2026-10-13)
+
+`runner/` ya no deja `runner_state/frames/{id}.jpg` en disco cuando no está analizando esa
+cámara: lo borra al detenerse y al dormirse la cámara por el gate de
+movimiento, y dormida no lo escribe (ver "La vista previa no queda en disco"
+en `runner/README.md`). Para el panel, que el archivo no exista es un estado
+normal:
+
+- `GET /api/frame/{cam_id}` responde 404 y la celda de la grilla muestra su
+  placeholder (`onCellError` en `static/index.html`), con el texto "SIN
+  MOVIMIENTO" si la cámara está dormida.
+- `GET /api/frames/list` devuelve la lista vacía.
+- `GET /api/frame-stream/{cam_id}` no manda nada mientras no hay archivo, sin
+  cortar la conexión, y retoma solo cuando la cámara despierta. En la vista
+  única el navegador se queda mostrando el último frame que recibió, quieto,
+  junto al texto "SIN MOVIMIENTO": esa imagen está en la memoria del navegador,
+  no en el disco de la controladora.
+- `POST /api/stop` borra la vista previa de cada cámara de `cameras.yaml`
+  después de detener el runner. Hace falta porque en Windows `terminate()`
+  mata el proceso sin que llegue a limpiar; en Linux el runner ya lo hace solo.
+
+Pruebas en `tests/test_vista_previa_ausente.py` (`pytest dashboard/tests`
+desde la raíz del repo).
 
 ## Indicador de movimiento
 
