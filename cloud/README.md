@@ -195,6 +195,36 @@ tarea aplica la retención de eventos (ver "Retención de eventos"). Este CLI qu
 puntual a mano (backfill/debug). Mismo criterio que `baseline/run_live.py`: nunca evalúa el día en
 curso, es idempotente (no duplica un desvío ya emitido).
 
+### Vocabulario y parámetros del proceso diario (2026-10-13)
+
+Dos cambios en lo que evalúa `app/baseline_runner.py`, los dos en `baseline/src/` (acá solo se
+importan):
+
+- **Entradas y salidas de casa: encendidas por defecto.** El proceso sigue dos clases más,
+  `cam_salir_casa` y `cam_entrar_casa`, además de las cinco del clasificador
+  (`camera_events.LIVE_TRACKED_CLASSES`). Salen de los eventos `LeaveHome` / `EnterHome` que la
+  controladora emite cuando la cámara tiene configurada la zona `puerta` (`runner/README.md`,
+  "Entradas y salidas de casa"). Entran por `POST /devices/events` como cualquier `activity`: no
+  hizo falta tocar el esquema ni la ingestión. Un hogar sin esa zona no los manda nunca y no
+  recibe alertas de puerta. Se apagan con `ENTRADAS_Y_SALIDAS_ACTIVADAS=0`.
+- **De la puerta solo sale un desvío: la ausencia sostenida** (`cam_salir_casa:ausencia_sostenida`
+  y `cam_entrar_casa:ausencia_sostenida`, varios días sin salir o sin entrar). Nunca una alerta
+  por el horario de una salida, ni siquiera con `ALERTAS_DE_HORARIO_ACTIVADAS=1`: el detector de
+  horario y el de tendencia no siguen esas dos clases, y del detector por clase se descartan sus
+  ausencias de un solo día, excesos y déficits.
+- **Parámetros del detector por clase.** Antes corría con los defaults de
+  `ClassDeviationConfig()`; ahora con `class_deviations.production_config()`
+  (`frac_historica_min=0.6`, `excess_k=5.0`, el resto igual), elegidos con validación cruzada
+  sobre el vocabulario que producción puebla. Con los defaults, los falsos positivos medidos
+  eran 22,5 %. Los números están en `baseline/README.md`, "Actualización 2026-10-13 (6)".
+
+**No cambia ningún número de este README**: las pruebas de `test_linea_base_produccion.py`
+(el día sin comidas emite dos desvíos, el mismo día sin tocar no emite ninguno) dan lo mismo con
+los parámetros nuevos, sin modificar ninguna.
+
+**No está desplegado en AWS.** Requiere además que la controladora esté actualizada y tenga la
+zona `puerta` dibujada.
+
 ### La línea base por el camino de producción, medida (2026-10-13)
 
 Hasta ahora la detección de desvíos se había medido con los scripts de `baseline/`, no con el
@@ -378,6 +408,14 @@ borrado en el orden equivocado falle igual que fallaría en Postgres. Cubren (20
   exactamente dos desvíos y ninguno de horario, que el mismo día sin modificar no emite nada,
   que con `ALERTAS_DE_HORARIO_ACTIVADAS=1` vuelven las dos alertas de horario, y qué valores de
   la variable la encienden (12 casos).
+- `test_linea_base_puerta.py` (8 pruebas, ver "Vocabulario y parámetros del proceso diario"):
+  con una salida y una entrada por día en el historial, cuatro días sin salir generan las
+  alertas `cam_salir_casa:ausencia_sostenida` y `cam_entrar_casa:ausencia_sostenida` y se ven
+  en `/alertas`; un solo día sin salir no genera nada; saliendo todos los días tampoco; una
+  salida a las 05:00 en vez de las 15:00 no genera un desvío de horario ni con las alertas de
+  horario encendidas (y una prueba de control muestra que el detector sí la marcaría si
+  siguiera esa clase); un hogar que nunca mandó eventos de puerta no recibe alertas de puerta;
+  y con `ENTRADAS_Y_SALIDAS_ACTIVADAS=0` el proceso ignora esos eventos.
 - `test_ingestion_idempotente.py` (8 pruebas, ver "Ingestión idempotente"): reenviar el mismo
   lote no duplica, un lote mezclado guarda solo lo nuevo, un evento repetido dentro del lote
   se guarda una vez, una alerta reenviada no vuelve a avisar, los eventos sin identificador se

@@ -22,6 +22,10 @@ from src.pose_pipeline import FallImmobilityDetector, build_pose_sample, draw_po
 from .atomic_file import replace_atomic
 from .camera_source import make_source
 from .config import CameraConfig
+from .door_events import (
+    DEFAULT_AUSENCIA_MIN_S, DEFAULT_MEMORIA_PUERTA_S, LABEL_SALIR, ZONA_PUERTA, DoorEventDetector,
+    posicion_normalizada,
+)
 from .focus_state import read_focused_camera
 from .motion_gate import MotionDetector
 from .motion_state import write_motion_state
@@ -115,6 +119,9 @@ class CameraWorker(threading.Thread):
         motion_gate_enabled: bool = True,
         motion_min_area_ratio: float = 0.005,
         motion_absence_timeout_s: float = 45.0,
+        puerta_activada: bool = True,
+        puerta_ausencia_min_s: float = DEFAULT_AUSENCIA_MIN_S,
+        puerta_memoria_s: float = DEFAULT_MEMORIA_PUERTA_S,
     ):
         super().__init__(name=f"cam-{config.id}", daemon=True)
         self._config = config
@@ -193,6 +200,14 @@ class CameraWorker(threading.Thread):
         self._awake = True
         self._last_person_seen_ts = float("-inf")
 
+        # Entradas y salidas de casa (ver door_events.py): solo si esta cámara tiene dibujada
+        # la zona `puerta` en cameras.yaml. Sin ella, o con `puerta_activada: false`, no se
+        # emite nada.
+        self._door: Optional[DoorEventDetector] = None
+        puerta = (config.zones or {}).get(ZONA_PUERTA)
+        if puerta_activada and puerta:
+            self._door = DoorEventDetector(puerta, puerta_ausencia_min_s, puerta_memoria_s)
+
     def run(self) -> None:
         store = EventStore(self._db_path)
         # Una vista previa de una corrida anterior que no llegó a limpiarse (corte de luz,
@@ -248,6 +263,8 @@ class CameraWorker(threading.Thread):
                 if not self._awake:
                     # Dormida no se guarda vista previa: la imagen se borró al dormirse (ver
                     # _sleep) y no vuelve a escribirse hasta que la cámara despierte.
+                    # Dormida no hay nadie en cuadro: la ausencia sigue corriendo para la puerta.
+                    self._door_tick(frame, None, store)
                     self._frame_count += 1
                     if self._frame_count % _FRAME_PREVIEW_EVERY_N == 0:
                         write_motion_state(self._config.id, awake=False)
@@ -255,6 +272,7 @@ class CameraWorker(threading.Thread):
 
                 # ── Pose pipeline (todos los frames, mientras está despierto) ─
                 raw_events = detector.process_frame(frame.image, frame.timestamp_s)
+                self._door_tick(frame, detector, store)
 
                 # ── Buffer de esqueleto para fusion/ (mismo criterio que el
                 # historial de inmovilidad de vision/: push por frame con
@@ -351,6 +369,42 @@ class CameraWorker(threading.Thread):
             store.close()
             self._delete_preview()
             self._log.info("[%s] detenida.", self._config.id)
+
+    def _door_tick(self, frame, detector, store: EventStore) -> None:
+        """Le pasa a `DoorEventDetector` la muestra de este frame (`detector=None`: cámara
+        dormida, no hay nadie) y guarda las entradas y salidas que resulten. Son eventos de
+        actividad puntuales: no pasan por el clasificador ni por su deduplicación."""
+        if self._door is None:
+            return
+        try:
+            self._door_tick_unsafe(frame, detector, store)
+        except Exception:
+            self._log.exception("[%s] Error en la detección de puerta", self._config.id)
+
+    def _door_tick_unsafe(self, frame, detector, store: EventStore) -> None:
+        point = None
+        if detector is not None and detector.last_detection is not None:
+            kpts, box = detector.last_detection
+            h, w = frame.image.shape[:2]
+            point = posicion_normalizada(kpts, box, w, h, detector.last_detection_conf)
+        for door_event in self._door.update(frame.timestamp_s, point, frame.wall_clock_ts):
+            salida = door_event.label == LABEL_SALIR
+            store.add(MonitoringEvent(
+                video_id=self._config.id,
+                event_type=EventType.ACTIVITY,
+                video_timestamp_s=door_event.timestamp_s,
+                wall_clock_ts=door_event.wall_clock_ts,
+                metadata={
+                    "activity_label": door_event.label,
+                    "description": "a person leaving home" if salida else "a person entering home",
+                    "confirmed": True,
+                    "source": "door_zone",
+                },
+            ))
+            self._log.info(
+                "[%s] %s @ %.2fs (zona puerta)",
+                self._config.id, "salida de casa" if salida else "entrada a casa", door_event.timestamp_s,
+            )
 
     def _update_motion_gate(self, frame) -> None:
         """Corre el detector de movimiento barato y, si hay movimiento y el

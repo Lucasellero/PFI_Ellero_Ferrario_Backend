@@ -102,6 +102,43 @@ class ClassDeviationConfig:
     ausencia_alpha: float = 0.05
 
 
+# Parámetros con los que corre el proceso diario (`cloud/app/baseline_runner.py`,
+# `run_live.py`) desde el 2026-10-13. Salen de `evaluate_production_vocab.py --con-puerta`:
+# validación cruzada por hogar con el vocabulario de producción (las clases del clasificador
+# más `cam_salir_casa`/`cam_entrar_casa`), 3 semillas de inyección; es la combinación que más
+# particiones de entrenamiento eligieron (4 de 15), sin mirar los hogares de prueba. Hasta
+# entonces producción corría con los defaults del dataclass (`frac_historica_min=0.8`,
+# `excess_k=3.0`), calibrados con otro vocabulario. Ver "Actualización 2026-10-13 (6)" en
+# README.md para lo que dan fuera de muestra.
+PRODUCTION_PARAMS: dict = {
+    "frac_historica_min": 0.6,
+    "excess_k": 5.0,
+    "dias_consecutivos_ausencia": 2,
+    "separar_fin_de_semana": True,
+    "dias_consecutivos_exceso_deficit": 1,
+    "ausencia_requiere_racha": False,
+}
+
+# Variante evaluada y no adoptada: los que salieron del mismo procedimiento sin entradas ni
+# salidas en el vocabulario (voto empatado 4 a 4 de 15, resuelto por la regla de desempate;
+# "Actualización 2026-10-13 (7)" en README.md). Solo se usan con las entradas y salidas apagadas
+# (`ENTRADAS_Y_SALIDAS_ACTIVADAS=0`).
+PRODUCTION_PARAMS_SIN_PUERTA: dict = {
+    "frac_historica_min": 0.6,
+    "excess_k": 2.5,
+    "dias_consecutivos_ausencia": 2,
+    "separar_fin_de_semana": False,
+    "dias_consecutivos_exceso_deficit": 2,
+    "ausencia_requiere_racha": False,
+}
+
+
+def production_config(con_puerta: bool = True) -> ClassDeviationConfig:
+    """`ClassDeviationConfig` de producción. Los defaults del dataclass no se tocan: son los de
+    las calibraciones históricas con CASAS."""
+    return ClassDeviationConfig(**(PRODUCTION_PARAMS if con_puerta else PRODUCTION_PARAMS_SIN_PUERTA))
+
+
 def score_class_deviations(
     day_vectors: pd.DataFrame,
     tracked_classes: tuple[str, ...] = TRACKED_CLASSES,

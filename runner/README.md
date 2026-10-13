@@ -24,6 +24,7 @@ runner/
 ├── motion_state.py      # publica awake/dormida por cámara en runner_state/motion/, para que dashboard/ lo muestre
 ├── overlay_state.py     # lee/escribe runner_state/overlay.json (toggle de overlay compartido con dashboard/)
 ├── preview_file.py      # ruta y borrado de la vista previa runner_state/frames/{id}.jpg (ver "Frame preview")
+├── door_events.py       # entradas y salidas de casa por la zona `puerta` (ver "Entradas y salidas de casa")
 ├── cloud_sync.py        # thread opcional: envía eventos a la nube y purga los ya enviados
 └── tests/               # pruebas con pytest (ver "Pruebas")
 ```
@@ -367,6 +368,53 @@ heartbeat mientras está despierta. `dashboard/` expone ese estado en
 `/api/motion` y el dashboard no muestra nada para ella, en vez de asumir un
 estado que no corresponde.
 
+## Entradas y salidas de casa (`door_events.py`, 2026-10-13)
+
+**Estado: encendidas por defecto.** Una cámara que tiene dibujada la zona `puerta` en
+`cameras.yaml` (la puerta de calle, no una interior) emite dos eventos de actividad:
+`LeaveHome` y `EnterHome`. No usa ningún modelo: es geometría sobre la posición de la persona
+que YOLO ya calcula en cada frame (el punto medio de las caderas, o el centro del recuadro si
+las caderas no se ven bien). Se apagan en todas las cámaras con `puerta_activada: false`; del
+lado de la línea base la opción equivalente es `ENTRADAS_Y_SALIDAS_ACTIVADAS=0` (ver
+`cloud/README.md`). La línea base solo usa estos eventos para un desvío: varios días seguidos
+sin salir o sin entrar. Nunca genera una alerta por el horario de una salida.
+
+- **Salida**: la persona se deja de ver, lo último que se supo de ella (con una tolerancia de
+  `puerta_memoria_s`, 2 s) es que estaba en la zona `puerta`, y pasan `puerta_ausencia_min_s`
+  (60 s) sin que vuelva a aparecer. El evento lleva la hora en que se la vio por última vez.
+- **Entrada**: después de 60 s o más sin ver a nadie, la primera detección cae en la zona
+  `puerta`.
+
+No son salida ni entrada: desaparecer lejos de la puerta (se fue a otro ambiente), perderse unos
+segundos en la puerta y reaparecer, o reaparecer lejos de la puerta. Con la cámara dormida por
+el gate de movimiento no hay nadie en cuadro, así que la ausencia sigue corriendo. Al arrancar
+no se inventa una entrada: la ausencia se cuenta desde el primer frame.
+
+```yaml
+cameras:
+- id: living
+  source: rtsp://...
+  zones:
+    puerta: [[0.85, 0.2], [1.0, 0.2], [1.0, 0.95], [0.85, 0.95]]
+puerta_activada: true       # opcional, es el default
+puerta_ausencia_min_s: 60   # opcional
+puerta_memoria_s: 2         # opcional
+```
+
+Sin zona `puerta` (o con `puerta_activada: false`) no se emite nada. Los eventos son `activity`
+con `activity_label` `LeaveHome` / `EnterHome`, `confirmed: true` y `source: "door_zone"`; no
+pasan por el clasificador ni por su deduplicación, y viajan a la nube como cualquier otro. La
+línea base los sigue como `cam_salir_casa` / `cam_entrar_casa` (ver `baseline/README.md`,
+"Actualización 2026-10-13 (6)").
+
+**No está validado con video real**: en esta máquina no hay videos, y ninguno de los datasets
+del proyecto tiene entradas y salidas por una puerta de calle. Lo probado es la lógica, con
+trayectorias sintéticas (`tests/test_door_events.py`). Quedan sin medir cuántas entradas y
+salidas reales detecta o inventa (persona de espaldas, oclusión en el marco, YOLO que pierde a
+la persona antes de que cruce) y si 60 s y 2 s son los valores correctos. El sistema es para un
+solo residente: no distingue quién cruza. La sensibilidad de la línea base a perder entre 10 %
+y 30 % de estos eventos sí está medida (`baseline/README.md`).
+
 ## CLIP y clasificador temporal de caída son opcionales
 
 Si `vlm/` no está disponible (no se pudo importar) o no se generaron los
@@ -607,6 +655,12 @@ Cubren (2026-10-13):
   pendientes se descartan; con cualquier otro error (409 incluido) se conservan.
 - `test_vista_previa.py`: la vista previa se borra al detenerse el runner, al terminar o fallar
   la fuente y al dormirse la cámara; dormida no se escribe (ni en foco) y vuelve al despertar.
+- `test_door_events.py` (25 pruebas, ver "Entradas y salidas de casa"): salida, entrada, ida y
+  vuelta, pérdida breve en la puerta, desaparecer o reaparecer lejos de la puerta, arranque,
+  salida informada una sola vez, video en loop, zona de forma cualquiera, configuración
+  inválida, de dónde sale la posición, y el ciclo de la cámara: por defecto guarda los eventos
+  si tiene la zona (también dormida por el gate); con `puerta_activada: false` o sin zona
+  `puerta` no guarda ninguno.
 - `test_cloud_sync_corte_reconexion.py` (5 pruebas, ver "Corte y reconexión con la nube,
   medido"): es la única que levanta otro proceso (el backend `cloud/` en un puerto local
   libre), así que además necesita las dependencias de `cloud/requirements.txt`. Tarda cerca de

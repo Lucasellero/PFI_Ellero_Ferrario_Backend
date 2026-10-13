@@ -141,6 +141,9 @@ def main() -> None:
             motion_gate_enabled=config.motion_gate_enabled,
             motion_min_area_ratio=config.motion_min_area_ratio,
             motion_absence_timeout_s=config.motion_absence_timeout_s,
+            puerta_activada=config.puerta_activada,
+            puerta_ausencia_min_s=config.puerta_ausencia_min_s,
+            puerta_memoria_s=config.puerta_memoria_s,
         )
         for cam in config.cameras
     ]

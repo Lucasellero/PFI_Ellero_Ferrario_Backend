@@ -30,11 +30,14 @@ if str(_BASELINE_SRC) not in sys.path:
     sys.path.insert(0, str(_BASELINE_SRC))
 
 from camera_events import (  # noqa: E402  (de baseline/src/)
-    LIVE_TRACKED_CLASSES,
+    entradas_y_salidas_activadas,
+    live_tracked_classes,
+    sin_clases_de_puerta,
+    solo_ausencia_sostenida_en_puerta,
     build_day_vectors_from_events,
     build_events_df_from_events,
 )
-from class_deviations import ClassDeviationConfig, score_class_deviations  # noqa: E402
+from class_deviations import production_config, score_class_deviations  # noqa: E402
 from dynamic_clustering import DriftConfig, score_days  # noqa: E402
 from timing_deviations import TimingConfig, score_timing_deviations  # noqa: E402
 from trend_deviations import TrendConfig, score_trend_deviations  # noqa: E402
@@ -111,11 +114,14 @@ def process_hogar(db: Session, hogar: Hogar, target_date: date) -> None:
     )
     eventos = [_evento_to_monitoring_event(e) for e in eventos_orm]
 
-    day_vectors = build_day_vectors_from_events(eventos, hogar=str(hogar.id), tz=ZONA_ARGENTINA)
+    # Entradas y salidas de casa: encendidas salvo ENTRADAS_Y_SALIDAS_ACTIVADAS=0. Solo generan
+    # desvíos por ausencia sostenida, nunca por horario ni por tendencia (ver camera_events.py).
+    con_puerta = entradas_y_salidas_activadas()
+    day_vectors = build_day_vectors_from_events(eventos, hogar=str(hogar.id), tz=ZONA_ARGENTINA, con_puerta=con_puerta)
     if day_vectors.empty or target_date not in day_vectors.index.get_level_values("fecha"):
         return  # sin cobertura ese día (o sin historial todavía) — nada para evaluar
 
-    tracked = tuple(LIVE_TRACKED_CLASSES)
+    tracked = live_tracked_classes(con_puerta)
     ya_emitidos = _already_emitted_keys(eventos_orm)
     fecha_iso = target_date.isoformat()
 
@@ -132,7 +138,9 @@ def process_hogar(db: Session, hogar: Hogar, target_date: date) -> None:
             {"z_score": row["z_score"], "top_contribuyentes": row["top_contribuyentes"]},
         )
 
-    por_clase = score_class_deviations(day_vectors, tracked_classes=tracked, config=ClassDeviationConfig())
+    por_clase = solo_ausencia_sostenida_en_puerta(
+        score_class_deviations(day_vectors, tracked_classes=tracked, config=production_config(con_puerta))
+    )
     if not por_clase.empty:
         por_clase = por_clase[por_clase["fecha"] == target_date]
         for _, row in por_clase.iterrows():
@@ -145,7 +153,7 @@ def process_hogar(db: Session, hogar: Hogar, target_date: date) -> None:
             )
 
     events_df = (
-        build_events_df_from_events(eventos, hogar=str(hogar.id), tz=ZONA_ARGENTINA)
+        build_events_df_from_events(eventos, hogar=str(hogar.id), tz=ZONA_ARGENTINA, con_puerta=con_puerta)
         if alertas_de_horario_activadas() else pd.DataFrame()
     )
     if not events_df.empty:
@@ -153,7 +161,7 @@ def process_hogar(db: Session, hogar: Hogar, target_date: date) -> None:
         # como referencia, así que el resultado para ese día no cambia. Sin esto se recalculaba
         # un KMeans por cada evento de todo el historial (42 s por hogar con 60 días).
         timing = score_timing_deviations(
-            events_df, tracked_classes=tracked, config=TimingConfig(),
+            events_df, tracked_classes=sin_clases_de_puerta(tracked), config=TimingConfig(),
             evaluate_only={(str(hogar.id), target_date)},
         )
         if not timing.empty:
@@ -167,7 +175,7 @@ def process_hogar(db: Session, hogar: Hogar, target_date: date) -> None:
                     },
                 )
 
-    tendencia = score_trend_deviations(day_vectors, tracked_classes=tracked, config=TrendConfig())
+    tendencia = score_trend_deviations(day_vectors, tracked_classes=sin_clases_de_puerta(tracked), config=TrendConfig())
     if not tendencia.empty:
         tendencia = tendencia[pd.to_datetime(tendencia["semana_fin"]).dt.date == target_date]
         for _, row in tendencia.iterrows():
