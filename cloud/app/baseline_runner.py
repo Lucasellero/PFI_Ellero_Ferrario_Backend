@@ -30,10 +30,10 @@ if str(_BASELINE_SRC) not in sys.path:
     sys.path.insert(0, str(_BASELINE_SRC))
 
 from camera_events import (  # noqa: E402  (de baseline/src/)
+    DOOR_TRACKED_CLASSES,
     entradas_y_salidas_activadas,
     live_tracked_classes,
     sin_clases_de_puerta,
-    solo_ausencia_sostenida_en_puerta,
     build_day_vectors_from_events,
     build_events_df_from_events,
 )
@@ -138,8 +138,9 @@ def process_hogar(db: Session, hogar: Hogar, target_date: date) -> None:
             {"z_score": row["z_score"], "top_contribuyentes": row["top_contribuyentes"]},
         )
 
-    por_clase = solo_ausencia_sostenida_en_puerta(
-        score_class_deviations(day_vectors, tracked_classes=tracked, config=production_config(con_puerta))
+    por_clase = score_class_deviations(
+        day_vectors, tracked_classes=tracked, config=production_config(con_puerta),
+        clases_de_puerta=DOOR_TRACKED_CLASSES,
     )
     if not por_clase.empty:
         por_clase = por_clase[por_clase["fecha"] == target_date]

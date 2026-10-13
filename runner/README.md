@@ -376,8 +376,9 @@ estado que no corresponde.
 que YOLO ya calcula en cada frame (el punto medio de las caderas, o el centro del recuadro si
 las caderas no se ven bien). Se apagan en todas las cámaras con `puerta_activada: false`; del
 lado de la línea base la opción equivalente es `ENTRADAS_Y_SALIDAS_ACTIVADAS=0` (ver
-`cloud/README.md`). La línea base solo usa estos eventos para un desvío: varios días seguidos
-sin salir o sin entrar. Nunca genera una alerta por el horario de una salida.
+`cloud/README.md`). La línea base solo usa estos eventos para un desvío: que falten salidas o
+entradas (desde el 2026-10-13, ya el primer día; ver `baseline/README.md`, "Actualización
+2026-10-13 (8)"). Nunca genera una alerta por el horario de una salida.
 
 - **Salida**: la persona se deja de ver, lo último que se supo de ella (con una tolerancia de
   `puerta_memoria_s`, 2 s) es que estaba en la zona `puerta`, y pasan `puerta_ausencia_min_s`
@@ -407,13 +408,103 @@ pasan por el clasificador ni por su deduplicación, y viajan a la nube como cual
 línea base los sigue como `cam_salir_casa` / `cam_entrar_casa` (ver `baseline/README.md`,
 "Actualización 2026-10-13 (6)").
 
-**No está validado con video real**: en esta máquina no hay videos, y ninguno de los datasets
-del proyecto tiene entradas y salidas por una puerta de calle. Lo probado es la lógica, con
-trayectorias sintéticas (`tests/test_door_events.py`). Quedan sin medir cuántas entradas y
-salidas reales detecta o inventa (persona de espaldas, oclusión en el marco, YOLO que pierde a
-la persona antes de que cruce) y si 60 s y 2 s son los valores correctos. El sistema es para un
-solo residente: no distingue quién cruza. La sensibilidad de la línea base a perder entre 10 %
-y 30 % de estos eventos sí está medida (`baseline/README.md`).
+**Validado con video solo en parte** (ver "Validación con video" abajo): con Toyota Smarthome,
+donde se entra y se sale de cuadro, no por una puerta de calle. La lógica está probada con
+trayectorias sintéticas (`tests/test_door_events.py`). El sistema es para un solo residente:
+no distingue quién cruza. La sensibilidad de la línea base a perder entre 10 % y 30 % de estos
+eventos está medida en `baseline/README.md`.
+
+### Validación con video (2026-10-13)
+
+`evaluate_door_events.py`, sobre Toyota Smarthome completo (16.115 clips recortados, fuera del
+repo) y los 4 videos continuos de `videos/ToyotaSmarthome_FP`. Valores por defecto del
+detector: 60 s de ausencia, 2 s de memoria. No se cambió ninguno.
+
+**Qué se puede validar y qué no.** En ese dataset `Enter` y `Leave` son entrar y salir **del
+ambiente que ve la cámara**, no de la casa por la puerta de calle. Para el detector es el mismo
+problema (alguien aparece o desaparece en una zona), pero la zona validada es "por dónde se
+entra y se sale de cuadro". No hay ningún video de una puerta de calle.
+
+**Zona `puerta` por cámara, fijada antes de medir.** Con los participantes de ajuste (los de
+entrenamiento del protocolo cross-subject del dataset, menos el 7 y el 9: 3, 4, 6, 12, 13, 15,
+17, 19, 25) se toma dónde estaba la persona en la primera detección de cada clip `Enter` y en
+la última de cada clip `Leave`. La zona es el rectángulo del percentil 10 al 90 de esos puntos
+en cada eje, más 0,05 de margen. Queda en [`toyota_smarthome_puerta.yaml`](toyota_smarthome_puerta.yaml).
+Se mide con los participantes de prueba del mismo protocolo (2, 10, 11, 14, 16, 18, 20); el 7 y
+el 9 se reservan para los videos continuos.
+
+| Cámara | Zona (x, y; 0–1) | Parte del cuadro | Clips de ajuste |
+|---|---|---|---|
+| c01 | x 0,87–1,00 · y 0,62–0,85 | 3 % | 44 |
+| c02 | x 0,24–0,41 · y 0,14–0,27 | 2 % | 22 |
+| c03 | x 0,46–0,85 · y 0,17–0,53 | 14 % | 53 |
+| c04 | x 0,16–0,77 · y 0,13–0,71 | **36 %** | 141 |
+| c05 | x 0,15–0,69 · y 0,23–0,45 | 12 % | 76 |
+| c06 | x 0,00–0,81 · y 0,40–0,68 | 23 % | 26 |
+| c07 | x 0,23–0,99 · y 0,15–0,46 | 23 % | 49 |
+
+En varias cámaras la gente entra y sale de cuadro por lugares muy distintos y el rectángulo
+sale grande (c04, c06, c07). Una puerta de calle dibujada por un instalador sería más chica.
+
+**1. Entradas y salidas reales** (clips `Enter` / `Leave` de los participantes de prueba). Los
+clips duran pocos segundos y el detector necesita 60 s sin nadie, así que esa ausencia se
+agrega: 61 s sin detección después de cada `Leave` y antes de cada `Enter`.
+
+| | Detectadas | c01 | c03 | c04 | c05 | c06 | c07 |
+|---|---|---|---|---|---|---|---|
+| Entradas | **84,2 %** (112/133) | 2/2 | 18/25 | 44/44 | 18/20 | 7/13 | 23/29 |
+| Salidas | **86,0 %** (92/107) | 0/2 | 17/18 | 38/40 | 14/16 | 10/12 | 13/19 |
+
+No hay clips de prueba de la c02. En 2 clips `Leave` YOLO no detectó a nadie.
+
+**2. Entradas y salidas inventadas** (764 clips de las otras 29 actividades, participantes de
+prueba, hasta 30 por actividad; 3,20 h de video).
+- **Tal cual, 0 eventos.** Un clip recortado no puede dar ninguno: nunca hay 60 s de
+  ausencia. Tampoco apareció ninguno dentro de los clips largos.
+- **Peor caso** (61 s sin detección antes y después de cada clip, como si la persona hubiera
+  aparecido y desaparecido justo ahí): entrada inventada en 44,2 % (338/764), salida en 48,6 %
+  (371/764), alguna de las dos en 50,0 % (382/764). **Es una cota superior, no una tasa**:
+  mide cuántas veces el clip empieza o termina con la persona dentro de la zona.
+
+| Peor caso | c01 | c02 | c03 | c04 | c05 | c06 | c07 |
+|---|---|---|---|---|---|---|---|
+| Entrada inventada | 5/95 | 1/60 | 82/126 | 119/136 | 27/167 | 104/118 | 0/62 |
+| Salida inventada | 8/95 | 1/60 | 91/126 | 126/136 | 37/167 | 106/118 | 2/62 |
+
+Depende casi por completo de la zona: en c03, c04 y c06 la zona se superpone con el lugar
+donde se hace la actividad (cocina, sillón) y entre 65 % y 93 % de los clips empiezan o
+terminan adentro; en c01, c02 y c07, casi ninguno. O sea: **si la persona se deja de ver 60 s
+mientras está parada en la zona, el detector lo cuenta como una salida**. Con una zona chica y
+apartada eso pasa poco; con una zona que pisa el lugar de estar, pasa seguido.
+
+**3. Video continuo** (4 videos sin recortar de los participantes 7 y 9, 84 minutos, con las
+anotaciones originales del dataset; el detector corre como en producción, sin agregar nada).
+
+| Video | Minutos | Frames sin detección | Ausencias anotadas (`Leave` → `Enter`) | De 60 s o más | Eventos emitidos |
+|---|---|---|---|---|---|
+| P07T05C05 | 19,7 | 50 % | 5 (10,8 a 65,8 s) | 1 | 0 |
+| P07T10C02 | 26,5 | 1 % | 0 | 0 | 0 |
+| P09T05C05 | 18,3 | 22 % | 4 (1,0 a 18,0 s) | 0 | 0 |
+| P09T06C05 | 19,5 | 22 % | 3 (19,4 a 29,0 s) | 0 | 0 |
+
+- **Inventados: 0 en 84 minutos**, con hasta la mitad de los frames sin detección (la escena
+  de sillón donde `yolo11n-pose` pierde a la persona).
+- **Detectados: 0 de 1.** La única ausencia de 60 s o más (65,8 s) no dio ni salida ni
+  entrada. No se miró por qué (si la última detección cayó fuera de la zona o si la ausencia
+  que vio el detector fue más corta que la anotada). Un caso no alcanza para una tasa.
+- Las otras 11 ausencias duran menos de 60 s y, como corresponde, no dieron eventos. En este
+  departamento casi todas las salidas de cuadro son a otro ambiente y duran menos de un minuto.
+
+**Qué queda sin validar:** una puerta de calle real; si 60 s y 2 s son los valores correctos
+(no se barrieron); salidas y entradas reales en video continuo (hay un solo caso); visitas o
+más de una persona. La tasa de inventados en un hogar depende de dónde se dibuje la zona y de
+cuánto pierda YOLO a la persona ahí: la medición 2 da la cota y la 3, un caso favorable.
+
+```
+python -m runner.evaluate_door_events <carpeta con los .mp4 recortados> --untrimmed videos/ToyotaSmarthome_FP --annotations <carpeta Annotation>
+```
+Tarda cerca de una hora con GPU; las trayectorias quedan en `runner_state/` y la segunda
+corrida es inmediata.
 
 ## CLIP y clasificador temporal de caída son opcionales
 
@@ -661,6 +752,9 @@ Cubren (2026-10-13):
   inválida, de dónde sale la posición, y el ciclo de la cámara: por defecto guarda los eventos
   si tiene la zona (también dormida por el gate); con `puerta_activada: false` o sin zona
   `puerta` no guarda ninguno.
+- `test_evaluate_door_events.py` (8 pruebas, ver "Validación con video"): cómo se ajusta la
+  zona, qué participantes ajustan y cuáles miden, y cómo se agrega la ausencia que le falta a
+  un clip recortado. Sin YOLO ni videos.
 - `test_cloud_sync_corte_reconexion.py` (5 pruebas, ver "Corte y reconexión con la nube,
   medido"): es la única que levanta otro proceso (el backend `cloud/` en un puerto local
   libre), así que además necesita las dependencias de `cloud/requirements.txt`. Tarda cerca de

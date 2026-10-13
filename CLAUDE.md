@@ -49,6 +49,16 @@ Claude. Antes de citar un número de un `.log` suelto, verificar con
   esqueleto rechaza 94/94 FP; los ~74 FP residuales de `ToyotaSmarthome_FP` son
   eventos sin ventana (el bloqueante de `yolo11n-pose` de abajo) → caen a CLIP. Los
   umbrales geométricos NO cambiaron.
+  **Actualización 2026-10-13** (ver "Actualización 2026-10-13" en `vision/README.md`): la
+  cadena completa como corre en el runner (`evaluate_falls.py --temporal --clip --fps-cap 10`,
+  heurística + temporal + probe de CLIP, 292 clips): 120/158 caídas con alerta (75,9 %), 12
+  más solo como sospecha, 9 falsas alertas finales en 2,08 h (0 en las 1,40 h de video
+  doméstico continuo de `ToyotaSmarthome_FP`), 94 sospechas. Es optimista: el temporal y el
+  probe desplegados se entrenaron con esos mismos clips.
+- **Línea base** (`baseline/README.md`): la sección vigente es "Actualización 2026-10-13
+  (8)" (parámetros votados con los días de puerta en el barrido; la puerta dispara desde el
+  primer día sin eventos). La (6) y la (7) quedaron superadas o no adoptadas: no citar sus
+  tablas como el sistema actual.
 - **Inmovilidad/sedentarismo**: bug de historial corregido en `9356c15` (ventana de
   2.5s de la velocidad de caída se compartía indebidamente con el tracking de
   inmovilidad). Bloqueante identificado y no resuelto: `yolo11n-pose` no detecta bien

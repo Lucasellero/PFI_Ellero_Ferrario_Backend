@@ -17,7 +17,8 @@ cameras:
   #   puerta: [[0.85, 0.2], [1.0, 0.2], [1.0, 0.95], [0.85, 0.95]]
   # Con "puerta" dibujada (la puerta de calle, no una interior) la cámara emite entradas y
   # salidas de casa (ver runner/door_events.py). Sin ella no emite ninguna. Se apaga en todas
-  # las cámaras con "puerta_activada: false" al nivel de pose_model. No está validado con video.
+  # las cámaras con "puerta_activada: false" al nivel de pose_model. Validado con Toyota Smarthome
+  # (entrar y salir de cuadro, no una puerta de calle): ver "Validación con video" en runner/README.md.
 pose_model: yolo11n-pose.pt
 log_level: INFO
 clip_heartbeat_s: 0

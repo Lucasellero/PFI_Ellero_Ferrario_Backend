@@ -1,7 +1,8 @@
 """`camera_events.py` con las entradas y salidas que emite la controladora (`LeaveHome` /
 `EnterHome`, ver `runner/door_events.py`). Están encendidas por defecto: son eventos puntuales
 de `cam_salir_casa` / `cam_entrar_casa`, cuentan como ocurrencias y no tocan la duración de las
-demás actividades. De esas dos clases solo sale un tipo de desvío, la ausencia sostenida.
+demás actividades. De esas dos clases solo sale un desvío, que falten, con sus propios
+parámetros en el detector por clase (`clases_de_puerta`).
 Apagadas (`con_puerta=False`), el adaptador las descarta."""
 from __future__ import annotations
 
@@ -51,18 +52,75 @@ def test_por_defecto_produccion_sigue_entradas_y_salidas(camera_events):
     assert camera_events.DOOR_TRACKED_CLASSES == ("cam_entrar_casa", "cam_salir_casa")
 
 
-def test_de_las_clases_de_puerta_solo_queda_la_ausencia_sostenida(camera_events):
-    """El filtro que aplica el proceso diario sobre la salida del detector por clase: una
-    ausencia de un día, un exceso o un déficit de salidas o entradas no llegan a ser desvío."""
-    tipos = ("ausencia", "ausencia_sostenida", "exceso", "deficit")
-    filas = [{"hogar": "h", "fecha": DIA.date(), "clase": c, "tipo": t} for c in camera_events.LIVE_TRACKED_CLASSES for t in tipos]
-    filtrado = camera_events.solo_ausencia_sostenida_en_puerta(pd.DataFrame(filas))
+def _hogar_con_salidas(salidas: list[int]) -> pd.DataFrame:
+    """Un hogar con `salidas[i]` salidas el día i y siempre 3 comidas."""
+    fechas = pd.date_range("2026-03-02", periods=len(salidas)).date
+    filas = [
+        {"hogar": "h", "fecha": f, "cam_salir_casa_n": n, "cam_comida_n": 3, "cobertura_baja": False}
+        for f, n in zip(fechas, salidas)
+    ]
+    return pd.DataFrame(filas).set_index(["hogar", "fecha"])
 
-    for clase in camera_events.DOOR_TRACKED_CLASSES:
-        assert filtrado[filtrado["clase"] == clase]["tipo"].tolist() == ["ausencia_sostenida"]
-    for clase in camera_events.CLASSIFIER_TRACKED_CLASSES:
-        assert filtrado[filtrado["clase"] == clase]["tipo"].tolist() == list(tipos)  # las demás no cambian
-    assert camera_events.solo_ausencia_sostenida_en_puerta(pd.DataFrame()).empty
+
+def _desvios_de_salida(baseline_modulo, salidas: list[int], **parametros) -> list[tuple[int, str]]:
+    """(día, tipo) de cada desvío de `cam_salir_casa`, tratada como clase de puerta."""
+    cd = baseline_modulo("src.class_deviations")
+    dias = _hogar_con_salidas(salidas)
+    hits = cd.score_class_deviations(
+        dias, tracked_classes=("cam_salir_casa", "cam_comida"), config=cd.ClassDeviationConfig(**parametros),
+        clases_de_puerta=("cam_salir_casa",),
+    )
+    if hits.empty:
+        return []
+    orden = {f: i for i, f in enumerate(dias.index.get_level_values("fecha"))}
+    return [(orden[r.fecha], r.tipo) for r in hits[hits["clase"] == "cam_salir_casa"].itertuples()]
+
+
+@pytest.mark.parametrize("dias_puerta", [1, 2, 3, 4])
+def test_la_puerta_dispara_recien_con_los_dias_seguidos_pedidos(baseline_modulo, dias_puerta):
+    """20 días saliendo y después 5 sin salir: el desvío aparece el día `dias_puerta` de la
+    racha. El primer día sale como `ausencia`; del segundo en adelante, `ausencia_sostenida`."""
+    desvios = _desvios_de_salida(baseline_modulo, [1] * 20 + [0] * 5, dias_consecutivos_ausencia_puerta=dias_puerta)
+
+    assert [dia for dia, _ in desvios] == list(range(20 + dias_puerta - 1, 25))
+    assert [tipo for dia, tipo in desvios if dia == 20] == (["ausencia"] if dias_puerta == 1 else [])
+    assert all(tipo == "ausencia_sostenida" for dia, tipo in desvios if dia > 20)
+
+
+@pytest.mark.parametrize("dias_puerta", [1, 2, 3, 4])
+def test_si_un_solo_dia_dispara_la_cantidad_de_dias_no_cambia_nada(baseline_modulo, dias_puerta):
+    salidas = [1] * 20 + [0] * 5
+    desde_el_primer_dia = _desvios_de_salida(baseline_modulo, salidas, dias_consecutivos_ausencia_puerta=1)
+    con_un_solo_dia = _desvios_de_salida(
+        baseline_modulo, salidas, dias_consecutivos_ausencia_puerta=dias_puerta, puerta_dispara_un_dia=True,
+    )
+    assert con_un_solo_dia == desde_el_primer_dia
+
+
+def test_de_la_puerta_nunca_sale_un_exceso_ni_un_deficit(baseline_modulo):
+    """Un día con muchas más salidas que lo habitual, o con menos, no es un desvío de puerta."""
+    salidas = [4, 5, 6] * 7 + [40, 1, 5]
+    assert _desvios_de_salida(baseline_modulo, salidas) == []
+    # La misma serie en una clase común sí da el exceso: es la regla de puerta la que lo saca.
+    cd = baseline_modulo("src.class_deviations")
+    hits = cd.score_class_deviations(_hogar_con_salidas(salidas), tracked_classes=("cam_salir_casa",), config=cd.ClassDeviationConfig())
+    assert "exceso" in set(hits["tipo"])
+
+
+def test_los_parametros_de_puerta_no_tocan_a_las_otras_clases(baseline_modulo):
+    """Un día sin comidas se marca igual con cualquier valor de los parámetros de puerta."""
+    cd = baseline_modulo("src.class_deviations")
+    dias = _hogar_con_salidas([1] * 25)
+    dias.iloc[22, dias.columns.get_loc("cam_comida_n")] = 0
+    resultados = [
+        cd.score_class_deviations(
+            dias, tracked_classes=("cam_salir_casa", "cam_comida"), clases_de_puerta=("cam_salir_casa",),
+            config=cd.ClassDeviationConfig(dias_consecutivos_ausencia_puerta=d, puerta_dispara_un_dia=u),
+        )
+        for d in (1, 4) for u in (False, True)
+    ]
+    for hits in resultados:
+        assert hits[["clase", "tipo"]].values.tolist() == [["cam_comida", "ausencia"]]
 
 
 def test_los_detectores_de_horario_y_de_tendencia_no_siguen_las_clases_de_puerta(camera_events):

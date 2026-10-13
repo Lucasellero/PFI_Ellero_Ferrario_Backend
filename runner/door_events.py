@@ -16,10 +16,12 @@ perderse un momento en la puerta y reaparecer antes de `ausencia_min_s`, o reapa
 la puerta. Al arrancar no se sabe cuánto hace que no hay nadie: la ausencia se cuenta desde la
 primera muestra.
 
-**Sin validar con video real** (no hay videos de entradas y salidas en esta máquina): los
-valores por defecto son un punto de partida, no un resultado medido. Lo que está probado es la
-lógica, con trayectorias sintéticas (`runner/tests/test_door_events.py`). Supone un solo
-residente: una visita que entra o sale cuenta igual.
+**Validado con video solo en parte** (`runner/evaluate_door_events.py`, ver "Validación con
+video" en `runner/README.md`): con Toyota Smarthome, donde se entra y se sale de cuadro, no
+por una puerta de calle. Los valores por defecto siguen siendo un punto de partida, no se
+barrieron. La lógica está probada con trayectorias sintéticas
+(`runner/tests/test_door_events.py`). Supone un solo residente: una visita que entra o sale
+cuenta igual.
 """
 from __future__ import annotations
 

@@ -1,8 +1,9 @@
 """Entradas y salidas de casa de punta a punta en la nube: los eventos `LeaveHome` / `EnterHome`
 que emite la controladora (`runner/door_events.py`) entran por `POST /devices/events` y el
 proceso diario los sigue como `cam_salir_casa` / `cam_entrar_casa`. Encendidas por defecto; se
-apagan con `ENTRADAS_Y_SALIDAS_ACTIVADAS=0`. Solo generan un desvío: la ausencia sostenida.
-Nunca por horario, aunque se enciendan las alertas de horario.
+apagan con `ENTRADAS_Y_SALIDAS_ACTIVADAS=0`. Solo generan un desvío: que falten, desde el primer
+día sin eventos (parámetros votados el 2026-10-13). Nunca por horario, aunque se enciendan las
+alertas de horario.
 
 Mismo historial que `test_linea_base_produccion.py` (60 días reales de un hogar de CASAS). Las
 entradas y salidas se agregan a mano: una salida y una entrada por día.
@@ -122,8 +123,26 @@ def test_el_detector_de_horario_marcaria_esa_salida_si_siguiera_la_puerta():
     assert como_produccion.empty
 
 
-def test_un_solo_dia_sin_salir_no_genera_un_desvio(cliente, db, crear_hogar):
-    """De la puerta solo sale la ausencia sostenida: un día suelto sin salir no alcanza."""
+def test_un_solo_dia_sin_salir_ya_genera_un_desvio(cliente, db, crear_hogar):
+    """Con los parámetros votados la puerta dispara desde el primer día sin eventos. Ese primer
+    día sale como `ausencia`, no como `ausencia_sostenida`."""
+    hogar = crear_hogar("hh113")
+    _enviar_como_la_controladora(cliente, hogar, _historial_con_puerta(sin_salir_los_ultimos=1))
+
+    assert ejecutar_linea_base(DIA_DEL_DESVIO) is True
+
+    assert _de_puerta(_claves(_desvios(db, hogar))) == {
+        (DIA_DEL_DESVIO.isoformat(), "clase", "cam_salir_casa:ausencia"),
+        (DIA_DEL_DESVIO.isoformat(), "clase", "cam_entrar_casa:ausencia"),
+    }
+
+
+def test_un_solo_dia_sin_salir_no_alcanza_si_se_piden_dos(cliente, db, crear_hogar, monkeypatch):
+    """La cantidad de días es un parámetro del detector por clase: con 2 vuelve a hacer falta
+    una racha."""
+    import class_deviations  # baseline/src
+
+    monkeypatch.setitem(class_deviations.PRODUCTION_PARAMS, "dias_consecutivos_ausencia_puerta", 2)
     hogar = crear_hogar("hh113")
     _enviar_como_la_controladora(cliente, hogar, _historial_con_puerta(sin_salir_los_ultimos=1))
 

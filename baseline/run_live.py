@@ -32,10 +32,10 @@ sys.path.insert(0, str(_BASELINE_DIR / "src"))
 
 from camera_events import (  # noqa: E402
     DEFAULT_MAX_GAP_S,
+    DOOR_TRACKED_CLASSES,
     entradas_y_salidas_activadas,
     live_tracked_classes,
     sin_clases_de_puerta,
-    solo_ausencia_sostenida_en_puerta,
     build_day_vectors_from_events,
     build_events_df_from_events,
 )
@@ -103,8 +103,9 @@ def process_camera(
         )
 
     # 2) Por clase: ausencia/exceso/déficit de una clase puntual.
-    por_clase = solo_ausencia_sostenida_en_puerta(
-        score_class_deviations(day_vectors, tracked_classes=tracked, config=production_config(con_puerta))
+    por_clase = score_class_deviations(
+        day_vectors, tracked_classes=tracked, config=production_config(con_puerta),
+        clases_de_puerta=DOOR_TRACKED_CLASSES,
     )
     if not por_clase.empty:
         por_clase = por_clase[por_clase["fecha"] == target_date]

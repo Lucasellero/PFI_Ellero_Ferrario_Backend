@@ -157,12 +157,7 @@ def test_el_detector_por_clase_ve_las_ausencias_y_la_semana_sin_salir_pero_no_el
     columnas = epv.add_production_columns(perturbed, con_puerta=True)
     todo = epv.evaluate_production(columnas, labels, epv.tracked_classes(con_puerta=True), config)
     r = todo["por_clase"]
-    # Dejando de la puerta solo la ausencia sostenida (lo que emite el proceso diario) se pierde,
-    # como mucho, el primer día de cada semana sin salir, y nunca se agrega un falso positivo.
-    filtrado = todo["por_clase_filtrado"]
-    assert filtrado["falsos_positivos"] <= r["falsos_positivos"]
-    assert r["detectados_por_escenario"]["semana_sin_salir"] - 2 <= filtrado["detectados_por_escenario"]["semana_sin_salir"] <= r["detectados_por_escenario"]["semana_sin_salir"]
-    assert filtrado["detectados_por_escenario"]["dia_sin_comida"] == r["detectados_por_escenario"]["dia_sin_comida"]
+    assert set(todo) == {"por_clase", "multivariado", "combinado"}
 
     assert r["falsos_positivos"] == 0 and r["n_neg"] == 40
     assert r["n_por_escenario"] == {
@@ -172,9 +167,16 @@ def test_el_detector_por_clase_ve_las_ausencias_y_la_semana_sin_salir_pero_no_el
     assert r["detectados_por_escenario"]["dia_sin_cocinar"] == 2
     assert r["detectados_por_escenario"]["exceso_descanso"] == 0
     assert r["detectados_por_escenario"]["exceso_ocio_sentado"] == 0
-    # De los 7 días sin salir, el primero todavía no es una ausencia sostenida.
-    assert r["detectados_por_escenario"]["semana_sin_salir"] >= 2 * (7 - config.dias_consecutivos_ausencia + 1) - 2
+    # La puerta dispara desde el día `dias_consecutivos_ausencia_puerta` de la semana sin salir.
+    assert r["detectados_por_escenario"]["semana_sin_salir"] == 2 * (7 - config.dias_consecutivos_ausencia_puerta + 1)
     assert r["recall_por_clase_del_desvio"]["semana_sin_salir"] > 0.5
+    # Con 2, 3 y 4 días se pierden, en cada hogar, los primeros días de la semana.
+    cd = baseline_modulo("src.class_deviations")
+    for dias_puerta in (2, 3, 4):
+        otra = cd.ClassDeviationConfig(**{**cd.PRODUCTION_PARAMS, "dias_consecutivos_ausencia_puerta": dias_puerta})
+        d = epv.evaluate_production(columnas, labels, epv.tracked_classes(con_puerta=True), otra)["por_clase"]
+        assert d["detectados_por_escenario"]["semana_sin_salir"] == 2 * (7 - dias_puerta + 1)
+        assert d["falsos_positivos"] == 0
 
 
 def test_sin_puerta_tambien_se_ven_las_ausencias_y_no_el_exceso(epv, hogares, baseline_modulo):
@@ -190,6 +192,76 @@ def test_sin_puerta_tambien_se_ven_las_ausencias_y_no_el_exceso(epv, hogares, ba
     assert set(por_clase["fp_por_clase"]) == set(epv.CLASSIFIER_TRACKED)
     # "Los dos juntos" nunca detecta menos que el detector por clase solo.
     assert r["combinado"]["detectados"] >= por_clase["detectados"]
+
+
+def test_el_barrido_con_puerta_suma_los_dos_parametros_y_da_lo_mismo_que_evaluar_entero(epv, hogares, monkeypatch):
+    """`evaluate_grid` evalúa las clases de puerta aparte y las une; cada candidato tiene que
+    marcar los mismos días que el detector corrido entero con esa combinación."""
+    dos = [epv.ClassDeviationConfig(frac_historica_min=0.6), epv.ClassDeviationConfig(frac_historica_min=0.9, separar_fin_de_semana=False)]
+    monkeypatch.setattr(epv, "_grid_configs", lambda: iter(dos))
+    perturbed, labels = epv.inject(hogares, seed=2, con_puerta=True)
+    columnas = epv.add_production_columns(perturbed, con_puerta=True)
+    tracked = epv.tracked_classes(con_puerta=True)
+
+    grid = epv.evaluate_grid(columnas, labels, "_n", tracked)
+
+    assert grid["campos"] == epv.GRID_FIELDS + epv.DOOR_GRID_FIELDS
+    assert len(grid["configs"]) == len(dos) * len(epv.DIAS_PUERTA_GRID) * len(epv.PUERTA_UN_DIA_GRID)
+    claves = list(zip(labels["hogar"], labels["fecha"]))
+    for config, hits in zip(grid["configs"], grid["hits"]):
+        entero = epv._dias(epv.score_class_deviations(
+            columnas, tracked_classes=tracked, config=epv.ClassDeviationConfig(**config), clases_de_puerta=epv.DOOR_TRACKED,
+        ))
+        assert hits.tolist() == [c in entero for c in claves]
+    # Las cinco combinaciones que disparan desde el primer día son el mismo detector.
+    del_primer_dia = [
+        h.tolist() for c, h in zip(grid["configs"], grid["hits"])
+        if c["frac_historica_min"] == 0.6 and (c["puerta_dispara_un_dia"] or c["dias_consecutivos_ausencia_puerta"] == 1)
+    ]
+    assert len(del_primer_dia) == 5 and all(h == del_primer_dia[0] for h in del_primer_dia)
+    # Sin clases de puerta el barrido es el de siempre.
+    monkeypatch.setattr(epv, "_grid_configs", lambda: iter(dos))
+    sin_puerta = epv.evaluate_grid(epv.add_production_columns(perturbed), labels, "_n", epv.tracked_classes())
+    assert sin_puerta["campos"] == epv.GRID_FIELDS and len(sin_puerta["configs"]) == len(dos)
+
+
+def test_la_deteccion_del_sistema_suma_el_indicador_que_corresponde_a_cada_desvio(epv):
+    """Una alerta cuenta siempre. El indicador solo cuenta para su desvío; en un día normal,
+    cualquier indicador es un falso positivo."""
+    dias = ["dia_sin_comida", "dia_sin_cocinar", "exceso_descanso", "exceso_ocio_sentado", "semana_sin_salir", "real_sin_tocar", "real_sin_tocar", "real_sin_tocar"]
+    labels = pd.DataFrame({"hogar": "h", "fecha": range(len(dias)), "escenario": dias, "es_positivo": [d != "real_sin_tocar" for d in dias]})
+
+    def _dia(n: int) -> tuple:
+        return ("h", n)
+
+    solo_alertas = epv.evaluate_sistema(labels, {_dia(0), _dia(5)}, {"sedentarismo": set(), "cocina": set()})
+    assert (solo_alertas["detectados"], solo_alertas["falsos_positivos"]) == (1, 1)
+
+    # sedentarismo marca el día sin comida (no le corresponde), los dos excesos y un día normal;
+    # cocina marca el día sin cocinar, la semana sin salir (no le corresponde) y otro día normal.
+    rutina = {"sedentarismo": {_dia(0), _dia(2), _dia(3), _dia(6)}, "cocina": {_dia(1), _dia(4), _dia(7)}}
+    r = epv.evaluate_sistema(labels, set(), rutina)
+    assert r["detectados_por_escenario"] == {
+        "dia_sin_comida": 0, "dia_sin_cocinar": 1, "exceso_descanso": 1, "exceso_ocio_sentado": 1, "semana_sin_salir": 0,
+    }
+    assert (r["falsos_positivos"], r["n_neg"]) == (2, 3)
+
+    filas = epv._fila_subtotales("sistema", [r])
+    assert filas["ausencias"].endswith("(1/3)") and filas["excesos"].endswith("(2/2)")
+
+
+def test_la_matriz_de_confusion_de_un_archivo_se_lee_en_el_orden_del_clasificador(epv, tmp_path):
+    categorias = list(reversed(epv.CATEGORIES))
+    cuentas = [[10 * (i + 1) if i == j else 1 for j in range(6)] for i in range(6)]
+    archivo = tmp_path / "matriz.json"
+    archivo.write_text(epv.json.dumps({"categorias": categorias, "matriz": cuentas}), encoding="utf-8")
+
+    matriz = epv.load_confusion(archivo)
+
+    assert matriz.shape == (6, 6) and np.allclose(matriz.sum(axis=1), 1.0)
+    # `Cooking` es la última fila del archivo: 60 aciertos de 65.
+    assert matriz[0, 0] == pytest.approx(60 / 65)
+    assert matriz[5, 5] == pytest.approx(10 / 15)
 
 
 def test_los_indicadores_de_rutina_ven_el_exceso_y_no_la_falta_de_comida(epv, hogares):
@@ -227,6 +299,12 @@ def test_los_parametros_de_produccion_son_los_mas_votados_por_las_particiones(ep
 
     esperado = {k: grids[0]["configs"][17][k] for k in epv.GRID_FIELDS}
     assert seleccion["elegido"] == esperado
+
+    # Con los parámetros de puerta en el barrido, el elegido los incluye.
+    con_puerta = _barrido_falso(epv, {0: 17, 1: 17, 2: 101})
+    for grid in con_puerta.values():
+        grid["campos"] = epv.GRID_FIELDS + epv.DOOR_GRID_FIELDS
+    assert set(epv.select_production_config(con_puerta, n_folds=5)["elegido"]) == set(epv.GRID_FIELDS + epv.DOOR_GRID_FIELDS)
     assert (seleccion["votos"], seleccion["particiones"]) == (10, 15)
     assert [v["votos"] for v in seleccion["votacion"]] == [10, 5]
     assert seleccion["cv"][0]["pooled"]["recall_out_of_fold"] == 1.0
@@ -239,8 +317,12 @@ def test_los_parametros_de_produccion_salen_del_barrido_y_no_tocan_los_defaults(
     candidatos = {tuple(getattr(c, k) for k in epv.GRID_FIELDS) for c in epv._grid_configs()}
     assert tuple(getattr(produccion, k) for k in epv.GRID_FIELDS) in candidatos
     assert produccion.ausencia_metodo == "umbral" and produccion.min_window_days == 7 and produccion.window_days == 30
-    # Producción: el juego votado con entradas y salidas en el vocabulario.
-    assert tuple(getattr(produccion, k) for k in epv.GRID_FIELDS) == (0.6, 5.0, 2, True, 1, False)
+    # Producción: el juego votado con entradas y salidas en el vocabulario y los parámetros de
+    # puerta en el barrido. La puerta dispara desde el primer día sin eventos.
+    assert tuple(getattr(produccion, k) for k in epv.GRID_FIELDS) == (0.6, 2.5, 2, True, 2, False)
+    assert tuple(getattr(produccion, k) for k in epv.DOOR_GRID_FIELDS) == (1, False)
+    assert (1, False) in {(d, u) for d in epv.DIAS_PUERTA_GRID for u in epv.PUERTA_UN_DIA_GRID}
+    assert epv.grid_fields(con_puerta=True) == epv.GRID_FIELDS + epv.DOOR_GRID_FIELDS and epv.grid_fields() == epv.GRID_FIELDS
     assert class_deviations.production_config(con_puerta=True) == produccion
     # La variante sin puerta conserva los suyos (los números medidos sin puerta).
     sin_puerta = class_deviations.production_config(con_puerta=False)
@@ -251,3 +333,4 @@ def test_los_parametros_de_produccion_salen_del_barrido_y_no_tocan_los_defaults(
     historicos = class_deviations.ClassDeviationConfig()
     assert (historicos.frac_historica_min, historicos.excess_k, historicos.dias_consecutivos_ausencia) == (0.8, 3.0, 2)
     assert (historicos.separar_fin_de_semana, historicos.dias_consecutivos_exceso_deficit, historicos.ausencia_requiere_racha) == (True, 1, False)
+    assert (historicos.dias_consecutivos_ausencia_puerta, historicos.puerta_dispara_un_dia) == (2, False)

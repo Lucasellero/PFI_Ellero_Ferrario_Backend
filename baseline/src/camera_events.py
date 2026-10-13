@@ -24,13 +24,16 @@ Entradas y salidas (2026-10-13): **encendidas por defecto**. La controladora emi
 `puerta_activada` de `cameras.yaml`) y este adaptador las lleva a `salir_casa` / `entrar_casa`
 (`DOOR_ACTIVITY_MAP`). Son eventos puntuales: suman a la cantidad del día (`_n`), nunca a los
 minutos, y no cortan ni alargan la duración de la actividad que los rodea. Una cámara sin zona
-`puerta` no los emite y esas dos clases quedan siempre en cero. **Solo generan un tipo de
-desvío: la ausencia sostenida** (varios días sin salir o sin entrar). Nunca por horario, ni por
-un solo día, ni por exceso, déficit o tendencia: ver `solo_ausencia_sostenida_en_puerta` y
-`sin_clases_de_puerta`, que usa el proceso diario. Se apagan con `ENTRADAS_Y_SALIDAS_ACTIVADAS=0`
-(o `con_puerta=False`): ahí esas etiquetas se descartan como cualquier etiqueta desconocida y
-las dos clases no existen. El detector de puerta no está validado con video (ver "Actualización
-2026-10-13 (6)" en `baseline/README.md`).
+`puerta` no los emite y esas dos clases quedan siempre en cero. **Solo generan un desvío: que
+falten** (días sin salir o sin entrar). Nunca por horario, ni por exceso, déficit o tendencia:
+el proceso diario le pasa `DOOR_TRACKED_CLASSES` al detector por clase como `clases_de_puerta`
+(`class_deviations.score_class_deviations`) y saca esas clases de los otros detectores con
+`sin_clases_de_puerta`. Cuántos días seguidos hacen falta lo dicen los parámetros votados
+(`class_deviations.PRODUCTION_PARAMS`): desde el 2026-10-13, el primer día sin eventos ya
+cuenta. Se apagan con `ENTRADAS_Y_SALIDAS_ACTIVADAS=0` (o `con_puerta=False`): ahí esas
+etiquetas se descartan como cualquier etiqueta desconocida y las dos clases no existen. La
+validación del detector de puerta con video está en `runner/README.md` ("Validación con
+video").
 
 Zona horaria (`tz`, 2026-10-09): la fecha y el minuto del día de cada evento salen de
 `wall_clock_ts` (epoch UTC) convertido a hora local. Sin `tz`, se usa la zona de la máquina
@@ -116,14 +119,6 @@ def sin_clases_de_puerta(tracked: tuple[str, ...]) -> tuple[str, ...]:
     puerta, que no generan desvíos de horario ni de tendencia."""
     return tuple(c for c in tracked if c not in DOOR_TRACKED_CLASSES)
 
-
-def solo_ausencia_sostenida_en_puerta(por_clase: pd.DataFrame) -> pd.DataFrame:
-    """Filtra la salida de `class_deviations.score_class_deviations`: de `cam_salir_casa` y
-    `cam_entrar_casa` solo deja las ausencias sostenidas. Las demás clases quedan como están."""
-    if por_clase.empty:
-        return por_clase
-    de_puerta = por_clase["clase"].isin(DOOR_TRACKED_CLASSES)
-    return por_clase[~de_puerta | (por_clase["tipo"] == "ausencia_sostenida")]
 
 # Gap entre dos eventos de actividad consecutivos por encima del cual se asume que la persona
 # se fue de cuadro (motion gate en pausa, cámara sin nadie) y no se le atribuye esa duración a

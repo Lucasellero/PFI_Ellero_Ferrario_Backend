@@ -132,7 +132,7 @@ def cross_validate_from_grid(
         pooled_hit[en_test] = hits[mejor][en_test]
         cfg = configs[mejor]
         fold_rows.append({
-            "fold": n, "n_test_homes": len(test_homes),
+            "fold": n, "n_test_homes": len(test_homes), "candidato": int(mejor),
             **{k: cfg[k] for k in (
                 "ausencia_metodo", "frac_historica_min", "ausencia_alpha", "excess_k", "dias_consecutivos_ausencia",
                 "separar_fin_de_semana", "dias_consecutivos_exceso_deficit", "ausencia_requiere_racha",
