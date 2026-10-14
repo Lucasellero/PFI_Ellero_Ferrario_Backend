@@ -39,6 +39,77 @@ fallback automático a CLIP solo si el modelo de esqueleto no está entrenado/ex
 - Umbral congelado: `_FALL_TEMPORAL_REJECT = 0.15` (`runner/camera_worker.py`).
   Artefacto: `fusion/models/fall_temporal_int8.onnx`.
 
+## Matriz de confusión del clasificador en uso, sobre videos no vistos (2026-10-13)
+
+> `evaluate_production_classifier.py`. Mide la decisión que toma el runner en una ventana
+> (`runner/camera_worker.py::_finish_clip_window`), no un cache de features: con los modelos
+> que carga `runner/main.py`, el contexto de zona, la confianza mínima de 0,4 y la regla de
+> `EatingDrinkingMedication` por debajo de 0,55. La matriz queda guardada en
+> [`confusion_holdout_produccion.json`](confusion_holdout_produccion.json) (cuentas por
+> categoría y el resultado de cada video).
+
+**La fusión con esqueleto no se pudo medir.** En la máquina donde se corrió no está el modelo
+de esqueleto de actividades (`fusion/models/temporal_classifier_int8.onnx`; `fusion/models/` no
+se versiona y ahí solo está el de caídas). Sin ese archivo el runner cae a CLIP solo
+(`fusion_mode: clip_only`), y eso es lo que se midió: el probe de 6 categorías con zona
+(`vlm/models/category_probe.npz`). El modelo de esqueleto, además, solo conoce 4 de las 6
+categorías (se entrenó con el dataset local, sin `ReadingScreen` ni `Phone`). Los números de
+la fusión siguen siendo los del 2026-08-18 (82,8 % sobre 273 videos, 4 categorías, más abajo).
+
+**Holdout.** Toyota Smarthome completo (16.115 clips). Se excluyen los 3.126 videos del cache
+con el que se entrenó el probe (`vlm/clip_features_full_zone.npz`) y de cada clase fina se
+toman hasta 40 de los restantes (semilla 2026): **863 videos**. Tres salvedades:
+- Son videos no vistos, pero **de los mismos participantes y del mismo departamento**: el probe
+  final se entrenó con los 18 participantes. No mide una cámara ni una persona nuevas.
+- Las clases finas con 120 videos o menos entraron enteras (o casi) al entrenamiento:
+  `Cutbread`, `Drink.Fromglass`, `Maketea.Boilwater`, `Pour.Fromcan` y `Usetablet` no tienen
+  ningún video acá, y `Cook.Usestove`, `Makecoffee.*`, `Maketea.Insertteabag` y
+  `Pour.Fromkettle` tienen entre 1 y 11.
+- Cada video es una ventana de 3 muestras (al 20 %, 50 % y 80 % del clip). El runner las toma
+  cada 1 s; los clips son recortes de pocos segundos y no siempre entran.
+
+**Resultado** (863 videos; cuentas, real \ predicho):
+
+| Real \ Predicho | Cooking | EatingDrinkingMed. | Moving | Phone | ReadingScreen | Resting | Sin evento | Total |
+|---|---|---|---|---|---|---|---|---|
+| Cooking | **136** | 6 | 0 | 0 | 0 | 0 | 19 | 161 |
+| EatingDrinkingMedication | 14 | **153** | 11 | 36 | 19 | 15 | 54 | 302 |
+| Moving | 12 | 2 | **122** | 15 | 8 | 9 | 32 | 200 |
+| Phone | 1 | 5 | 5 | **23** | 2 | 0 | 4 | 40 |
+| ReadingScreen | 0 | 3 | 1 | 2 | **62** | 4 | 8 | 80 |
+| Resting | 0 | 1 | 0 | 1 | 6 | **64** | 8 | 80 |
+
+"Sin evento": la ventana no emite nada (confianza menor que 0,4, o YOLO no detectó a nadie
+en ninguna de las 3 muestras: 54 de los 125 casos).
+
+| Categoría | Acierto sobre todos los videos | Acierto sobre los que emiten evento | Sin evento |
+|---|---|---|---|
+| Cooking | 84,5 % (136/161) | 95,8 % (136/142) | 11,8 % |
+| EatingDrinkingMedication | 50,7 % (153/302) | 61,7 % (153/248) | 17,9 % |
+| Moving | 61,0 % (122/200) | 72,6 % (122/168) | 16,0 % |
+| Phone | 57,5 % (23/40) | 63,9 % (23/36) | 10,0 % |
+| ReadingScreen | 77,5 % (62/80) | 86,1 % (62/72) | 10,0 % |
+| Resting | 80,0 % (64/80) | 88,9 % (64/72) | 10,0 % |
+| **Global** | **64,9 %** (560/863) | **75,9 %** (560/738) | 14,5 % (125/863) |
+
+- `EatingDrinkingMedication` sigue siendo la categoría más floja: de los 95 videos mal
+  etiquetados, 36 salen como `Phone` (`Drink.Fromcan` 11, `Takepills` 10: la mano cerca de la
+  cara). `Takepills` acierta 12 de 40.
+- Lo que se confunde **hacia** `EatingDrinkingMedication` es poco: 17 de los 490 videos de
+  las otras categorías que emiten evento (3,5 %). La matriz publicada el 2026-09-20 (por
+  muestra, validación cruzada por participante, sin zona ni umbral de confianza) daba entre
+  4 % y 15 % por categoría. Importa para la línea base: es lo que hace que un día sin comidas
+  igual muestre "comidas" (`baseline/README.md`, "Actualización 2026-10-13 (8)").
+- `Moving`: `Sitdown` no emite nada en 16 de 40 videos y `Walk` sale como `Cooking` en 7 y
+  como `Phone` en 6 (no se miró por qué).
+- No es comparable fila a fila con la matriz del 2026-09-20: aquella era por muestra y con
+  participantes disjuntos; esta es por ventana, con las reglas del runner y con participantes
+  ya vistos. Que esta dé mejor no significa que el clasificador haya mejorado.
+
+```bash
+python evaluate_production_classifier.py <carpeta con los .mp4 de Toyota Smarthome>   # unos 20 min con GPU
+```
+
 ## Plan hacia ~10 clases y sustitución de CLIP
 
 Ver [`PLAN_sustitucion_clip.md`](PLAN_sustitucion_clip.md) (2026-09-01): cómo pasar de

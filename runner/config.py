@@ -47,6 +47,11 @@ class RunnerConfig:
     motion_gate_enabled: bool = True     # si True, YOLO/CLIP solo corren mientras hay movimiento o presencia confirmada (ver motion_gate.py)
     motion_min_area_ratio: float = 0.005 # fracción del frame (reducido) que debe cambiar para contar como movimiento
     motion_absence_timeout_s: float = 45.0  # segundos sin detección de persona (estando despierto) antes de volver a modo bajo consumo
+    # Entradas y salidas de casa (ver door_events.py): encendidas por defecto. Solo emiten las
+    # cámaras con la zona `puerta` en `zones`; `puerta_activada: false` las apaga en todas.
+    puerta_activada: bool = True
+    puerta_ausencia_min_s: float = 60.0  # segundos sin ver a nadie para que desaparecer/aparecer en la puerta cuente como salida/entrada
+    puerta_memoria_s: float = 2.0        # la última vez que se vio a la persona tiene que haber sido en la puerta, con esta tolerancia
     cloud_sync: CloudSyncConfig | None = None  # None = sin sincronización a la nube (default)
 
 
@@ -76,5 +81,8 @@ def load_config(path: Path) -> RunnerConfig:
         motion_gate_enabled=bool(data.get("motion_gate_enabled", True)),
         motion_min_area_ratio=float(data.get("motion_min_area_ratio", 0.005)),
         motion_absence_timeout_s=float(data.get("motion_absence_timeout_s", 45.0)),
+        puerta_activada=bool(data.get("puerta_activada", True)),
+        puerta_ausencia_min_s=float(data.get("puerta_ausencia_min_s", 60.0)),
+        puerta_memoria_s=float(data.get("puerta_memoria_s", 2.0)),
         cloud_sync=cloud_sync,
     )

@@ -195,6 +195,56 @@ tarea aplica la retención de eventos (ver "Retención de eventos"). Este CLI qu
 puntual a mano (backfill/debug). Mismo criterio que `baseline/run_live.py`: nunca evalúa el día en
 curso, es idempotente (no duplica un desvío ya emitido).
 
+### Vocabulario y parámetros del proceso diario (2026-10-13)
+
+Dos cambios en lo que evalúa `app/baseline_runner.py`, los dos en `baseline/src/` (acá solo se
+importan):
+
+- **Entradas y salidas de casa: encendidas por defecto.** El proceso sigue dos clases más,
+  `cam_salir_casa` y `cam_entrar_casa`, además de las cinco del clasificador
+  (`camera_events.LIVE_TRACKED_CLASSES`). Salen de los eventos `LeaveHome` / `EnterHome` que la
+  controladora emite cuando la cámara tiene configurada la zona `puerta` (`runner/README.md`,
+  "Entradas y salidas de casa"). Entran por `POST /devices/events` como cualquier `activity`: no
+  hizo falta tocar el esquema ni la ingestión. Un hogar sin esa zona no los manda nunca y no
+  recibe alertas de puerta. Se apagan con `ENTRADAS_Y_SALIDAS_ACTIVADAS=0`.
+- **De la puerta solo sale un desvío: que falten entradas o salidas.** Nunca una alerta por el
+  horario de una salida, ni siquiera con `ALERTAS_DE_HORARIO_ACTIVADAS=1`, ni por exceso,
+  déficit o tendencia: el detector de horario y el de tendencia no siguen esas dos clases, y
+  el detector por clase las trata aparte (`clases_de_puerta`).
+  **Cambio del 2026-10-13 (segunda votación): el primer día sin salir o sin entrar ya genera
+  el desvío.** Ese primer día sale como `cam_salir_casa:ausencia` / `cam_entrar_casa:ausencia`;
+  del segundo día en adelante, como `...:ausencia_sostenida`. Hasta ese cambio hacían falta 2
+  días seguidos y un solo día no generaba nada. Cuántos días hacen falta es un parámetro
+  (`dias_consecutivos_ausencia_puerta`) y lo eligió la validación cruzada: las 15 particiones
+  de entrenamiento eligieron 1 (ver `baseline/README.md`, "Actualización 2026-10-13 (8)", que
+  también muestra lo que cuesta pedir 2, 3 o 4). **La app tiene que mostrar bien el tipo
+  `ausencia` para esas dos clases**: no se revisó el frontend, que está en otro repositorio.
+- **Parámetros del detector por clase.** Antes corría con los defaults de
+  `ClassDeviationConfig()`; ahora con `class_deviations.production_config()`: desde la segunda
+  votación del 2026-10-13, `frac_historica_min=0.6`, `excess_k=2.5`,
+  `dias_consecutivos_exceso_deficit=2` (un exceso o un déficit tiene que sostenerse 2 días) y
+  `dias_consecutivos_ausencia_puerta=1`; el resto igual. Los eligió la validación cruzada
+  sobre el vocabulario que producción puebla. Con los defaults, los falsos positivos medidos
+  eran 22,5 %. Los números están en `baseline/README.md`, "Actualización 2026-10-13 (8)" (la
+  primera votación, con `excess_k=5.0` y la puerta fija en 2 días, está en la (6)).
+
+- **Texto del aviso al celular (2026-10-13).** El push de un desvío de rutina mandaba como
+  cuerpo la clave interna (`cam_comida:ausencia`) con el título fijo "Posible desvío de
+  rutina". Ahora título y cuerpo salen de `alertas.texto_desvio`, con los mismos textos que
+  muestra la app (`presentacion.ts` del Frontend, `desvioDeRutina`): por ejemplo "Cambio en la
+  rutina" / "Hoy no se registró comer o beber", o "Hoy no se registró ninguna salida de casa".
+  Vale para todos los detectores (por clase, tendencia, multivariado y horario). Los textos
+  están copiados en los dos repositorios: si se cambia uno hay que cambiar el otro. El aviso
+  de horario (apagado por defecto) lleva dos horas, así que es el único con dos puntos. El
+  envío real sigue sin probarse: Firebase no está configurado en las pruebas.
+
+**No cambia ningún número de este README**: las pruebas de `test_linea_base_produccion.py`
+(el día sin comidas emite dos desvíos, el mismo día sin tocar no emite ninguno) dan lo mismo con
+los parámetros nuevos, sin modificar ninguna; también con los de la segunda votación.
+
+**No está desplegado en AWS.** Requiere además que la controladora esté actualizada y tenga la
+zona `puerta` dibujada.
+
 ### La línea base por el camino de producción, medida (2026-10-13)
 
 Hasta ahora la detección de desvíos se había medido con los scripts de `baseline/`, no con el
@@ -378,6 +428,21 @@ borrado en el orden equivocado falle igual que fallaría en Postgres. Cubren (20
   exactamente dos desvíos y ninguno de horario, que el mismo día sin modificar no emite nada,
   que con `ALERTAS_DE_HORARIO_ACTIVADAS=1` vuelven las dos alertas de horario, y qué valores de
   la variable la encienden (12 casos).
+- `test_push_desvio_de_rutina.py` (53 casos, ver "Texto del aviso al celular"): ningún aviso
+  de los que el proceso diario puede emitir contiene `cam_`, dos puntos, guiones bajos,
+  porcentajes ni números; los textos coinciden con los de la app; una clase o un tipo
+  desconocidos salen como "su rutina"; y de punta a punta, el día sin comidas y los días sin
+  salir (uno y cuatro) avisan con el texto legible.
+- `test_linea_base_puerta.py` (9 pruebas, ver "Vocabulario y parámetros del proceso diario"):
+  con una salida y una entrada por día en el historial, cuatro días sin salir generan las
+  alertas `cam_salir_casa:ausencia_sostenida` y `cam_entrar_casa:ausencia_sostenida` y se ven
+  en `/alertas`; un solo día sin salir genera `cam_salir_casa:ausencia` y
+  `cam_entrar_casa:ausencia` (desde la segunda votación del 2026-10-13), y no genera nada si
+  el parámetro se sube a 2 días; saliendo todos los días no hay alerta; una
+  salida a las 05:00 en vez de las 15:00 no genera un desvío de horario ni con las alertas de
+  horario encendidas (y una prueba de control muestra que el detector sí la marcaría si
+  siguiera esa clase); un hogar que nunca mandó eventos de puerta no recibe alertas de puerta;
+  y con `ENTRADAS_Y_SALIDAS_ACTIVADAS=0` el proceso ignora esos eventos.
 - `test_ingestion_idempotente.py` (8 pruebas, ver "Ingestión idempotente"): reenviar el mismo
   lote no duplica, un lote mezclado guarda solo lo nuevo, un evento repetido dentro del lote
   se guarda una vez, una alerta reenviada no vuelve a avisar, los eventos sin identificador se

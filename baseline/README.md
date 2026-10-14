@@ -965,6 +965,735 @@ Lo que sí cambia es lo que emite el proceso diario, medido en la prueba por el 
 producción (`cloud/README.md`): el día sin comidas pasa de 4 alertas a 2 (las dos que provoca
 el desvío inyectado) y el mismo día sin modificar pasa de 2 alertas a ninguna.
 
+### Actualización 2026-10-13 (5) — validación cruzada con el vocabulario que producción puede poblar
+
+**Ningún número anterior de este README cambia.** `--cv 5` y `--cv 5 --camera` no se tocaron
+(72,8 % / 13,1 % y 69,5 % / 13,8 %); esto es una medición nueva, en un script aparte
+(`evaluate_production_vocab.py --paso1`), con su propio set de desvíos. La medición con el
+vocabulario de producción (con entradas y salidas) y sus parámetros está en la actualización (6);
+la variante sin puerta, evaluada y no adoptada, en la (7).
+
+**Por qué**: el 69,5 % / 13,8 % del modo cámara se mide con `CAMERA_TRACKED_CLASSES`
+(`cam_comida`, `cam_comida_mesa`, `cam_salir_casa`, `cam_aseo`). La controladora emite cinco
+clases (`camera_events.CAMERA_ACTIVITY_MAP`: `cocina`, `comida`, `descanso_sofa`,
+`ocio_sentado`, `moverse`), y de las cuatro evaluadas solo coincide `cam_comida`. Además, el
+escenario que más pesa en ese número es `semana_sin_salir` (147 de 220 días positivos), que
+depende de `cam_salir_casa`. **El 69,5 % / 13,8 % describe un vocabulario que producción no
+puebla hoy.**
+
+| Dónde | Clases |
+|---|---|
+| Clasificador de la controladora (`activity_label`) | `Cooking`, `EatingDrinkingMedication`, `Resting`, `ReadingScreen`, `Phone`, `Moving` (`Background` se descarta) |
+| `camera_events.CAMERA_ACTIVITY_MAP` → `LIVE_TRACKED_CLASSES` | `cam_cocina`, `cam_comida`, `cam_descanso_sofa`, `cam_ocio_sentado` (`ReadingScreen` + `Phone`), `cam_moverse` |
+| Proceso diario (`cloud/app/baseline_runner.py`, `run_live.py`) | las 5 de `LIVE_TRACKED_CLASSES`, en los cuatro detectores (el de horario apagado por defecto). Desde la actualización (6) son 7: se suman `cam_salir_casa` y `cam_entrar_casa` (solo ausencia sostenida) |
+| `evaluate_deviations.py --cv 5` (sensor) | `medicacion`, `salir_casa`, `bano_nocturno`, `comer` + multivariado sobre las 19 canónicas |
+| `evaluate_deviations.py --cv 5 --camera`, `cv_grid.py`, `evaluate_classifier_noise.py`, `evaluate_learning_period.py`, `evaluate_door_event_loss.py` | `cam_comida` (acá solo beber + medicación), `cam_comida_mesa`, `cam_salir_casa`, `cam_aseo` |
+| `evaluate_timing_cv.py --vocab camara` | `cam_cocina`, `cam_comida`, `cam_descanso_sofa`, `cam_ocio_sentado` |
+| `evaluate_timing_deviations.py` / `evaluate_trend_deviations.py` | canónicas de CASAS (`comer`, `beber`, `medicacion`, `dormir`, `salir_casa` / `salir_casa`, `visitas`, `dormir`, `descansar`) |
+| `evaluate_production_vocab.py` (nuevo) | `cam_cocina`, `cam_comida`, `cam_descanso_sofa`, `cam_ocio_sentado` |
+| Indicadores de la app (`cloud/app/rutina.py`) | `comida` (`cam_comida`, horario), `sedentarismo` (`cam_descanso_sofa` + `cam_ocio_sentado`), `cocina`, `movilidad` (`cam_moverse`) |
+
+Dos diferencias más dentro del mismo nombre de clase:
+- `cam_comida` en `features.add_camera_columns()` es beber + medicación (comer va a
+  `cam_comida_mesa`); en producción comer, beber y medicación son una sola clase.
+- Ver televisión es `ocio_sentado` en `activity_map.COARSE` y `descanso_sofa` en producción
+  (`WatchTV` está dentro de `Resting`).
+
+**Qué se midió** (`evaluate_production_vocab.py`): mismo protocolo que `--cv 5 --camera` — 21
+hogares, 5 particiones por hogar con semilla 0, mismo barrido de `ClassDeviationConfig`, tope
+de 15 % de falsos positivos al elegir, solo el detector por clase — con las cuatro clases de
+producción que tienen equivalente en CASAS, armadas por el camino de producción
+(`CANONICAL_TO_CATEGORY` → `CAMERA_ACTIVITY_MAP`). Desvíos inyectados: `dia_sin_comida`,
+`dia_sin_cocinar`, `exceso_descanso` y `exceso_ocio_sentado` (los excesos suben los minutos a
+max(1,5 × percentil 95, mediana + 180 min) sin cambiar la cantidad de episodios). 79 días
+positivos (21 + 21 + 20 + 17) y 420 negativos. La semilla de inyección 0 es la del protocolo; 1
+y 2 se corrieron para ver cuánto se mueve.
+
+| Medición (semilla 0; entre paréntesis, semillas 1 y 2) | Detección | Falsos positivos | Sin comida | Sin cocinar | Exceso descanso | Exceso ocio sentado |
+|---|---|---|---|---|---|---|
+| Validación cruzada, señal de producción (episodios por día) | **48,1 %** (51,9 / 54,4) | **9,5 %** (13,8 / 14,5) | 85,7 % | 85,7 % | 10,0 % | 0,0 % |
+| Validación cruzada, minutos por día | 68,4 % (67,1 / 72,2) | 15,2 % (16,7 / 13,8) | 85,7 % | 76,2 % | 60,0 % | 47,1 % |
+| Producción tal cual, detector por clase (`ClassDeviationConfig()`) | 49,4 % (50,6 / 57,0) | 18,3 % (18,3 / 17,1) | 85,7 % | 71,4 % | 5,0 % | 29,4 % |
+| Producción tal cual, multivariado sobre las columnas `cam_*` | 13,9 % (17,7 / 11,4) | 2,1 % (2,1 / 2,1) | 0,0 % | 14,3 % | 25,0 % | 17,6 % |
+| Producción tal cual, los dos juntos | 57,0 % (55,7 / 62,0) | 19,0 % (19,5 / 17,6) | 85,7 % | 71,4 % | 30,0 % | 35,3 % |
+| Indicadores de la app (regla de `rutina.py`: sedentarismo o cocina) | 24,1 % (21,5 / 25,3) | 0,2 % (0,7 / 0,0) | 0,0 % | 9,5 % | 50,0 % | 41,2 % |
+
+Lecturas:
+- **Las ausencias de un día se detectan bien** (día sin comida 85,7–95,2 %, día sin cocinar
+  71,4–85,7 % según la semilla), casi siempre por la clase correcta.
+- **El detector por clase de producción no ve el exceso de descanso ni de ocio sentado.** Mira
+  la cantidad de episodios (`_n`), no los minutos: contando solo las alertas de la clase del
+  desvío, detecta 0 de 20 y 0 de 17 con la semilla 0 (el 10 % de la tabla son alertas de otra
+  clase que coincidieron ese día). Con minutos por día sube a 45 % y 41 %, a costa de más
+  falsos positivos por `exceso` (2,6 % → 10,2 % de los días normales).
+- **Con los parámetros por defecto que corre producción, los falsos positivos son 17–19 %**, por
+  encima del 13,8 % citado para el modo cámara y del tope de 15 %.
+- En falsos positivos por clase (validación cruzada, episodios, semilla 0): `cam_cocina` 3,6 %,
+  `cam_descanso_sofa` 3,6 %, `cam_comida` 2,4 %, `cam_ocio_sentado` 1,2 %. Por tipo: `ausencia`
+  5,2 %, `exceso` 2,6 %, `ausencia_sostenida` 1,9 %, `deficit` 0,2 %.
+- Los indicadores de la app casi no dan falsos positivos, pero no muestran el día sin comida
+  (el indicador es el horario de la primera comida: sin comida no hay valor) y marcan el día sin
+  cocinar solo en 2 de 21 hogares (la regla exige caer 3 sigmas bajo la mediana, con piso de
+  15 min).
+
+Límites: 79 positivos son pocos (cada escenario tiene 17–21 días, un día vale ~5 puntos);
+etiquetas limpias de CASAS, sin el error del clasificador; `cam_moverse` no tiene equivalente en
+CASAS y no se midió; el detector de tendencia no se evaluó (los desvíos son de un día); el
+exceso se inyectó solo en minutos, que es el supuesto desfavorable para el conteo.
+
+### Actualización 2026-10-13 (6) — el sistema tal como queda: entradas y salidas, parámetros y pruebas de robustez
+
+> **Superada el mismo día por la actualización (8)** en dos cosas: los parámetros de producción
+> (se volvió a votar con los días de puerta en el barrido: la puerta dispara desde el primer
+> día, `excess_k` 2,5 y exceso/déficit sostenido 2 días) y el filtro
+> `solo_ausencia_sostenida_en_puerta`, que ya no existe (la regla de puerta está dentro del
+> detector por clase). El vocabulario y las entradas y salidas encendidas siguen igual. Los
+> números de esta sección no se tocaron: son los de la puerta fija en 2 días y `excess_k` 5,0.
+> Las tablas del sistema tal como corre hoy están en la (8).
+
+> **Estado final (decisión del 2026-10-13): este es el vocabulario y estos son los parámetros
+> de producción.** Las entradas y salidas de casa quedan **encendidas por defecto**
+> (`puerta_activada` en `cameras.yaml` y `ENTRADAS_Y_SALIDAS_ACTIVADAS` en el proceso diario;
+> las dos se pueden apagar), `cam_salir_casa` / `cam_entrar_casa` están en
+> `LIVE_TRACKED_CLASSES` y los parámetros son los de `class_deviations.PRODUCTION_PARAMS`. Los
+> números de esta sección se reproducen con `evaluate_production_vocab.py --con-puerta`. La
+> versión sin puerta, que por unas horas fue la elegida, es la variante evaluada y no adoptada
+> de la actualización (7).
+>
+> **Diferencia entre lo medido y lo que emite el proceso diario.** De las clases de puerta el
+> proceso diario solo deja pasar un tipo de desvío, la **ausencia sostenida**: nunca por
+> horario (aunque se enciendan las alertas de horario), ni por un solo día sin salir, ni por
+> exceso, déficit o tendencia (`camera_events.solo_ausencia_sostenida_en_puerta` y
+> `sin_clases_de_puerta`). Las tablas de esta sección se midieron **antes** de esa restricción,
+> con el detector por clase sin filtrar, y no se tocaron. Con la restricción, medido en la misma
+> corrida (3 semillas):
+>
+> | | Global | Semana sin salir | Falsos positivos |
+> |---|---|---|---|
+> | Por clase, como en las tablas | 70,9 % (481/678) | 80,0 % (353/441) | 16,3 % (206/1260) |
+> | Por clase, solo ausencia sostenida en puerta | 64,2 % (435/678) | 70,7 % (312/441) | 12,9 % (162/1260) |
+> | Los dos detectores, como en las tablas | 73,3 % (497/678) | 80,0 % (353/441) | 17,7 % (223/1260) |
+> | **Los dos detectores, solo ausencia sostenida en puerta (lo que emite producción)** | **67,4 %** (457/678) | 71,9 % (317/441) | **14,2 %** (179/1260) |
+> | Los dos detectores con error del clasificador, como en las tablas | 62,5 % (1272/2034) | 78,7 % (1041/1323) | 17,9 % (677/3780) |
+> | Los dos detectores con error del clasificador, solo ausencia sostenida en puerta | 57,0 % (1159/2034) | 71,6 % (947/1323) | 14,4 % (545/3780) |
+>
+> La restricción cuesta unos 8 puntos en la semana sin salir (sobre todo el primer día de cada
+> semana, que antes se marcaba como ausencia de un día) y baja los falsos positivos unos 3,5
+> puntos, a 14,2 %: bajo el tope de 15 %. Los demás desvíos no cambian.
+
+**Ningún número anterior de este README cambia.** `--cv 5` y `--cv 5 --camera` no se tocaron
+(72,8 % / 13,1 % y 69,5 % / 13,8 %), ni `evaluate_deviations.py`, `cv_grid.py` ni los defaults
+de `ClassDeviationConfig`. La medición del punto (5) se sigue obteniendo con
+`evaluate_production_vocab.py --paso1`. Todo lo de abajo sale de
+`evaluate_production_vocab.py --con-puerta`.
+
+**Qué cambió en el código:**
+- La controladora emite `LeaveHome` / `EnterHome` cuando la cámara tiene dibujada la zona
+  `puerta` (`runner/door_events.py`, ver `runner/README.md`). `camera_events.py` las lleva a
+  `cam_salir_casa` / `cam_entrar_casa` (`DOOR_ACTIVITY_MAP`) como eventos puntuales: cuentan
+  como ocurrencias, no suman minutos y no alteran la duración de las otras actividades.
+  `LIVE_TRACKED_CLASSES` pasa de 5 a 7 clases. Una cámara sin zona `puerta` no las emite: la
+  clase queda en cero y su ausencia nunca es un desvío.
+- El proceso diario (`cloud/app/baseline_runner.py`, `run_live.py`) usa
+  `class_deviations.production_config()` en vez de `ClassDeviationConfig()`.
+- `comida_mesa` y `aseo` siguen fuera de alcance: no se implementaron.
+- El detector por clase sigue contando episodios, no minutos. El exceso de descanso o de ocio
+  sentado no lo ve (abajo, medido); lo cubre el indicador de sedentarismo de `cloud/app/rutina.py`.
+
+**Protocolo:** 21 hogares de CASAS, 5 particiones por hogar (semilla 0), 3 semillas de
+inyección, el barrido de `ClassDeviationConfig` de siempre, tope de 15 % de falsos positivos al
+elegir. Clases: `cam_cocina`, `cam_comida`, `cam_descanso_sofa`, `cam_ocio_sentado`,
+`cam_salir_casa`, `cam_entrar_casa`. **`cam_moverse` no tiene equivalente en CASAS y no se
+midió.** Desvíos por semilla: día sin comida (21), día sin cocinar (21), semana sin salir (147
+días, 7 por hogar), exceso de descanso (20), exceso de ocio sentado (17) y 420 días normales.
+Sumando las 3 semillas: 678 días con desvío y 1260 normales. La semana sin salir es el 65 % de
+los días con desvío, así que domina la cifra global: mirar la tabla por desvío.
+
+#### Parámetros de producción
+
+Un único juego, elegido por voto: la combinación que más particiones de entrenamiento eligieron
+entre las 15 (5 por semilla), sin usar sus hogares de prueba. La regla (más votada; en empate,
+la de menos falsos positivos en entrenamiento) se fijó antes de mirar el resultado.
+
+| Parámetro | Antes (default del dataclass) | Producción desde 2026-10-13 |
+|---|---|---|
+| `frac_historica_min` | 0,8 | **0,6** |
+| `excess_k` | 3,0 | **5,0** |
+| `dias_consecutivos_ausencia` | 2 | 2 |
+| `separar_fin_de_semana` | sí | sí |
+| `dias_consecutivos_exceso_deficit` | 1 | 1 |
+| `ausencia_requiere_racha` | no | no |
+
+El voto fue repartido: ganó con 4 de 15, seguido por una combinación con 3 y dos con 2. Las 15
+particiones eligieron `dias_consecutivos_ausencia=2` y `ausencia_requiere_racha=no`, y 13 de 15
+`frac_historica_min=0,6`; lo que varía es cómo tratar excesos y déficits.
+
+| Medición (detector por clase, 3 semillas) | Detección | Falsos positivos |
+|---|---|---|
+| Validación cruzada, fuera de muestra (cada partición con los parámetros que eligieron las otras) | **68,9 %** (467/678) | **14,4 %** (182/1260) |
+| Juego de producción, solo en las 4 particiones de prueba cuyo entrenamiento lo eligió | 74,3 % (136/183) | 15,6 % (53/340) |
+| Juego de producción, sobre los 21 hogares | 70,9 % (481/678) | 16,3 % (206/1260) |
+| Defaults anteriores, sobre los 21 hogares | 68,4 % (464/678) | 22,5 % (284/1260) |
+
+Lectura: la cifra fuera de muestra es la primera (68,9 % / 14,4 %); es la del procedimiento,
+no la de un juego fijo. El juego elegido da 16,3 % de falsos positivos sobre los 21 hogares,
+**por encima del tope de 15 %**: baja desde 22,5 % sin perder detección, pero no llega al
+tope. Esa tercera fila no es estrictamente fuera de muestra (cada hogar participó en elegir
+parámetros en 4 de las 5 particiones). Hay combinaciones con 12 % sobre los 21 hogares
+(`dias_consecutivos_exceso_deficit=2`), pero elegirlas mirando todos los hogares sería elegir
+con los datos de prueba.
+
+#### Medición final: detector de alertas
+
+Juego de producción fijo, 3 semillas de inyección. Entre paréntesis, detectados / casos.
+
+| | Global | Día sin comida | Día sin cocinar | Semana sin salir | Exceso de descanso | Exceso de ocio sentado | Falsos positivos |
+|---|---|---|---|---|---|---|---|
+| Detector por clase | 70,9 % (481/678) | 85,7 % (54/63) | 84,1 % (53/63) | 80,0 % (353/441) | 18,3 % (11/60) | 19,6 % (10/51) | 16,3 % (206/1260) |
+| — semilla 0 | 68,6 % (155/226) | 90,5 % (19/21) | 85,7 % (18/21) | 76,9 % (113/147) | 10,0 % (2/20) | 17,6 % (3/17) | 17,6 % (74/420) |
+| — semilla 1 | 71,2 % (161/226) | 81,0 % (17/21) | 76,2 % (16/21) | 81,0 % (119/147) | 30,0 % (6/20) | 17,6 % (3/17) | 14,0 % (59/420) |
+| — semilla 2 | 73,0 % (165/226) | 85,7 % (18/21) | 90,5 % (19/21) | 82,3 % (121/147) | 15,0 % (3/20) | 23,5 % (4/17) | 17,4 % (73/420) |
+| Multivariado sobre las columnas `cam_*` | 5,0 % (34/678) | 0,0 % (0/63) | 3,2 % (2/63) | 2,5 % (11/441) | 23,3 % (14/60) | 13,7 % (7/51) | 2,1 % (26/1260) |
+| Los dos juntos (lo que emite el proceso diario) | 73,3 % (497/678) | 85,7 % (54/63) | 84,1 % (53/63) | 80,0 % (353/441) | 36,7 % (22/60) | 29,4 % (15/51) | 17,7 % (223/1260) |
+| Validación cruzada del detector por clase (fuera de muestra) | 68,9 % (467/678) | 85,7 % (54/63) | 85,7 % (54/63) | 77,8 % (343/441) | 15,0 % (9/60) | 13,7 % (7/51) | 14,4 % (182/1260) |
+
+- **Detección por la clase del desvío** (promedio de las 3 semillas, sin contar alertas de otra
+  clase que coincidieron ese día): día sin comida 85,7 %, día sin cocinar 84,1 %, semana sin
+  salir 76,9 %, exceso de descanso 3,3 %, exceso de ocio sentado 0 %. O sea: el 18–20 % de
+  "detección" de los excesos en la tabla es casualidad, no el detector viendo el exceso.
+- **Falsos positivos por clase** (promedio): `cam_cocina` 5,5 %, `cam_descanso_sofa` 3,9 %,
+  `cam_ocio_sentado` 3,1 %, `cam_entrar_casa` 2,9 %, `cam_salir_casa` 2,4 %, `cam_comida` 2,0 %.
+- **Falsos positivos por tipo** (promedio): `ausencia` 9,2 %, `exceso` 4,9 %,
+  `ausencia_sostenida` 2,9 %, `deficit` 0,6 %.
+- El detector de tendencia no se evaluó (los desvíos inyectados duran un día o una semana) y el
+  de horario está apagado por defecto.
+
+#### Medición final: indicadores de la app (`cloud/app/rutina.py`)
+
+La misma inyección, con la regla de los indicadores de duración (mediana ± 3 sigmas robustos,
+piso de 15 min). No son alertas: es lo que la pantalla Reportes marca como desvío.
+
+| Indicador | Día sin comida | Día sin cocinar | Semana sin salir | Exceso de descanso | Exceso de ocio sentado | Falsos positivos |
+|---|---|---|---|---|---|---|
+| Sedentarismo (descanso + ocio sentado, exceso) | 0,0 % (0/63) | 0,0 % (0/63) | 0,2 % (1/441) | 48,3 % (29/60) | 43,1 % (22/51) | 0,9 % (11/1260) |
+| Cocina (déficit) | 0,0 % (0/63) | 9,5 % (6/63) | 0,2 % (1/441) | 0,0 % (0/60) | 0,0 % (0/51) | 0,2 % (2/1260) |
+| Cualquiera de los dos | 0,0 % (0/63) | 9,5 % (6/63) | 0,5 % (2/441) | 48,3 % (29/60) | 43,1 % (22/51) | 1,0 % (13/1260) |
+
+El exceso de descanso y de ocio sentado, que el detector por clase no ve, lo marca el indicador
+de sedentarismo en poco menos de la mitad de los casos, con 1 % de falsos positivos. No se midió
+el indicador `comida` (es el horario de la primera comida: un día sin comida no tiene valor que
+mostrar), ni `movilidad` (`cam_moverse`, sin equivalente en CASAS). No hay indicador de salidas.
+
+#### Error del clasificador
+
+Mismo juego de parámetros. Cada evento que la cámara clasificaría se re-etiqueta con la matriz
+de confusión medida (`evaluate_classifier_noise.py`, 6 categorías); las entradas y salidas no
+pasan por el clasificador y quedan igual. 3 semillas de inyección × 3 de ruido.
+
+| | Global | Día sin comida | Día sin cocinar | Semana sin salir | Exceso de descanso | Exceso de ocio sentado | Falsos positivos |
+|---|---|---|---|---|---|---|---|
+| Por clase, sin ruido | 70,9 % (481/678) | 85,7 % (54/63) | 84,1 % (53/63) | 80,0 % (353/441) | 18,3 % (11/60) | 19,6 % (10/51) | 16,3 % (206/1260) |
+| Por clase, con ruido | 59,8 % (1217/2034) | **20,1 %** (38/189) | **43,4 %** (82/189) | 78,5 % (1039/1323) | 18,9 % (34/180) | 15,7 % (24/153) | 16,9 % (640/3780) |
+| — entre semillas de ruido | 59,4 – 60,6 % | 15,9 – 25,4 % | 39,7 – 46,0 % | 78,5 – 78,7 % | 18,3 – 20,0 % | 13,7 – 17,6 % | 16,7 – 17,1 % |
+| Los dos juntos, sin ruido | 73,3 % (497/678) | 85,7 % (54/63) | 84,1 % (53/63) | 80,0 % (353/441) | 36,7 % (22/60) | 29,4 % (15/51) | 17,7 % (223/1260) |
+| Los dos juntos, con ruido | 62,5 % (1272/2034) | 20,6 % (39/189) | 43,4 % (82/189) | 78,7 % (1041/1323) | 36,7 % (66/180) | 28,8 % (44/153) | 17,9 % (677/3780) |
+| Indicadores de `rutina.py`, sin ruido | — | 0,0 % (0/63) | 9,5 % (6/63) | 0,5 % (2/441) | 48,3 % (29/60) | 43,1 % (22/51) | 1,0 % (13/1260) |
+| Indicadores de `rutina.py`, con ruido | — | 0,0 % (0/189) | 3,2 % (6/189) | 0,5 % (6/1323) | 50,6 % (91/180) | 35,3 % (54/153) | 0,7 % (27/3780) |
+
+**El día sin comida casi se deja de detectar (85,7 % → 20,1 %) y el día sin cocinar cae a la
+mitad (84,1 % → 43,4 %).** El motivo es el mismo que en la prueba 1 del 2026-10-13: el
+clasificador confunde otras actividades con comer o cocinar (según la matriz, entre 4 % y 15 %
+de los episodios de las otras categorías se etiquetan `EatingDrinkingMedication`), así que un
+día sin ninguna comida real igual muestra "comidas". La semana sin salir casi no cambia
+(78,5 %) porque no depende del clasificador. Los falsos positivos no se mueven. El global baja
+poco (70,9 → 59,8 %) solo porque la semana sin salir pesa el 65 %.
+
+#### Período de aprendizaje
+
+Mismo juego de parámetros, variando `min_window_days` en los dos detectores. 3 semillas.
+
+| Días de historial | Global (por clase) | Día sin comida | Día sin cocinar | Semana sin salir | Falsos positivos (por clase) | Global (los dos juntos) | Falsos positivos (los dos juntos) |
+|---|---|---|---|---|---|---|---|
+| 7 (actual) | 70,9 % (481/678) | 85,7 % (54/63) | 84,1 % (53/63) | 80,0 % (353/441) | 16,3 % (206/1260) | 73,3 % (497/678) | 17,7 % (223/1260) |
+| 14 | 66,8 % (453/678) | 77,8 % (49/63) | 71,4 % (45/63) | 78,0 % (344/441) | 13,2 % (166/1260) | 68,0 % (461/678) | 14,2 % (179/1260) |
+| 21 | 64,0 % (434/678) | 68,3 % (43/63) | 63,5 % (40/63) | 76,9 % (339/441) | 10,7 % (135/1260) | 65,2 % (442/678) | 11,7 % (148/1260) |
+| 30 | 53,2 % (361/678) | 58,7 % (37/63) | 47,6 % (30/63) | 63,9 % (282/441) | 8,3 % (105/1260) | 54,0 % (366/678) | 9,0 % (114/1260) |
+
+Con más días de historial bajan las dos cosas. Parte de la baja no es del detector: los días
+que caen antes de completar el historial no se evalúan y cuentan como no detectados (y como "sin
+falso positivo"), igual que en la prueba de período de aprendizaje anterior. Con 14 días los
+falsos positivos quedan bajo el tope (13,2 %) a cambio de 4 puntos de detección. No se cambió
+el período: sigue en 7 días.
+
+#### Pérdida de eventos de puerta
+
+Mismo juego de parámetros. Cada salida y cada entrada se pierde con probabilidad 10, 20 o 30 %
+(niveles **supuestos**: no hay un error medido del detector de puerta). 3 semillas de inyección
+× 3 de pérdida. Solo eventos perdidos, no inventados.
+
+| Eventos perdidos | Global (por clase) | Semana sin salir | Falsos positivos (por clase) | Global (los dos juntos) | Falsos positivos (los dos juntos) |
+|---|---|---|---|---|---|
+| 0 % | 70,9 % (481/678) | 80,0 % (353/441) | 16,3 % (206/1260) | 73,3 % (497/678) | 17,7 % (223/1260) |
+| 10 % | 70,9 % (1442/2034) | 79,4 % (1050/1323) | 16,8 % (634/3780) | 73,3 % (1491/2034) | 18,2 % (688/3780) |
+| 20 % | 70,5 % (1434/2034) | 78,9 % (1044/1323) | 17,7 % (668/3780) | 72,8 % (1481/2034) | 19,0 % (717/3780) |
+| 30 % | 70,1 % (1425/2034) | 78,1 % (1033/1323) | 19,5 % (737/3780) | 72,6 % (1477/2034) | 20,6 % (780/3780) |
+
+Perder eventos de puerta casi no baja la detección (80,0 → 78,1 % con 30 %): sin eventos, una
+semana sin salir sigue pareciendo una semana sin salir. Lo que sube son los falsos positivos
+(16,3 → 19,5 %), porque un día normal en el que se pierden todas las salidas parece un día sin
+salir. No modela una cámara que directamente no ve la puerta ni entradas o salidas inventadas
+(otra persona, o alguien que pasa por la zona y sale de cuadro), que serían el error contrario:
+esconderían una semana sin salir.
+
+#### Qué no se pudo validar sin videos
+
+> Actualización del mismo día: el detector de puerta se midió con Toyota Smarthome
+> (`runner/README.md`, "Validación con video") y la matriz de confusión se volvió a medir
+> (actualización (8)). Lo de abajo es lo que se sabía al escribir esta sección.
+
+- **El detector de puerta en sí.** Cuántas entradas y salidas reales detecta o inventa, y si
+  60 s de ausencia y 2 s de tolerancia son los valores correctos. Todas las cifras de
+  `cam_salir_casa` / `cam_entrar_casa` de arriba suponen que la controladora ve las mismas
+  entradas y salidas que los sensores de CASAS, salvo en la prueba de pérdida.
+- **Entradas y salidas inventadas**: no hay base para suponer una tasa.
+- El detector cuenta a cualquiera que cruce. El sistema es para un solo residente, así que
+  no se hizo nada para visitas ni para un segundo residente.
+- **`cam_moverse`**: ni detección ni falsos positivos, por no tener equivalente en CASAS.
+- **El error del clasificador en un hogar real**: la matriz de confusión es la medida sobre
+  Toyota Smarthome, no sobre las cámaras del proyecto.
+- Sí está probado sin videos: la lógica de la máquina de estados con trayectorias sintéticas
+  (`runner/tests/test_door_events.py`), el adaptador (`baseline/tests/`) y el camino completo
+  controladora → nube → alerta con SQLite (`cloud/tests/test_linea_base_puerta.py`).
+
+### Actualización 2026-10-13 (7) — variante sin entradas ni salidas de casa: evaluada y NO adoptada
+
+> **Estado final (decisión del 2026-10-13, posterior a esta medición): esta variante no se
+> adoptó.** El sistema queda con las entradas y salidas encendidas y con los parámetros de la
+> actualización (6). Lo de abajo es lo que daría el sistema con las entradas y salidas apagadas
+> (`ENTRADAS_Y_SALIDAS_ACTIVADAS=0`): en ese caso el proceso diario usa las cuatro clases y los
+> parámetros de esta sección (`class_deviations.PRODUCTION_PARAMS_SIN_PUERTA`). Los números no
+> se tocaron y se reproducen con `evaluate_production_vocab.py` (sin argumentos). Donde esta
+> sección dice "producción" o "el que queda" hay que leer "la variante sin puerta".
+
+**Ningún número anterior de este README cambia**, incluidos los de la actualización (6) y
+los históricos de `--cv 5` (72,8 % / 13,1 % y 69,5 % / 13,8 %). `evaluate_deviations.py`,
+`cv_grid.py` y los defaults de `ClassDeviationConfig` no se tocaron. Todo lo de abajo sale de
+`evaluate_production_vocab.py` (sin argumentos).
+
+**Supuestos de esta variante:**
+- **Vocabulario**: `cam_cocina`, `cam_comida`, `cam_descanso_sofa`, `cam_ocio_sentado` y
+  `cam_moverse`. **`cam_moverse` no tiene equivalente en CASAS y no se midió**: todo lo de
+  abajo es sobre las otras cuatro.
+- **Entradas y salidas de casa: apagadas.**
+- **Período de aprendizaje: 7 días.** No se cambió (tampoco en el sistema adoptado).
+- El detector por clase sigue contando episodios, no minutos. El exceso de descanso o de ocio
+  sentado no lo ve (abajo, medido); lo cubren los indicadores de `cloud/app/rutina.py`.
+- `comida_mesa` y `aseo` fuera de alcance. El sistema es para un solo residente.
+
+**Protocolo:** 21 hogares de CASAS, 5 particiones por hogar (semilla 0), 3 semillas de
+inyección, el barrido de `ClassDeviationConfig` de siempre, tope de 15 % de falsos positivos al
+elegir. Desvíos por semilla: día sin comida (21), día sin cocinar (21), exceso de descanso (20),
+exceso de ocio sentado (17) y 420 días normales. Sumando las 3 semillas: 237 días con desvío y
+1260 normales. Son pocos casos por desvío: un día vale 1,6 a 2 puntos.
+
+#### Parámetros de producción
+
+Mismo procedimiento que en (6): la combinación que más particiones de entrenamiento eligieron
+entre las 15 (5 por semilla), sin usar sus hogares de prueba; en empate, la de menos falsos
+positivos en entrenamiento. Son los de `class_deviations.production_config(con_puerta=False)`.
+
+| Parámetro | Antes (default del dataclass) | Variante sin puerta |
+|---|---|---|
+| `frac_historica_min` | 0,8 | **0,6** |
+| `excess_k` | 3,0 | **2,5** |
+| `dias_consecutivos_ausencia` | 2 | 2 |
+| `separar_fin_de_semana` | sí | **no** |
+| `dias_consecutivos_exceso_deficit` | 1 | **2** |
+| `ausencia_requiere_racha` | no | no |
+
+**El voto empató 4 a 4** y lo definió la regla de desempate, fijada antes de mirar el
+resultado:
+
+| Combinación (`frac` / `excess_k` / finde separado / días de exceso) | Votos | Falsos positivos en entrenamiento |
+|---|---|---|
+| **0,6 / 2,5 / no / 2** (elegida) | 4 | 9,9 % |
+| 0,6 / 3,0 / no / 1 | 4 | 14,0 % |
+| 0,7 / 3,0 / no / 1 | 3 | 14,2 % |
+| 0,6 / 2,5 / sí / 2 | 2 | 9,5 % |
+| 0,6 / 4,0 / no / 1 | 1 | 13,5 % |
+| 0,8 / 3,0 / no / 1 | 1 | 15,0 % |
+
+Las 15 particiones eligieron `dias_consecutivos_ausencia=2` y `ausencia_requiere_racha=no`. La
+elegida exige que un exceso o un déficit se sostenga 2 días (`dias_consecutivos_exceso_deficit=2`).
+Esa misma opción se había descartado en (6) como alternativa, porque ahí se la habría elegido
+mirando los 21 hogares; acá sale del voto de las particiones de entrenamiento y del desempate,
+sin mirar los hogares de prueba. Su efecto es el esperable: un exceso de un solo día ya no
+dispara, que es justo el caso que el detector por clase no veía de todos modos.
+
+#### Medición final
+
+Entre paréntesis, detectados / casos. 3 semillas de inyección.
+
+| | Global | Día sin comida | Día sin cocinar | Exceso de descanso | Exceso de ocio sentado | Falsos positivos |
+|---|---|---|---|---|---|---|
+| **Validación cruzada, fuera de muestra** (detector por clase) | **51,5 %** (122/237) | 90,5 % (57/63) | 79,4 % (50/63) | 16,7 % (10/60) | 9,8 % (5/51) | **12,6 %** (159/1260) |
+| — semilla 0 | 48,1 % (38/79) | 85,7 % (18/21) | 85,7 % (18/21) | 10,0 % (2/20) | 0,0 % (0/17) | 9,5 % (40/420) |
+| — semilla 1 | 51,9 % (41/79) | 90,5 % (19/21) | 81,0 % (17/21) | 20,0 % (4/20) | 5,9 % (1/17) | 13,8 % (58/420) |
+| — semilla 2 | 54,4 % (43/79) | 95,2 % (20/21) | 71,4 % (15/21) | 20,0 % (4/20) | 23,5 % (4/17) | 14,5 % (61/420) |
+| **Juego fijo, sobre los 21 hogares** (detector por clase) | **49,8 %** (118/237) | 90,5 % (57/63) | 79,4 % (50/63) | 11,7 % (7/60) | 7,8 % (4/51) | **8,8 %** (111/1260) |
+| — semilla 0 | 49,4 % (39/79) | 85,7 % (18/21) | 85,7 % (18/21) | 10,0 % (2/20) | 5,9 % (1/17) | 9,8 % (41/420) |
+| — semilla 1 | 49,4 % (39/79) | 90,5 % (19/21) | 81,0 % (17/21) | 15,0 % (3/20) | 0,0 % (0/17) | 8,1 % (34/420) |
+| — semilla 2 | 50,6 % (40/79) | 95,2 % (20/21) | 71,4 % (15/21) | 10,0 % (2/20) | 17,6 % (3/17) | 8,6 % (36/420) |
+| Multivariado sobre las columnas `cam_*` | 14,3 % (34/237) | 12,7 % (8/63) | 7,9 % (5/63) | 21,7 % (13/60) | 15,7 % (8/51) | 2,1 % (27/1260) |
+| **Juego fijo, los dos detectores juntos** (lo que emite producción) | **58,6 %** (139/237) | 90,5 % (57/63) | 79,4 % (50/63) | 33,3 % (20/60) | 23,5 % (12/51) | **10,6 %** (134/1260) |
+| Juego fijo, solo en las 4 particiones de prueba cuyo entrenamiento lo eligió | 48,4 % (31/64) | | | | | 9,1 % (31/340) |
+| Defaults anteriores, sobre los 21 hogares (detector por clase) | 52,3 % (124/237) | | | | | 17,9 % (226/1260) |
+| La otra combinación empatada, sobre los 21 hogares | 54,4 % (129/237) | | | | | 16,6 % (209/1260) |
+
+- La cifra fuera de muestra es la de la validación cruzada (51,5 % / 12,6 %); es la del
+  procedimiento, no la de un juego fijo. La del juego fijo sobre los 21 hogares no es
+  estrictamente fuera de muestra (cada hogar participó en elegir parámetros en 4 de las 5
+  particiones).
+- **Los falsos positivos quedan bajo el tope de 15 %** con el juego fijo, también con los dos
+  detectores juntos (10,6 %).
+- **El global es bajo porque casi la mitad de los casos (111 de 237) son excesos**, que el
+  detector por clase no ve: detecta 90,5 % de los días sin comida y 79,4 % de los días sin
+  cocinar, y de los excesos solo lo que coincide por casualidad. Contando solo alertas de la
+  clase del desvío (promedio de las 3 semillas): día sin comida 90,5 %, día sin cocinar 77,8 %,
+  exceso de descanso 1,7 %, exceso de ocio sentado 2,0 %.
+- **Falsos positivos por clase** (promedio de las 3 semillas): `cam_cocina` 3,5 %,
+  `cam_descanso_sofa` 3,1 %, `cam_ocio_sentado` 2,1 %, `cam_comida` 1,2 %. **Por tipo**:
+  `ausencia` 5,1 %, `exceso` 2,8 %, `ausencia_sostenida` 1,2 %, `deficit` 0,2 %.
+- El detector de tendencia no se evaluó (los desvíos inyectados duran un día) y el de horario
+  está apagado por defecto.
+
+#### Indicadores de la app (`cloud/app/rutina.py`)
+
+La misma inyección, con la regla de los indicadores de duración (mediana ± 3 sigmas robustos,
+piso de 15 min). No son alertas: es lo que la pantalla Reportes marca como desvío.
+
+| Indicador | Global | Día sin comida | Día sin cocinar | Exceso de descanso | Exceso de ocio sentado | Falsos positivos |
+|---|---|---|---|---|---|---|
+| Sedentarismo (descanso + ocio sentado, exceso) | 21,1 % (50/237) | 0,0 % (0/63) | 0,0 % (0/63) | 48,3 % (29/60) | 41,2 % (21/51) | 0,3 % (4/1260) |
+| Cocina (déficit) | 2,5 % (6/237) | 0,0 % (0/63) | 9,5 % (6/63) | 0,0 % (0/60) | 0,0 % (0/51) | 0,0 % (0/1260) |
+| Cualquiera de los dos | 23,6 % (56/237) | 0,0 % (0/63) | 9,5 % (6/63) | 48,3 % (29/60) | 41,2 % (21/51) | 0,3 % (4/1260) |
+
+El exceso de descanso y de ocio sentado lo marca el indicador de sedentarismo en algo menos de
+la mitad de los casos, casi sin falsos positivos. No se midieron el indicador `comida` (es el
+horario de la primera comida: un día sin comida no tiene valor que mostrar) ni `movilidad`
+(`cam_moverse`).
+
+#### Error del clasificador
+
+Juego fijo. Cada evento se re-etiqueta con la matriz de confusión medida
+(`evaluate_classifier_noise.py`, 6 categorías). 3 semillas de inyección × 3 de ruido.
+
+| | Global | Día sin comida | Día sin cocinar | Exceso de descanso | Exceso de ocio sentado | Falsos positivos |
+|---|---|---|---|---|---|---|
+| Por clase, sin ruido | 49,8 % (118/237) | 90,5 % (57/63) | 79,4 % (50/63) | 11,7 % (7/60) | 7,8 % (4/51) | 8,8 % (111/1260) |
+| Por clase, con ruido | **20,5 %** (146/711) | **29,1 %** (55/189) | **33,3 %** (63/189) | 12,2 % (22/180) | 3,9 % (6/153) | 11,9 % (448/3780) |
+| — ruido semilla 0 | 22,8 % (54/237) | 31,7 % (20/63) | 36,5 % (23/63) | 15,0 % (9/60) | 3,9 % (2/51) | 12,1 % (152/1260) |
+| — ruido semilla 1 | 20,3 % (48/237) | 33,3 % (21/63) | 33,3 % (21/63) | 6,7 % (4/60) | 3,9 % (2/51) | 12,5 % (157/1260) |
+| — ruido semilla 2 | 18,6 % (44/237) | 22,2 % (14/63) | 30,2 % (19/63) | 15,0 % (9/60) | 3,9 % (2/51) | 11,0 % (139/1260) |
+| Los dos juntos, sin ruido | 58,6 % (139/237) | 90,5 % (57/63) | 79,4 % (50/63) | 33,3 % (20/60) | 23,5 % (12/51) | 10,6 % (134/1260) |
+| Los dos juntos, con ruido | **33,5 %** (238/711) | 32,8 % (62/189) | 33,3 % (63/189) | 38,9 % (70/180) | 28,1 % (43/153) | 13,2 % (498/3780) |
+| Indicadores de `rutina.py`, sin ruido | 23,6 % (56/237) | 0,0 % (0/63) | 9,5 % (6/63) | 48,3 % (29/60) | 41,2 % (21/51) | 0,3 % (4/1260) |
+| Indicadores de `rutina.py`, con ruido | 22,4 % (159/711) | 0,0 % (0/189) | 2,1 % (4/189) | 53,9 % (97/180) | 37,9 % (58/153) | 0,6 % (21/3780) |
+
+**Es el resultado más importante de esta sección: con el error real del clasificador, el
+detector de alertas pierde más de la mitad de lo que detecta** (49,8 % → 20,5 %; con los dos
+detectores, 58,6 % → 33,5 %). El día sin comida cae de 90,5 % a 29,1 % y el día sin cocinar de
+79,4 % a 33,3 %, y los falsos positivos suben de 8,8 % a 11,9 %. El motivo es el de siempre: el
+clasificador confunde otras actividades con comer o cocinar (entre 4 % y 15 % de los episodios
+de las otras categorías se etiquetan `EatingDrinkingMedication`), así que un día sin ninguna
+comida real igual muestra "comidas". Los indicadores de `rutina.py` casi no cambian, porque
+miran minutos acumulados y no si hubo o no un episodio.
+
+#### Período de aprendizaje
+
+Juego fijo, variando `min_window_days` en los dos detectores. 3 semillas.
+
+| Días de historial | Global (por clase) | Día sin comida | Día sin cocinar | Exceso de descanso | Exceso de ocio sentado | Falsos positivos (por clase) | Global (los dos juntos) | Falsos positivos (los dos juntos) |
+|---|---|---|---|---|---|---|---|---|
+| **7 (el que queda)** | 49,8 % (118/237) | 90,5 % (57/63) | 79,4 % (50/63) | 11,7 % (7/60) | 7,8 % (4/51) | 8,8 % (111/1260) | 58,6 % (139/237) | 10,6 % (134/1260) |
+| 14 | 42,2 % (100/237) | 74,6 % (47/63) | 68,3 % (43/63) | 10,0 % (6/60) | 7,8 % (4/51) | 7,6 % (96/1260) | 50,6 % (120/237) | 9,0 % (113/1260) |
+| 21 | 37,1 % (88/237) | 63,5 % (40/63) | 61,9 % (39/63) | 10,0 % (6/60) | 5,9 % (3/51) | 6,7 % (85/1260) | 45,6 % (108/237) | 8,3 % (104/1260) |
+| 30 | 30,0 % (71/237) | 50,8 % (32/63) | 50,8 % (32/63) | 8,3 % (5/60) | 3,9 % (2/51) | 5,2 % (66/1260) | 33,3 % (79/237) | 5,6 % (70/1260) |
+
+Con más días de historial bajan las dos cosas. Parte de la baja no es del detector: los días
+que caen antes de completar el historial no se evalúan y cuentan como no detectados (y como "sin
+falso positivo"). Con 7 días los falsos positivos ya están bajo el tope, así que alargar el
+período solo cuesta detección.
+
+#### Qué no se pudo validar
+
+- **`cam_moverse`**: ni detección ni falsos positivos, por no tener equivalente en CASAS.
+- **El error del clasificador en un hogar real**: la matriz de confusión es la medida sobre
+  Toyota Smarthome, no sobre las cámaras del proyecto. No hay videos en esta máquina.
+- **Episodios y duraciones como los ve la cámara**: acá salen de las anotaciones de CASAS; en
+  producción se reconstruyen por los huecos entre eventos (`camera_events.py`).
+- Los indicadores `comida` y `movilidad` de `rutina.py`, y los detectores de tendencia y de
+  horario.
+
+### Actualización 2026-10-13 (8) — días de puerta votados, medición final del sistema y matriz de confusión nueva
+
+> **Es la sección vigente.** Reemplaza a la (6) en los parámetros de producción y en las tablas
+> del sistema tal como corre. Todo sale de
+> `evaluate_production_vocab.py --con-puerta --matriz ../fusion/confusion_holdout_produccion.json`.
+> Los números de la (6) y de la (7) no se tocaron: son lo que se midió con la puerta fija en 2
+> días y con la variante sin puerta. `--cv 5` y `--cv 5 --camera` tampoco cambian (72,8 % /
+> 13,1 % y 69,5 % / 13,8 %).
+
+**Qué cambió en el código:**
+- `ClassDeviationConfig` tiene dos parámetros nuevos, solo para las clases de puerta:
+  `dias_consecutivos_ausencia_puerta` (cuántos días seguidos sin eventos hacen falta) y
+  `puerta_dispara_un_dia` (si un solo día ya es un desvío). `score_class_deviations` recibe
+  qué clases son de puerta (`clases_de_puerta`); de ellas solo sale la falta de eventos, nunca
+  exceso ni déficit. Los defaults (2 días, un solo día no dispara) son lo que hacía el proceso
+  diario hasta hoy, así que nada que no pase `clases_de_puerta` cambia.
+- El filtro `camera_events.solo_ausencia_sostenida_en_puerta` se eliminó: la regla está ahora
+  dentro del detector, y el barrido evalúa lo mismo que emite el proceso diario. En la (6) el
+  barrido votaba con las clases de puerta sin filtrar y producción filtraba después.
+- El primer día sin eventos de puerta sale con tipo `ausencia`; del segundo en adelante,
+  `ausencia_sostenida`.
+- `evaluate_production_vocab.py --con-puerta` barre además 1, 2, 3 y 4 días × un solo día
+  sí / no: 384 × 8 = 3.072 candidatos. Cinco de las ocho combinaciones de puerta son el mismo
+  detector (si un solo día dispara, la cantidad de días no cambia nada, y eso es lo mismo que
+  pedir 1 día); entre candidatos idénticos gana el primero del barrido, que es "1 día".
+- Mediciones nuevas en el mismo script: "detección del sistema" y la prueba del error del
+  clasificador con una matriz leída de un archivo (`--matriz`).
+
+**Protocolo:** el de siempre. 21 hogares de CASAS, 5 particiones por hogar (semilla 0), 3
+semillas de inyección, tope de 15 % de falsos positivos al elegir, juego de producción = la
+combinación más votada por las 15 particiones de entrenamiento (en empate, la de menos falsos
+positivos en entrenamiento). Mismos desvíos que en la (6): por semilla, día sin comida (21),
+día sin cocinar (21), semana sin salir (147 días, 7 por hogar), exceso de descanso (20), exceso
+de ocio sentado (17) y 420 días normales. Sumando las 3 semillas: 678 días con desvío y 1260
+normales. `cam_moverse` no tiene equivalente en CASAS y no se midió.
+
+#### 1. El voto
+
+| Parámetro | Votación anterior (6) | **Producción desde 2026-10-13 (8)** |
+|---|---|---|
+| `frac_historica_min` | 0,6 | 0,6 |
+| `excess_k` | 5,0 | **2,5** |
+| `dias_consecutivos_ausencia` | 2 | 2 |
+| `separar_fin_de_semana` | sí | sí |
+| `dias_consecutivos_exceso_deficit` | 1 | **2** |
+| `ausencia_requiere_racha` | no | no |
+| `dias_consecutivos_ausencia_puerta` | 2 (fijo, no se votaba) | **1** |
+| `puerta_dispara_un_dia` | no (fijo) | no (con 1 día es redundante) |
+
+**Las 15 particiones eligieron que la puerta dispare desde el primer día.** El resto del voto
+fue repartido, como en la (6):
+
+| `frac` / `excess_k` / finde separado / días de exceso / días de puerta | Votos | Falsos positivos en entrenamiento |
+|---|---|---|
+| **0,6 / 2,5 / sí / 2 / 1** (elegida) | 4 | 14,3 % |
+| 0,6 / 5,0 / sí / 1 / 1 (la de la (6), con puerta en 1 día) | 3 | 13,8 % |
+| 0,6 / 2,5 / no / 2 / 1 | 2 | 14,3 % |
+| 0,6 / 5,0 / no / 1 / 1 | 2 | 14,4 % |
+| 0,7 / 4,0 / sí / 1 / 1 | 2 | 15,0 % |
+| 0,6 / 2,5 / sí / 3 / 1 | 1 | 12,9 % |
+| 0,6 / 4,0 / sí / 1 / 1 | 1 | 14,4 % |
+
+Las 15 eligieron `dias_consecutivos_ausencia=2` y `ausencia_requiere_racha=no`, y 13 de 15
+`frac_historica_min=0,6`.
+
+**Por qué gana 1 día, y qué cuesta cada opción.** Cada uno de los 7 días de una semana sin
+salir cuenta como un caso. Un detector que espera N días seguidos no puede marcar los primeros
+N−1: su techo en ese desvío es 100 %, 85,7 %, 71,4 % y 57,1 % para 1, 2, 3 y 4 días. El
+procedimiento elige la mayor detección que entra en el tope de falsos positivos, así que
+prefiere 1 día mientras entre. La misma validación cruzada, con los días de puerta fijados de
+antemano (fuera de muestra, 3 semillas; es informativa, no eligió nada):
+
+| Días seguidos sin salir | Global | Semana sin salir | Falsos positivos |
+|---|---|---|---|
+| **1 (elegido)**, o cualquiera con "un solo día dispara" | 68,7 % (466/678) | 77,8 % (343/441) | 15,2 % (192/1260) |
+| 2 | 64,0 % (434/678) | 70,3 % (310/441) | 14,0 % (177/1260) |
+| 3 | 57,7 % (391/678) | 60,8 % (268/441) | 13,8 % (174/1260) |
+| 4 | 51,3 % (348/678) | 51,2 % (226/441) | 13,7 % (172/1260) |
+
+Pedir más días baja poco los falsos positivos (15,2 → 13,7 %) y mucho la detección medida así.
+**Lo que la tabla no dice** es si avisar el primer día sin salir es lo que se quiere: la
+métrica cuenta días, no semanas. Un detector de 3 días marca igual todas las semanas sin salir
+(a partir del tercer día) y en esta cuenta "pierde" dos días de cada una. Si lo que importa es
+enterarse de la semana y no del primer día, el parámetro se puede subir sin tocar código
+(`PRODUCTION_PARAMS["dias_consecutivos_ausencia_puerta"]`); eso sería una decisión de
+producto, no el resultado del voto.
+
+#### 2. Tablas finales del sistema tal como corre
+
+Juego de producción fijo, 3 semillas de inyección. Entre paréntesis, detectados / casos.
+
+| | Global | Día sin comida | Día sin cocinar | Semana sin salir | Exceso de descanso | Exceso de ocio sentado | Falsos positivos |
+|---|---|---|---|---|---|---|---|
+| **Validación cruzada del detector por clase (fuera de muestra)** | **68,7 %** (466/678) | 85,7 % (54/63) | 85,7 % (54/63) | 77,8 % (343/441) | 13,3 % (8/60) | 13,7 % (7/51) | **15,2 %** (192/1260) |
+| — semilla 0 | 67,3 % (152/226) | 90,5 % (19/21) | 90,5 % (19/21) | 75,5 % (111/147) | 5,0 % (1/20) | 11,8 % (2/17) | 13,6 % (57/420) |
+| — semilla 1 | 70,4 % (159/226) | 81,0 % (17/21) | 76,2 % (16/21) | 80,3 % (118/147) | 25,0 % (5/20) | 17,6 % (3/17) | 15,7 % (66/420) |
+| — semilla 2 | 68,6 % (155/226) | 85,7 % (18/21) | 90,5 % (19/21) | 77,6 % (114/147) | 10,0 % (2/20) | 11,8 % (2/17) | 16,4 % (69/420) |
+| Detector por clase, juego fijo, 21 hogares | 69,3 % (470/678) | 85,7 % (54/63) | 84,1 % (53/63) | 78,7 % (347/441) | 15,0 % (9/60) | 13,7 % (7/51) | 14,5 % (183/1260) |
+| — semilla 0 | 67,7 % (153/226) | 90,5 % (19/21) | 85,7 % (18/21) | 76,9 % (113/147) | 5,0 % (1/20) | 11,8 % (2/17) | 15,5 % (65/420) |
+| — semilla 1 | 69,9 % (158/226) | 81,0 % (17/21) | 76,2 % (16/21) | 79,6 % (117/147) | 25,0 % (5/20) | 17,6 % (3/17) | 13,6 % (57/420) |
+| — semilla 2 | 70,4 % (159/226) | 85,7 % (18/21) | 90,5 % (19/21) | 79,6 % (117/147) | 15,0 % (3/20) | 11,8 % (2/17) | 14,5 % (61/420) |
+| Multivariado sobre las columnas `cam_*` | 5,0 % (34/678) | 0,0 % (0/63) | 3,2 % (2/63) | 2,5 % (11/441) | 23,3 % (14/60) | 13,7 % (7/51) | 2,1 % (26/1260) |
+| **Los dos juntos (lo que emite el proceso diario)** | **72,0 %** (488/678) | 85,7 % (54/63) | 84,1 % (53/63) | 78,7 % (347/441) | 35,0 % (21/60) | 25,5 % (13/51) | **16,2 %** (204/1260) |
+| Juego fijo, solo en las 4 particiones de prueba cuyo entrenamiento lo eligió | 67,8 % (116/171) | | | | | | 14,1 % (45/320) |
+
+- La cifra fuera de muestra es la primera (68,7 % / 15,2 %): **los falsos positivos quedan
+  apenas por encima del tope de 15 %** con el que se eligió en entrenamiento. Es la del
+  procedimiento, no la de un juego fijo. La del juego fijo sobre los 21 hogares no es
+  estrictamente fuera de muestra (cada hogar participó en elegir en 4 de las 5 particiones).
+- **Lo que emite el proceso diario, comparado con la (6):** de 67,4 % / 14,2 % a 72,0 % /
+  16,2 %. Sube la detección de la semana sin salir (71,9 → 78,7 %, por el primer día) y
+  suben 2 puntos los falsos positivos, que pasan el tope.
+- **Detección por la clase del desvío** (promedio de las 3 semillas): día sin comida 85,7 %,
+  día sin cocinar 84,1 %, semana sin salir 76,9 %, exceso de descanso 1,7 %, exceso de ocio
+  sentado 0 %. El detector por clase sigue sin ver los excesos; lo que figura en la tabla es
+  coincidencia con otra alerta del mismo día.
+- **Falsos positivos por clase** (promedio): `cam_cocina` 4,8 %, `cam_descanso_sofa` 3,7 %,
+  `cam_entrar_casa` 2,9 %, `cam_ocio_sentado` 2,5 %, `cam_comida` 1,9 %, `cam_salir_casa`
+  1,9 %. **Por tipo**: `ausencia` 9,2 %, `exceso` 3,6 %, `ausencia_sostenida` 2,9 %, `deficit`
+  0,2 %.
+- El detector de tendencia no se evaluó y el de horario está apagado por defecto.
+
+#### 3. Detección del sistema: alertas o indicadores de la app
+
+Un día con desvío cuenta como detectado si lo marca una alerta (el detector por clase o el
+multivariado) **o** el indicador de `cloud/app/rutina.py` que le corresponde: `cocina` para el
+día sin cocinar y `sedentarismo` para los dos excesos. El día sin comida y la semana sin salir
+no tienen indicador (`comida` es el horario de la primera comida: un día sin comidas no tiene
+valor que mostrar; no hay indicador de salidas), así que solo cuentan por alerta. Un día normal
+es un falso positivo si lo marca una alerta o cualquiera de los dos indicadores. La regla de
+los indicadores es la de la (6): mediana ± 3 sigmas robustos, piso de 15 min. Un indicador no
+avisa a nadie: es lo que la pantalla Reportes muestra como desvío.
+
+| | Global | Día sin comida | Día sin cocinar | Semana sin salir | Exceso de descanso | Exceso de ocio sentado | Falsos positivos |
+|---|---|---|---|---|---|---|---|
+| Solo alertas (los dos detectores) | 72,0 % (488/678) | 85,7 % (54/63) | 84,1 % (53/63) | 78,7 % (347/441) | 35,0 % (21/60) | 25,5 % (13/51) | 16,2 % (204/1260) |
+| Solo indicadores (cualquiera de los dos) | 8,7 % (59/678) | 0,0 % (0/63) | 9,5 % (6/63) | 0,5 % (2/441) | 48,3 % (29/60) | 43,1 % (22/51) | 1,0 % (13/1260) |
+| **Sistema (alerta o indicador)** | **76,8 %** (521/678) | 85,7 % (54/63) | 84,1 % (53/63) | 78,7 % (347/441) | 65,0 % (39/60) | 54,9 % (28/51) | **16,9 %** (213/1260) |
+| — semilla 0 | 76,1 % (172/226) | 90,5 % (19/21) | 85,7 % (18/21) | 76,9 % (113/147) | 55,0 % (11/20) | 64,7 % (11/17) | 17,9 % (75/420) |
+| — semilla 1 | 76,5 % (173/226) | 81,0 % (17/21) | 76,2 % (16/21) | 79,6 % (117/147) | 75,0 % (15/20) | 47,1 % (8/17) | 16,4 % (69/420) |
+| — semilla 2 | 77,9 % (176/226) | 85,7 % (18/21) | 90,5 % (19/21) | 79,6 % (117/147) | 65,0 % (13/20) | 52,9 % (9/17) | 16,4 % (69/420) |
+
+| Subtotal | Solo alertas | Sistema |
+|---|---|---|
+| **Ausencias** (sin comida, sin cocinar, semana sin salir) | 80,1 % (454/567) | 80,1 % (454/567) |
+| **Excesos** (descanso, ocio sentado) | 30,6 % (34/111) | **60,4 %** (67/111) |
+| Global | 72,0 % (488/678) | 76,8 % (521/678) |
+| Falsos positivos | 16,2 % (204/1260) | 16,9 % (213/1260) |
+
+Los indicadores no agregan nada en las ausencias (el de cocina marca 6 días sin cocinar, los 6
+ya tenían alerta) y duplican los excesos, de 30,6 % a 60,4 %, con 9 falsos positivos más
+sobre 1260 días. La fila "solo indicadores" de la columna Global no dice mucho: la semana sin
+salir es el 65 % de los casos y no tiene indicador.
+
+#### 4. Período de aprendizaje
+
+Juego de producción, variando `min_window_days` en los dos detectores. 3 semillas.
+
+| Días de historial | Global (por clase) | Día sin comida | Día sin cocinar | Semana sin salir | Exceso de descanso | Exceso de ocio sentado | Falsos positivos (por clase) | Global (los dos juntos) | Falsos positivos (los dos juntos) |
+|---|---|---|---|---|---|---|---|---|---|
+| **7 (actual)** | 69,3 % (470/678) | 85,7 % (54/63) | 84,1 % (53/63) | 78,7 % (347/441) | 15,0 % (9/60) | 13,7 % (7/51) | 14,5 % (183/1260) | 72,0 % (488/678) | 16,2 % (204/1260) |
+| 14 | 65,9 % (447/678) | 77,8 % (49/63) | 71,4 % (45/63) | 77,3 % (341/441) | 8,3 % (5/60) | 13,7 % (7/51) | 13,0 % (164/1260) | 67,3 % (456/678) | 14,4 % (181/1260) |
+| 21 | 63,9 % (433/678) | 68,3 % (43/63) | 63,5 % (40/63) | 76,9 % (339/441) | 8,3 % (5/60) | 11,8 % (6/51) | 10,2 % (129/1260) | 65,2 % (442/678) | 11,7 % (148/1260) |
+| 30 | 52,9 % (359/678) | 58,7 % (37/63) | 47,6 % (30/63) | 63,9 % (282/441) | 8,3 % (5/60) | 9,8 % (5/51) | 8,1 % (102/1260) | 53,7 % (364/678) | 8,8 % (111/1260) |
+
+En la columna "los dos juntos" los excesos son, para 7 / 14 / 21 / 30 días: descanso 35,0 %
+(21/60), 18,3 % (11/60), 16,7 % (10/60), 13,3 % (8/60); ocio sentado 25,5 % (13/51), 19,6 %
+(10/51), 19,6 % (10/51), 13,7 % (7/51).
+
+Con más días de historial bajan las dos cosas. Parte de la baja no es del detector: los días
+que caen antes de completar el historial no se evalúan y cuentan como no detectados (y como
+"sin falso positivo"). Con 14 días los dos detectores juntos quedan bajo el tope (14,4 %) a
+cambio de 4,7 puntos de detección. No se cambió el período: sigue en 7 días. No se midieron
+los indicadores de `rutina.py` con otro período (tienen el suyo, 7 días, y no usan
+`min_window_days`).
+
+#### 5. Error del clasificador, con la matriz anterior y con la medida el 2026-10-13
+
+Cada evento que la cámara clasificaría se re-etiqueta al azar con una matriz de confusión; las
+entradas y salidas no pasan por el clasificador y quedan igual. 3 semillas de inyección × 3 de
+ruido. Dos matrices:
+
+- **Anterior**: la de `evaluate_classifier_noise.py` (`vlm/README.md`, 2026-09-20; por
+  muestra, validación cruzada por participante, sin zona ni umbral de confianza).
+- **Nueva**: `fusion/confusion_holdout_produccion.json`, la decisión del runner por ventana
+  sobre 863 videos que el clasificador no vio (`fusion/README.md`, "Matriz de confusión del
+  clasificador en uso"). Se usan las 738 ventanas que emiten evento. En porcentaje por fila:
+
+| Real \ Predicho | Cooking | EatingDrinkingMed. | Moving | Phone | ReadingScreen | Resting |
+|---|---|---|---|---|---|---|
+| Cooking | **95,8** | 4,2 | 0,0 | 0,0 | 0,0 | 0,0 |
+| EatingDrinkingMedication | 5,6 | **61,7** | 4,4 | 14,5 | 7,7 | 6,0 |
+| Moving | 7,1 | 1,2 | **72,6** | 8,9 | 4,8 | 5,4 |
+| Phone | 2,8 | 13,9 | 13,9 | **63,9** | 5,6 | 0,0 |
+| ReadingScreen | 0,0 | 4,2 | 1,4 | 2,8 | **86,1** | 5,6 |
+| Resting | 0,0 | 1,4 | 0,0 | 1,4 | 8,3 | **88,9** |
+
+| | Global | Día sin comida | Día sin cocinar | Semana sin salir | Exceso de descanso | Exceso de ocio sentado | Falsos positivos |
+|---|---|---|---|---|---|---|---|
+| Por clase, sin ruido | 69,3 % (470/678) | 85,7 % (54/63) | 84,1 % (53/63) | 78,7 % (347/441) | 15,0 % (9/60) | 13,7 % (7/51) | 14,5 % (183/1260) |
+| Por clase, matriz anterior | 59,7 % (1214/2034) | 21,2 % (40/189) | 43,9 % (83/189) | 78,1 % (1033/1323) | 17,8 % (32/180) | 17,0 % (26/153) | 16,2 % (613/3780) |
+| **Por clase, matriz nueva** | 64,0 % (1302/2034) | **46,6 %** (88/189) | **59,8 %** (113/189) | 78,4 % (1037/1323) | 19,4 % (35/180) | 19,0 % (29/153) | 17,8 % (673/3780) |
+| — ruido semilla 0 | 63,7 % (432/678) | 46,0 % (29/63) | 57,1 % (36/63) | 78,2 % (345/441) | 21,7 % (13/60) | 17,6 % (9/51) | 17,4 % (219/1260) |
+| — ruido semilla 1 | 63,4 % (430/678) | 47,6 % (30/63) | 58,7 % (37/63) | 77,8 % (343/441) | 18,3 % (11/60) | 17,6 % (9/51) | 19,1 % (241/1260) |
+| — ruido semilla 2 | 64,9 % (440/678) | 46,0 % (29/63) | 63,5 % (40/63) | 79,1 % (349/441) | 18,3 % (11/60) | 21,6 % (11/51) | 16,9 % (213/1260) |
+| Los dos juntos, sin ruido | 72,0 % (488/678) | 85,7 % (54/63) | 84,1 % (53/63) | 78,7 % (347/441) | 35,0 % (21/60) | 25,5 % (13/51) | 16,2 % (204/1260) |
+| Los dos juntos, matriz anterior | 62,5 % (1272/2034) | 21,7 % (41/189) | 43,9 % (83/189) | 78,2 % (1035/1323) | 37,2 % (67/180) | 30,1 % (46/153) | 17,4 % (656/3780) |
+| **Los dos juntos, matriz nueva** | 66,5 % (1353/2034) | 46,6 % (88/189) | 60,8 % (115/189) | 78,6 % (1040/1323) | 34,4 % (62/180) | 31,4 % (48/153) | **19,2 %** (726/3780) |
+| — ruido semilla 0 | 66,5 % (451/678) | 46,0 % (29/63) | 58,7 % (37/63) | 78,5 % (346/441) | 36,7 % (22/60) | 33,3 % (17/51) | 18,9 % (238/1260) |
+| — ruido semilla 1 | 65,5 % (444/678) | 47,6 % (30/63) | 58,7 % (37/63) | 77,8 % (343/441) | 31,7 % (19/60) | 29,4 % (15/51) | 20,5 % (258/1260) |
+| — ruido semilla 2 | 67,6 % (458/678) | 46,0 % (29/63) | 65,1 % (41/63) | 79,6 % (351/441) | 35,0 % (21/60) | 31,4 % (16/51) | 18,3 % (230/1260) |
+| Sistema (alerta o indicador), sin ruido | 76,8 % (521/678) | 85,7 % (54/63) | 84,1 % (53/63) | 78,7 % (347/441) | 65,0 % (39/60) | 54,9 % (28/51) | 16,9 % (213/1260) |
+| Sistema, matriz anterior | 66,8 % (1358/2034) | 21,7 % (41/189) | 43,9 % (83/189) | 78,2 % (1035/1323) | 69,4 % (125/180) | 48,4 % (74/153) | 17,8 % (672/3780) |
+| **Sistema, matriz nueva** | 71,3 % (1451/2034) | 46,6 % (88/189) | 60,8 % (115/189) | 78,6 % (1040/1323) | 68,9 % (124/180) | 54,9 % (84/153) | 19,5 % (737/3780) |
+| — ruido semilla 0 | 71,8 % (487/678) | 46,0 % (29/63) | 58,7 % (37/63) | 78,5 % (346/441) | 73,3 % (44/60) | 60,8 % (31/51) | 19,2 % (242/1260) |
+| — ruido semilla 1 | 70,5 % (478/678) | 47,6 % (30/63) | 58,7 % (37/63) | 77,8 % (343/441) | 66,7 % (40/60) | 54,9 % (28/51) | 20,7 % (261/1260) |
+| — ruido semilla 2 | 71,7 % (486/678) | 46,0 % (29/63) | 65,1 % (41/63) | 79,6 % (351/441) | 66,7 % (40/60) | 49,0 % (25/51) | 18,6 % (234/1260) |
+| Indicadores de `rutina.py`, matriz nueva | 7,9 % (161/2034) | 0,0 % (0/189) | 4,8 % (9/189) | 0,6 % (8/1323) | 49,4 % (89/180) | 35,9 % (55/153) | 0,6 % (21/3780) |
+
+- **Con la matriz nueva el día sin comida se detecta 46,6 % de las veces, no 21,2 %**, y el
+  día sin cocinar 59,8 %, no 43,9 %. La razón está en la columna `EatingDrinkingMedication`:
+  en la matriz anterior entre 4 % y 15 % de los episodios de las otras categorías salían
+  como comida; en la nueva, entre 1 % y 14 % (y solo `Phone` pasa de 4,2 %). Hay menos
+  "comidas" inventadas en un día sin comidas.
+- Sigue siendo la pérdida más grande del sistema: **con el error del clasificador se pierde
+  casi la mitad de los días sin comida** (85,7 → 46,6 %).
+- **Los falsos positivos suben más con la matriz nueva** (los dos juntos: 16,2 → 19,2 %; con
+  la anterior, 17,4 %). No se investigó por qué.
+- La semana sin salir no cambia: no pasa por el clasificador.
+- La matriz nueva no es "más verdadera" que la anterior en todo: sale de videos no vistos pero
+  de participantes y de un departamento que el clasificador ya conocía, y del clasificador sin
+  la fusión con esqueleto (ver `fusion/README.md`). En un hogar real el error puede ser mayor.
+  Tampoco modela las ventanas que no emiten ningún evento (14,5 % de los videos): acá cada
+  evento de CASAS produce siempre un evento de cámara, con la etiqueta que sea.
+
+#### Pérdida de eventos de puerta, con el juego nuevo
+
+| Eventos perdidos | Global (por clase) | Semana sin salir | Falsos positivos (por clase) | Global (los dos juntos) | Falsos positivos (los dos juntos) |
+|---|---|---|---|---|---|
+| 0 % | 69,3 % (470/678) | 78,7 % (347/441) | 14,5 % (183/1260) | 72,0 % (488/678) | 16,2 % (204/1260) |
+| 10 % | 69,2 % (1408/2034) | 78,0 % (1032/1323) | 15,3 % (580/3780) | 71,9 % (1463/2034) | 17,1 % (645/3780) |
+| 20 % | 68,9 % (1401/2034) | 77,5 % (1025/1323) | 16,3 % (616/3780) | 71,4 % (1453/2034) | 17,9 % (676/3780) |
+| 30 % | 68,5 % (1394/2034) | 76,6 % (1014/1323) | 18,3 % (693/3780) | 71,2 % (1449/2034) | 19,8 % (749/3780) |
+
+Los niveles siguen siendo supuestos. La validación del detector de puerta con video
+(`runner/README.md`, "Validación con video") mide cuántas entradas y salidas de cuadro detecta
+e inventa sobre Toyota Smarthome, pero no da una tasa de pérdida para una puerta de calle real.
+
+#### Qué no se pudo medir
+
+- **`cam_moverse`**: sin equivalente en CASAS, ni detección ni falsos positivos.
+- Los indicadores `comida` y `movilidad` de `rutina.py`, y los detectores de tendencia y de
+  horario (apagado).
+- **El error del clasificador con la fusión de esqueleto**: el modelo no está en la máquina
+  donde se midió la matriz.
+- **Cómo muestra la app un desvío `cam_salir_casa:ausencia`** (el tipo del primer día): el
+  frontend está en otro repositorio y no se revisó.
+- La variante sin puerta (7) no se volvió a medir: sus parámetros no cambian.
+
 ## Patrones identificados pero no priorizados (quedan documentados para no perderlos)
 
 - **Secuencia/orden de la rutina** (ej. medicación sin haber desayunado antes) — el más complejo
@@ -1146,6 +1875,13 @@ py -3 evaluate_classifier_noise.py         # modo cámara con el error real del 
 py -3 evaluate_learning_period.py          # min_window_days = 7, 14, 21 y 30, modos sensor y cámara
 py -3 verify_cv_grid.py                    # comprueba que cv_grid.py da lo mismo que cross_validate
 py -3 verify_cv_grid.py --completo         # además exige que --cv 5 dé 72,8/13,1 y 69,5/13,8 (unos 20 min)
+py -3 evaluate_production_vocab.py --con-puerta  # vocabulario de producción (con entradas y salidas): validación cruzada, voto (con días de puerta), sistema, ruido, aprendizaje y pérdida de puerta (~10 min)
+py -3 evaluate_production_vocab.py --con-puerta --matriz ../fusion/confusion_holdout_produccion.json  # además, el error del clasificador con la matriz medida el 2026-10-13 (los números de la actualización (8))
+py -3 evaluate_production_vocab.py               # variante sin entradas ni salidas, evaluada y no adoptada
+py -3 evaluate_production_vocab.py --paso1       # la medición del 2026-10-13 (5): mismos desvíos, defaults anteriores (~12 min)
+
+# pruebas automatizadas (hogares sintéticos, no necesitan CASAS)
+pytest baseline/tests                      # desde la raíz del repo
 
 # horario habitual por actividad
 py -3 evaluate_timing_deviations.py        # genera e inyecta internamente, no requiere paso previo

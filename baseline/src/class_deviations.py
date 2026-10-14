@@ -100,6 +100,59 @@ class ClassDeviationConfig:
     # comportamiento original (`frac_historica_min`), default, para no romper calibraciones viejas.
     ausencia_metodo: str = "umbral"  # "umbral" | "binomial"
     ausencia_alpha: float = 0.05
+    # 2026-10-13: solo para las clases que se pasan en `clases_de_puerta` (entradas y salidas de
+    # casa, ver `score_class_deviations`). Cuántos días seguidos sin ningún evento hacen falta
+    # para la ausencia sostenida de esas clases (independiente de `dias_consecutivos_ausencia`,
+    # que sigue valiendo para las demás), y si además un solo día sin eventos ya es un desvío
+    # (`ausencia`). Con `puerta_dispara_un_dia=True` la cantidad de días no cambia nada: el
+    # primer día ya dispara, igual que con `dias_consecutivos_ausencia_puerta=1`. Los defaults
+    # (2 días, un solo día no dispara) son lo que hacía el proceso diario hasta ese día.
+    dias_consecutivos_ausencia_puerta: int = 2
+    puerta_dispara_un_dia: bool = False
+
+
+# Parámetros con los que corre el proceso diario (`cloud/app/baseline_runner.py`,
+# `run_live.py`) desde el 2026-10-13. Salen de `evaluate_production_vocab.py --con-puerta`:
+# validación cruzada por hogar con el vocabulario de producción (las clases del clasificador
+# más `cam_salir_casa`/`cam_entrar_casa`), 3 semillas de inyección; es la combinación que más
+# particiones de entrenamiento eligieron (4 de 15), sin mirar los hogares de prueba. Hasta
+# entonces producción corría con los defaults del dataclass (`frac_historica_min=0.8`,
+# `excess_k=3.0`), calibrados con otro vocabulario.
+# Segunda votación del mismo día, con los dos parámetros de puerta en el barrido
+# ("Actualización 2026-10-13 (8)" en README.md, que es la vigente): las 15 particiones
+# eligieron que la puerta dispare desde el primer día sin eventos, y el resto del juego ganador
+# también cambió (`excess_k` 5,0 -> 2,5 y `dias_consecutivos_exceso_deficit` 1 -> 2). La
+# primera votación ("Actualización 2026-10-13 (6)") había dado 0,6 / 5,0 / 2 / sí / 1 / no,
+# con la puerta fija en 2 días.
+PRODUCTION_PARAMS: dict = {
+    "frac_historica_min": 0.6,
+    "excess_k": 2.5,
+    "dias_consecutivos_ausencia": 2,
+    "separar_fin_de_semana": True,
+    "dias_consecutivos_exceso_deficit": 2,
+    "ausencia_requiere_racha": False,
+    "dias_consecutivos_ausencia_puerta": 1,
+    "puerta_dispara_un_dia": False,
+}
+
+# Variante evaluada y no adoptada: los que salieron del mismo procedimiento sin entradas ni
+# salidas en el vocabulario (voto empatado 4 a 4 de 15, resuelto por la regla de desempate;
+# "Actualización 2026-10-13 (7)" en README.md). Solo se usan con las entradas y salidas apagadas
+# (`ENTRADAS_Y_SALIDAS_ACTIVADAS=0`).
+PRODUCTION_PARAMS_SIN_PUERTA: dict = {
+    "frac_historica_min": 0.6,
+    "excess_k": 2.5,
+    "dias_consecutivos_ausencia": 2,
+    "separar_fin_de_semana": False,
+    "dias_consecutivos_exceso_deficit": 2,
+    "ausencia_requiere_racha": False,
+}
+
+
+def production_config(con_puerta: bool = True) -> ClassDeviationConfig:
+    """`ClassDeviationConfig` de producción. Los defaults del dataclass no se tocan: son los de
+    las calibraciones históricas con CASAS."""
+    return ClassDeviationConfig(**(PRODUCTION_PARAMS if con_puerta else PRODUCTION_PARAMS_SIN_PUERTA))
 
 
 def score_class_deviations(
@@ -108,8 +161,14 @@ def score_class_deviations(
     config: ClassDeviationConfig | None = None,
     count_col_suffix: str = "_n",
     exclude_from_reference: set[tuple[str, object]] | None = None,
+    clases_de_puerta: tuple[str, ...] = (),
 ) -> pd.DataFrame:
     """Evalúa cada clase de `tracked_classes` por separado, día a día, por residente.
+
+    `clases_de_puerta`: las clases de `tracked_classes` que son entradas y salidas de casa
+    (`camera_events.DOOR_TRACKED_CLASSES`). De ellas solo sale la falta de eventos, con sus
+    propios parámetros (`dias_consecutivos_ausencia_puerta`, `puerta_dispara_un_dia`); nunca
+    exceso ni déficit. Vacío (default): todas las clases se tratan igual.
 
     Misma semántica de ventana/exclusión que `dynamic_clustering.score_days`: `window_days`
     previos, nunca incluye el día evaluado, y `exclude_from_reference` saca días (ej. inyectados)
@@ -134,6 +193,7 @@ def score_class_deviations(
             if col not in g.columns:
                 continue
             vals = g[col].to_numpy(dtype=float)
+            es_de_puerta = cls in clases_de_puerta
             racha_ausencia = 0
             racha_exceso = 0
             racha_deficit = 0
@@ -174,8 +234,20 @@ def score_class_deviations(
                     racha_ausencia >= config.dias_consecutivos_ausencia
                     and frac_presente >= config.frac_historica_min
                 )
+                if es_de_puerta:
+                    # El primer día sin eventos sale como `ausencia`; del segundo en adelante,
+                    # como `ausencia_sostenida` (el tipo dice cuánto lleva, no qué regla disparó).
+                    dias_minimos = 1 if config.puerta_dispara_un_dia else config.dias_consecutivos_ausencia_puerta
+                    falta = (
+                        era_ausente
+                        and frac_presente >= config.frac_historica_min
+                        and racha_ausencia >= dias_minimos
+                    )
+                    ausencia_sostenida = falta and racha_ausencia >= 2
+                    ausencia = falta and not ausencia_sostenida
                 exceso_hoy = (
-                    not era_ausente
+                    not es_de_puerta
+                    and not era_ausente
                     and sigma_robusto > 1e-9
                     and hoy > mediana + config.excess_k * sigma_robusto
                 )
@@ -184,7 +256,8 @@ def score_class_deviations(
                 # (=0) y del techo de dilución que tiene `dynamic_clustering.py` con clases de
                 # bajo volumen (ver "Frecuencia/omisión de eventos" en README).
                 deficit_hoy = (
-                    not era_ausente
+                    not es_de_puerta
+                    and not era_ausente
                     and sigma_robusto > 1e-9
                     and hoy < mediana - config.excess_k * sigma_robusto
                 )

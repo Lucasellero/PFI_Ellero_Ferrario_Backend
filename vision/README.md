@@ -58,6 +58,82 @@ son eventos **sin ventana** (el bloqueante de `yolo11n-pose` de arriba — no ha
 esqueleto que clasificar) y en producción caen a CLIP. El detector geométrico y su
 calibración (`FALL_VERTICAL_VELOCITY=0.12`, `FALL_ASPECT_RATIO=1.4`) **no cambian**.
 
+## Actualización 2026-10-13 — la cadena completa, medida de punta a punta
+
+`evaluate_falls.py --temporal --clip --fps-cap 10`. Hasta ahora el script corría la heurística
+y, con `--temporal`, el clasificador temporal; los eventos sin ventana de esqueleto se contaban
+como alerta con la nota "en producción caen a CLIP". Con `--clip` (nuevo) se aplica la misma
+decisión que `runner/camera_worker.py::_confirm_fall_event`: evidencia parcial → sospecha;
+evidencia completa → el temporal confirma (≥ 0,45) o descarta (≤ 0,15), y si queda en el medio
+o no hubo ventana decide el probe de CLIP (`vlm/models/fall_confirmation_probe.npz`). El script
+cuenta además las sospechas, las que escalan a alerta por inmovilidad
+(`trigger: post_fall_sospecha`) y las horas de video. No se cambió ningún umbral.
+
+Los mismos 292 clips de siempre (5 datasets, 158 con caída anotada).
+
+| | |
+|---|---|
+| Caídas detectadas con alerta | **120 de 158 (75,9 %)** |
+| Caídas que quedan solo como sospecha (evidencia parcial) | 12 de 158 (7,6 %) |
+| Caídas sin ningún evento | 26 de 158 (16,5 %) |
+| Caídas con algún evento (alerta o sospecha) | 132 de 158 (83,5 %) |
+| **Falsas alertas finales** | **9** (las 9 de evidencia completa; ninguna sospecha escaló) |
+| Sospechas | 94: 19 dentro de una caída anotada, 71 en tramos sin caída, 4 fuera de los tramos anotados |
+| Sospechas que escalaron a alerta por inmovilidad | 0 |
+| Horas de video | 2,08 h (1,88 h anotadas como sin caída) |
+| **Falsas alertas por hora de video** | **4,33** |
+| Latencia promedio | 1,92 s |
+
+Una sospecha no es una alerta: se guarda con `confirmed: false` y no se avisa
+(`cloud/app/alertas.py`); solo avisa si escala.
+
+Por dataset:
+
+| Dataset | Horas | Falsas alertas | Por hora | Sospechas en tramos sin caída |
+|---|---|---|---|---|
+| CAUCAFall (100 clips) | 0,28 | 6 | ≈ 21 | 0 |
+| GMDCSA-24 (79 clips) | 0,15 | 0 | 0 | 0 |
+| URFD (70 clips) | 0,11 | 2 | ≈ 18 | 7 |
+| ToyotaSmarthome (39 clips cortos, sin caídas) | 0,14 | 1 | ≈ 7 | 0 |
+| ToyotaSmarthome_FP (4 videos continuos, sin caídas) | 1,40 | **0** | **0** | 64 (≈ 46 por hora) |
+
+**El 4,33 por hora no es la tasa esperable en una casa.** Dos tercios del video (1,40 h) son
+los 4 videos domésticos continuos, y ahí hay 0 falsas alertas. Las 9 salen de 0,68 h de clips
+cortos de los datasets de caídas, que son actividades actuadas una atrás de otra (sentarse,
+agacharse, arrodillarse, acostarse): mucho más densas que la vida real. Lo que sí queda de los
+videos continuos es la cantidad de **sospechas: 64 en 1,40 h**. No avisan, pero se guardan, y
+ninguna escaló.
+
+Qué hizo cada etapa con los 432 eventos de la heurística:
+
+| | Eventos | En una caída anotada | En un tramo sin caída | Fuera de los tramos |
+|---|---|---|---|---|
+| Evidencia parcial → sospecha | 94 | 19 | 71 | 4 |
+| Evidencia completa, con ventana de esqueleto | 213 | | | |
+| — el temporal confirma | 117 | 112 | 0 | 5 |
+| — el temporal descarta | 94 | 0 | 94 | 0 |
+| — indeciso → CLIP | 2 | 1 | 0 | 1 |
+| Evidencia completa, sin ventana → CLIP | 125 | 34 | 91 | 0 |
+| CLIP: de los 127 que le llegan, confirma / descarta | 40 / 87 | | | |
+
+De los 91 eventos sin ventana en tramos sin caída (74 de `ToyotaSmarthome_FP`), CLIP dejó pasar
+9. Contra la medición del 2026-09-01 (solo temporal): las falsas alertas de evidencia completa
+bajan de 91 a 9 y las caídas con algún evento pasan de 133 a 132.
+
+**Salvedades:**
+- **Las dos segundas etapas se entrenaron con estos mismos clips.** El clasificador temporal y
+  el probe de CLIP que están desplegados se entrenaron sobre todos los eventos de estos 292
+  clips (cada script evalúa fuera de muestra y al final reentrena con todo), incluidos los 4
+  videos de `ToyotaSmarthome_FP` como negativos difíciles. Esta medición es la del sistema
+  desplegado sobre datos que ya vio: es optimista. Las cifras fuera de muestra de cada etapa
+  por separado siguen siendo las de arriba (probe de CLIP: 84,8 % / 30 FP; temporal: 96–99 %
+  de las caídas con ventana). No hay un dataset de caídas apartado para medir la cadena entera.
+- `--fps-cap 10`, como la corrida del 2026-09-01. En producción los frames que se analizan
+  dependen del hardware.
+- No se simula el gate de movimiento del runner ni el paso por la nube.
+- "Caída detectada" es por clip: algún evento dentro del tramo anotado.
+- `Kaggle` sigue fuera (su `Fall.csv` está pendiente).
+
 ## Estructura
 
 ```

@@ -19,6 +19,22 @@ que `vlm/`/`fusion/` emiten hoy (6 categorías finas, sin zona de mesa ni detect
 roadmap. `Moving` no tiene análogo en `COARSE` (es camera-only, ver nota en `activity_map.py`) y
 se agrega acá como clase extra `moverse`.
 
+Entradas y salidas (2026-10-13): **encendidas por defecto**. La controladora emite
+`LeaveHome`/`EnterHome` a partir de la zona `puerta` (`runner/door_events.py`, opción
+`puerta_activada` de `cameras.yaml`) y este adaptador las lleva a `salir_casa` / `entrar_casa`
+(`DOOR_ACTIVITY_MAP`). Son eventos puntuales: suman a la cantidad del día (`_n`), nunca a los
+minutos, y no cortan ni alargan la duración de la actividad que los rodea. Una cámara sin zona
+`puerta` no los emite y esas dos clases quedan siempre en cero. **Solo generan un desvío: que
+falten** (días sin salir o sin entrar). Nunca por horario, ni por exceso, déficit o tendencia:
+el proceso diario le pasa `DOOR_TRACKED_CLASSES` al detector por clase como `clases_de_puerta`
+(`class_deviations.score_class_deviations`) y saca esas clases de los otros detectores con
+`sin_clases_de_puerta`. Cuántos días seguidos hacen falta lo dicen los parámetros votados
+(`class_deviations.PRODUCTION_PARAMS`): desde el 2026-10-13, el primer día sin eventos ya
+cuenta. Se apagan con `ENTRADAS_Y_SALIDAS_ACTIVADAS=0` (o `con_puerta=False`): ahí esas
+etiquetas se descartan como cualquier etiqueta desconocida y las dos clases no existen. La
+validación del detector de puerta con video está en `runner/README.md` ("Validación con
+video").
+
 Zona horaria (`tz`, 2026-10-09): la fecha y el minuto del día de cada evento salen de
 `wall_clock_ts` (epoch UTC) convertido a hora local. Sin `tz`, se usa la zona de la máquina
 (`datetime.fromtimestamp`), que es lo correcto en la Pi (está en la casa del residente). En la
@@ -32,6 +48,7 @@ del proyecto es una sola cámara por hogar (ver README raíz), así que no hace 
 from __future__ import annotations
 
 import sys
+import os
 from datetime import date, datetime, tzinfo
 from pathlib import Path
 
@@ -56,11 +73,52 @@ CAMERA_ACTIVITY_MAP: dict[str, str | None] = {
     "Background": None,
 }
 
+# Etiquetas que no salen del clasificador sino de la zona `puerta` (`runner/door_events.py`).
+# Van aparte de `CAMERA_ACTIVITY_MAP` porque ese es el mapa de las categorías del clasificador
+# (lo usa `evaluate_classifier_noise.py` para aplicarles su error) y estas no lo son.
+DOOR_ACTIVITY_MAP: dict[str, str] = {
+    "LeaveHome": "salir_casa",
+    "EnterHome": "entrar_casa",
+}
+PUNCTUAL_CLASSES: frozenset[str] = frozenset(DOOR_ACTIVITY_MAP.values())
+
+_CLASE_POR_ETIQUETA_CON_PUERTA: dict[str, str | None] = {**CAMERA_ACTIVITY_MAP, **DOOR_ACTIVITY_MAP}
+
+VARIABLE_ENTRADAS_Y_SALIDAS = "ENTRADAS_Y_SALIDAS_ACTIVADAS"
+
+
+def entradas_y_salidas_activadas() -> bool:
+    """Encendidas salvo que la variable de entorno las apague (ver docstring del módulo).
+    Es el interruptor del proceso diario; el de la controladora es `puerta_activada`."""
+    return os.environ.get(VARIABLE_ENTRADAS_Y_SALIDAS, "").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _mapa(con_puerta: bool) -> dict[str, str | None]:
+    return _CLASE_POR_ETIQUETA_CON_PUERTA if con_puerta else CAMERA_ACTIVITY_MAP
+
+
+def _clases(con_puerta: bool) -> tuple[str, ...]:
+    return tuple(sorted(set(v for v in _mapa(con_puerta).values() if v is not None)))
+
+
 # Clases que esta versión del adaptador puede poblar de verdad (columnas `cam_<clase>`)
 # — para pasarle a los detectores en vez del tracked_classes pensado para CASAS/sintético.
-LIVE_TRACKED_CLASSES: tuple[str, ...] = tuple(
-    f"cam_{c}" for c in sorted(set(v for v in CAMERA_ACTIVITY_MAP.values() if v is not None))
-)
+LIVE_TRACKED_CLASSES: tuple[str, ...] = tuple(f"cam_{c}" for c in _clases(con_puerta=True))
+# Las que salen del clasificador, y las dos de la zona `puerta`.
+CLASSIFIER_TRACKED_CLASSES: tuple[str, ...] = tuple(f"cam_{c}" for c in _clases(con_puerta=False))
+DOOR_TRACKED_CLASSES: tuple[str, ...] = tuple(f"cam_{c}" for c in sorted(PUNCTUAL_CLASSES))
+
+
+def live_tracked_classes(con_puerta: bool = True) -> tuple[str, ...]:
+    """`LIVE_TRACKED_CLASSES`, o solo las del clasificador si `con_puerta=False`."""
+    return tuple(f"cam_{c}" for c in _clases(con_puerta))
+
+
+def sin_clases_de_puerta(tracked: tuple[str, ...]) -> tuple[str, ...]:
+    """Las clases que siguen los detectores de horario y de tendencia: todas menos las de
+    puerta, que no generan desvíos de horario ni de tendencia."""
+    return tuple(c for c in tracked if c not in DOOR_TRACKED_CLASSES)
+
 
 # Gap entre dos eventos de actividad consecutivos por encima del cual se asume que la persona
 # se fue de cuadro (motion gate en pausa, cámara sin nadie) y no se le atribuye esa duración a
@@ -90,7 +148,7 @@ def _hora_local(ts: float, tz: tzinfo | None) -> datetime:
     return datetime.fromtimestamp(ts, tz).replace(tzinfo=None)
 
 
-def _is_valid(event: MonitoringEvent) -> tuple[str, str] | None:
+def _is_valid(event: MonitoringEvent, con_puerta: bool = True) -> tuple[str, str] | None:
     """Devuelve (clase_cam, activity_label) si el evento es una actividad utilizable, si no None."""
     if event.event_type != EventType.ACTIVITY:
         return None
@@ -99,7 +157,7 @@ def _is_valid(event: MonitoringEvent) -> tuple[str, str] | None:
     if event.metadata.get("confirmed") is False:
         return None
     label = event.metadata.get("activity_label")
-    cls = CAMERA_ACTIVITY_MAP.get(label)
+    cls = _mapa(con_puerta).get(label)
     if cls is None:
         return None
     return cls, label
@@ -111,14 +169,18 @@ def build_day_vectors_from_events(
     max_gap_s: float = DEFAULT_MAX_GAP_S,
     cobertura_min_horas: float = CAMERA_COBERTURA_MIN_HORAS,
     tz: tzinfo | None = None,
+    con_puerta: bool = True,
 ) -> pd.DataFrame:
     """Arma el vector-día (mismo contrato que `features.build_day_vectors`) a partir de eventos
     `ACTIVITY` reales, reconstruyendo duración por los gaps entre eventos consecutivos (ver
     docstring del módulo). Devuelve un DataFrame vacío (sin filas) si no hay eventos utilizables.
     """
-    usable = [(e, _is_valid(e)) for e in events]
+    usable = [(e, _is_valid(e, con_puerta)) for e in events]
     usable = [(e, v) for e, v in usable if v is not None]
     usable.sort(key=lambda ev: ev[0].wall_clock_ts)
+    # Entradas y salidas: una ocurrencia cada una, sin duración, y fuera de la cadena de gaps.
+    puntuales = [(e, v) for e, v in usable if v[0] in PUNCTUAL_CLASSES]
+    usable = [(e, v) for e, v in usable if v[0] not in PUNCTUAL_CLASSES]
 
     # (fecha, clase) -> minutos acumulados / cantidad de ocurrencias (no-heartbeat)
     minutos: dict[tuple[date, str], float] = {}
@@ -129,6 +191,9 @@ def build_day_vectors_from_events(
         minutos[key] = minutos.get(key, 0.0) + min_delta
         if es_ocurrencia:
             conteos[key] = conteos.get(key, 0) + 1
+
+    for event, (clase, _) in puntuales:
+        _bump(_hora_local(event.wall_clock_ts, tz).date(), clase, 0.0, es_ocurrencia=True)
 
     for i, (event, (clase, _)) in enumerate(usable):
         ts = event.wall_clock_ts
@@ -152,7 +217,7 @@ def build_day_vectors_from_events(
     for fecha in fechas:
         row = {"hogar": hogar, "fecha": fecha}
         total_min = 0.0
-        for clase in sorted(set(v for v in CAMERA_ACTIVITY_MAP.values() if v is not None)):
+        for clase in _clases(con_puerta):
             m = minutos.get((fecha, clase), 0.0)
             n = conteos.get((fecha, clase), 0)
             row[f"cam_{clase}_min"] = m
@@ -167,7 +232,7 @@ def build_day_vectors_from_events(
 
 
 def build_events_df_from_events(
-    events: list[MonitoringEvent], hogar: str, tz: tzinfo | None = None,
+    events: list[MonitoringEvent], hogar: str, tz: tzinfo | None = None, con_puerta: bool = True,
 ) -> pd.DataFrame:
     """Un registro por ocurrencia real (no heartbeat) de actividad, con columnas
     `hogar`/`actividad`/`inicio`/`fecha`/`minuto_del_dia` — formato que espera
@@ -177,7 +242,7 @@ def build_events_df_from_events(
     """
     rows = []
     for event in events:
-        valid = _is_valid(event)
+        valid = _is_valid(event, con_puerta)
         if valid is None or event.metadata.get("ongoing", False):
             continue
         clase, _ = valid
