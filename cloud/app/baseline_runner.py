@@ -49,6 +49,7 @@ if str(_EVENTS_DIR) not in sys.path:
 from schema import EventType, MonitoringEvent  # noqa: E402  (de events/)
 
 from .alertas import es_alerta as _es_alerta
+from .alertas import texto_desvio
 from .horario import ZONA_ARGENTINA
 from .models import Evento, Hogar
 from .notifications import enviar_push_alerta
@@ -99,7 +100,9 @@ def _registrar_desvio(
     print(f"[hogar {hogar.id}] {target_date} desvío ({detector}): {clave} -> {detalle}")
     # RF8: avisar al/a los familiar/es a cargo (`POST /me/push-token` guarda el token de cada uno).
     tokens = [f.familiar.push_token for f in hogar.familiares if f.familiar.push_token]
-    enviar_push_alerta(tokens, titulo="Posible desvío de rutina", cuerpo=clave, data=detalle)
+    # El aviso dice lo mismo que la pantalla de la app, nunca la clave interna del desvío.
+    titulo, cuerpo = texto_desvio(detector, detalle)
+    enviar_push_alerta(tokens, titulo=titulo, cuerpo=cuerpo, data=detalle)
 
 
 def process_hogar(db: Session, hogar: Hogar, target_date: date) -> None:

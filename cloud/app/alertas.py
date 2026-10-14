@@ -32,3 +32,53 @@ def texto_alerta(event_type: str, metadata: dict, ubicacion: str | None) -> tupl
             return "Sin movimiento después de una posible caída", f"Revisá cómo está{lugar}."
         return "Sin movimiento en el piso", f"Revisá cómo está{lugar}."
     return "Alerta", "Revisá la app para más detalles."
+
+
+# Los mismos textos que muestra la app para un desvío de rutina
+# (`src/features/eventos/presentacion.ts` del Frontend, `desvioDeRutina`): el aviso del celular y
+# la pantalla tienen que decir lo mismo. Si se cambia uno, cambiar el otro.
+_CLASES_RUTINA: dict[str, str] = {
+    "cam_cocina": "cocinar",
+    "cam_comida": "comer o beber",
+    "cam_descanso_sofa": "descansar",
+    "cam_ocio_sentado": "estar sin moverse (leer, TV, teléfono)",
+    "cam_moverse": "moverse por la casa",
+    "cam_salir_casa": "salir de casa",
+    "cam_entrar_casa": "entrar a casa",
+}
+# Entradas y salidas son eventos puntuales: se cuentan veces, no tiempo.
+_CLASES_PUNTUALES = frozenset({"cam_salir_casa", "cam_entrar_casa"})
+_SIN_EVENTOS_HOY: dict[str, str] = {
+    "cam_salir_casa": "Hoy no se registró ninguna salida de casa",
+    "cam_entrar_casa": "Hoy no se registró ninguna entrada a casa",
+}
+
+
+def _hora(minuto_del_dia: float) -> str:
+    """`horaDesdeMinutos` del Frontend: 8:05, sin cero adelante."""
+    return f"{int(minuto_del_dia // 60)}:{round(minuto_del_dia % 60):02d}"
+
+
+def texto_desvio(detector: str, detalle: dict) -> tuple[str, str]:
+    """Título y cuerpo del push de un desvío de rutina (`routine_deviation`), a partir del
+    detector que lo generó y de lo que `baseline_runner` guarda en la metadata. Nunca muestra la
+    clave interna del desvío ni el nombre de una clase: una clase desconocida es "su rutina"."""
+    actividad = _CLASES_RUTINA.get(detalle.get("clase"), "su rutina")
+    if detector == "timing":
+        real, habitual = detalle.get("minuto_del_dia"), detalle.get("horario_habitual_min")
+        if real is not None and habitual is not None:
+            return "Horario fuera de lo habitual", f"Momento de {actividad}: {_hora(real)} · habitual {_hora(habitual)}"
+        return "Horario fuera de lo habitual", f"Cambió el horario de {actividad}"
+    if detector == "clase":
+        puntual = detalle.get("clase") in _CLASES_PUNTUALES
+        textos = {
+            "ausencia": _SIN_EVENTOS_HOY.get(detalle.get("clase"), f"Hoy no se registró {actividad}"),
+            "ausencia_sostenida": f"Varios días sin {actividad}",
+            "exceso": f"Más veces de lo habitual: {actividad}" if puntual else f"Más tiempo de lo habitual en {actividad}",
+            "deficit": f"Menos veces de lo habitual: {actividad}" if puntual else f"Menos tiempo de lo habitual en {actividad}",
+        }
+        return "Cambio en la rutina", textos.get(detalle.get("tipo"), f"Cambio en {actividad}")
+    if detector == "tendencia":
+        sube = detalle.get("direccion") == "sube"
+        return "Tendencia de varias semanas", f"Cada vez {'más' if sube else 'menos'} tiempo en {actividad}"
+    return "Día distinto a lo habitual", "La forma general del día se apartó de su rutina"

@@ -228,6 +228,16 @@ importan):
   eran 22,5 %. Los números están en `baseline/README.md`, "Actualización 2026-10-13 (8)" (la
   primera votación, con `excess_k=5.0` y la puerta fija en 2 días, está en la (6)).
 
+- **Texto del aviso al celular (2026-10-13).** El push de un desvío de rutina mandaba como
+  cuerpo la clave interna (`cam_comida:ausencia`) con el título fijo "Posible desvío de
+  rutina". Ahora título y cuerpo salen de `alertas.texto_desvio`, con los mismos textos que
+  muestra la app (`presentacion.ts` del Frontend, `desvioDeRutina`): por ejemplo "Cambio en la
+  rutina" / "Hoy no se registró comer o beber", o "Hoy no se registró ninguna salida de casa".
+  Vale para todos los detectores (por clase, tendencia, multivariado y horario). Los textos
+  están copiados en los dos repositorios: si se cambia uno hay que cambiar el otro. El aviso
+  de horario (apagado por defecto) lleva dos horas, así que es el único con dos puntos. El
+  envío real sigue sin probarse: Firebase no está configurado en las pruebas.
+
 **No cambia ningún número de este README**: las pruebas de `test_linea_base_produccion.py`
 (el día sin comidas emite dos desvíos, el mismo día sin tocar no emite ninguno) dan lo mismo con
 los parámetros nuevos, sin modificar ninguna; también con los de la segunda votación.
@@ -418,6 +428,11 @@ borrado en el orden equivocado falle igual que fallaría en Postgres. Cubren (20
   exactamente dos desvíos y ninguno de horario, que el mismo día sin modificar no emite nada,
   que con `ALERTAS_DE_HORARIO_ACTIVADAS=1` vuelven las dos alertas de horario, y qué valores de
   la variable la encienden (12 casos).
+- `test_push_desvio_de_rutina.py` (53 casos, ver "Texto del aviso al celular"): ningún aviso
+  de los que el proceso diario puede emitir contiene `cam_`, dos puntos, guiones bajos,
+  porcentajes ni números; los textos coinciden con los de la app; una clase o un tipo
+  desconocidos salen como "su rutina"; y de punta a punta, el día sin comidas y los días sin
+  salir (uno y cuatro) avisan con el texto legible.
 - `test_linea_base_puerta.py` (9 pruebas, ver "Vocabulario y parámetros del proceso diario"):
   con una salida y una entrada por día en el historial, cuatro días sin salir generan las
   alertas `cam_salir_casa:ausencia_sostenida` y `cam_entrar_casa:ausencia_sostenida` y se ven
