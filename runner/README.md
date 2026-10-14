@@ -299,6 +299,24 @@ Números: el filtro CLIP solo, calibrado sobre 445 eventos de 183 clips
 que geométrico solo (133/158), FP de alerta dura 185 → 91 — ver
 `fusion/README.md` para el desglose.
 
+### Una posible caída por minuto (`fall_grouping.py`, 2026-10-14)
+
+Después de la segunda etapa, cada cámara publica **como mucho una posible caída por minuto**.
+Dentro del minuto siguiente a la última caída publicada, otra del mismo nivel o menor no se
+guarda ni viaja a la nube (queda solo en el log: "no publicada: ya se publicó una hace menos de
+un minuto"). Una caída **confirmada** después de una **sospecha** se publica siempre: lo más
+grave nunca se tapa. La vigilancia de `vision/` después de una sospecha no cambia: si la persona
+queda inmóvil, la alerta `immobility` con `trigger: post_fall_sospecha` sale igual.
+
+Motivo: en una prueba con el video `P09T05C05` de Toyota Smarthome corriendo como cámara de un
+hogar, la app recibió 16 sospechas en unos 12 minutos, 7 de ellas en 26 segundos (la misma
+persona moviéndose en el sillón). Con el agrupado habrían sido 6. Eran sospechas, no alertas:
+no mandaron notificación, pero llenaban la lista de eventos.
+
+Las mediciones de `vision/README.md` ("Actualización 2026-10-13") son **sin** este agrupado: el
+recall por clip no cambia (una caída real sigue teniendo su primer evento), pero la cantidad de
+sospechas y de falsas alertas publicadas sería menor. No se volvió a medir.
+
 ## Gate de movimiento
 
 YOLO11n-pose tarda ~150-300ms/frame en CPU y CLIP agrega más costo encima
@@ -752,6 +770,9 @@ Cubren (2026-10-13):
   inválida, de dónde sale la posición, y el ciclo de la cámara: por defecto guarda los eventos
   si tiene la zona (también dormida por el gate); con `puerta_activada: false` o sin zona
   `puerta` no guarda ninguno.
+- `test_fall_grouping.py` (8 pruebas, ver "Una posible caída por minuto"): las 16 sospechas
+  de la prueba del 2026-10-14 quedan en 6, una racha larga publica una por minuto, una
+  confirmada después de una sospecha se publica siempre, y lo mismo en el ciclo de la cámara.
 - `test_evaluate_door_events.py` (8 pruebas, ver "Validación con video"): cómo se ajusta la
   zona, qué participantes ajustan y cuáles miden, y cómo se agrega la ausencia que le falta a
   un clip recortado. Sin YOLO ni videos.
