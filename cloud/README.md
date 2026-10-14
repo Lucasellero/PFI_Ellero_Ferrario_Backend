@@ -335,6 +335,13 @@ nube: **12 meses** los de actividad y **24 meses** los de caída, inmovilidad y 
 `app/retencion.py` lo implementa como un paso más de la tarea diaria de las 03:00
 (`app/linea_base_diaria.py`).
 
+> **Antes de definir las variables en producción** (al 2026-10-14 no están definidas en
+> `pfi-lares-prod`, así que no se borra nada): la antigüedad se mide con la fecha en que ocurrió
+> el evento. Si alguna cuenta tiene cargado el historial de CASAS (`hh113`, fechas de 2011, ver
+> "Zona horaria"), la primera tarea de las 03:00 lo borra entero. No se revisó si esa carga
+> sigue en la base de producción: hay que mirarlo (o volver a cargarla con fechas recientes)
+> antes de poner los plazos.
+
 Los plazos no están escritos en el código. Salen de dos variables de entorno, en meses:
 
 | Variable | Eventos | Valor del informe |
@@ -505,6 +512,18 @@ runbook abajo — no se volvió a tocar RDS ni Firebase, solo código de `cloud/
   `routers/mobile.py`, `schemas.py`).
 - **v4 (2026-10-08)**: indicadores `cocina`/`movilidad` sumados a `app/rutina.py` (antes solo
   `comida`/`sedentarismo`).
+- **v8 (2026-10-14)**: `main` en `c8f3a52` (las v5–v7 no quedaron anotadas acá). Trae la línea
+  base con entradas y salidas de casa y los parámetros votados (la puerta avisa desde el primer
+  día sin eventos), el aviso al celular con el texto de la app, la ingestión idempotente, la
+  retención y la baja del hogar. **Este sí tocó RDS**: la migración `c41e7d905b12` (columna
+  `eventos.event_id` y restricción única con `camara_id`), corrida antes del deploy con RDS
+  abierto temporalmente solo a una IP y cerrado después (sin acceso público, y el security group
+  quedó otra vez con una sola regla, la de EB). Antes se tomó el snapshot manual
+  `pfi-lares-antes-v8` (20 GB). Verificado: `/health` 200; `GET /me` con un ID token real de un
+  usuario de prueba temporal → 404 "Tu cuenta todavía no tiene perfil" (el token se verificó;
+  el usuario se borró de Firebase después) y con un token falso → 401; el OpenAPI publicado ya
+  tiene `DELETE /hogares/{hogar_id}`. No se probó el envío real de un push. Volver atrás:
+  `update-environment --version-label v7`, compatible con la base ya migrada.
 - Mientras se armaba el deploy de v3 se encontró que `monitor-backend-env` (el environment viejo
   de una cuenta de prueba previa, ver problema 5 abajo) **seguía corriendo** pese a que este mismo
   README decía que se había borrado — se terminó (`terminate-environment`) el 2026-10-08.
