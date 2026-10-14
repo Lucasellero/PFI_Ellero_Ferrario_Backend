@@ -26,6 +26,7 @@ from .door_events import (
     DEFAULT_AUSENCIA_MIN_S, DEFAULT_MEMORIA_PUERTA_S, LABEL_SALIR, ZONA_PUERTA, DoorEventDetector,
     posicion_normalizada,
 )
+from .fall_grouping import CONFIRMADA, SOSPECHA, AgrupadorDeCaidas
 from .focus_state import read_focused_camera
 from .motion_gate import MotionDetector
 from .motion_state import write_motion_state
@@ -208,6 +209,9 @@ class CameraWorker(threading.Thread):
         if puerta_activada and puerta:
             self._door = DoorEventDetector(puerta, puerta_ausencia_min_s, puerta_memoria_s)
 
+        # Como mucho una posible caída publicada por minuto (ver fall_grouping.py).
+        self._caidas = AgrupadorDeCaidas()
+
     def run(self) -> None:
         store = EventStore(self._db_path)
         # Una vista previa de una corrida anterior que no llegó a limpiarse (corte de luz,
@@ -337,6 +341,13 @@ class CameraWorker(threading.Thread):
                             self._log.info(
                                 "[%s] caída descartada @ %.2fs  meta=%s",
                                 self._config.id, raw["video_timestamp_s"], raw["metadata"],
+                            )
+                            continue
+                        nivel = SOSPECHA if raw["metadata"].get("evidence") == "partial" else CONFIRMADA
+                        if not self._caidas.publicar(raw["video_timestamp_s"], nivel):
+                            self._log.info(
+                                "[%s] %s de caída @ %.2fs no publicada: ya se publicó una hace menos de un minuto",
+                                self._config.id, nivel, raw["video_timestamp_s"],
                             )
                             continue
 

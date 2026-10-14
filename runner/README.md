@@ -299,6 +299,24 @@ Números: el filtro CLIP solo, calibrado sobre 445 eventos de 183 clips
 que geométrico solo (133/158), FP de alerta dura 185 → 91 — ver
 `fusion/README.md` para el desglose.
 
+### Una posible caída por minuto (`fall_grouping.py`, 2026-10-14)
+
+Después de la segunda etapa, cada cámara publica **como mucho una posible caída por minuto**.
+Dentro del minuto siguiente a la última caída publicada, otra del mismo nivel o menor no se
+guarda ni viaja a la nube (queda solo en el log: "no publicada: ya se publicó una hace menos de
+un minuto"). Una caída **confirmada** después de una **sospecha** se publica siempre: lo más
+grave nunca se tapa. La vigilancia de `vision/` después de una sospecha no cambia: si la persona
+queda inmóvil, la alerta `immobility` con `trigger: post_fall_sospecha` sale igual.
+
+Motivo: en una prueba con el video `P09T05C05` de Toyota Smarthome corriendo como cámara de un
+hogar, la app recibió 16 sospechas en unos 12 minutos, 7 de ellas en 26 segundos (la misma
+persona moviéndose en el sillón). Con el agrupado habrían sido 6. Eran sospechas, no alertas:
+no mandaron notificación, pero llenaban la lista de eventos.
+
+Las mediciones de `vision/README.md` ("Actualización 2026-10-13") son **sin** este agrupado: el
+recall por clip no cambia (una caída real sigue teniendo su primer evento), pero la cantidad de
+sospechas y de falsas alertas publicadas sería menor. No se volvió a medir.
+
 ## Gate de movimiento
 
 YOLO11n-pose tarda ~150-300ms/frame en CPU y CLIP agrega más costo encima
