@@ -770,6 +770,9 @@ Cubren (2026-10-13):
   inválida, de dónde sale la posición, y el ciclo de la cámara: por defecto guarda los eventos
   si tiene la zona (también dormida por el gate); con `puerta_activada: false` o sin zona
   `puerta` no guarda ninguno.
+- `test_fall_grouping.py` (8 pruebas, ver "Una posible caída por minuto"): las 16 sospechas
+  de la prueba del 2026-10-14 quedan en 6, una racha larga publica una por minuto, una
+  confirmada después de una sospecha se publica siempre, y lo mismo en el ciclo de la cámara.
 - `test_evaluate_door_events.py` (8 pruebas, ver "Validación con video"): cómo se ajusta la
   zona, qué participantes ajustan y cuáles miden, y cómo se agrega la ausencia que le falta a
   un clip recortado. Sin YOLO ni videos.
