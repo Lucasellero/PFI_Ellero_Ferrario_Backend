@@ -14,7 +14,7 @@ from ..alertas import es_alerta, texto_alerta
 from ..auth import require_kit_by_api_key
 from ..db import get_db
 from ..models import Camara, Evento, Kit
-from ..notifications import enviar_push_alerta
+from ..notifications import datos_push, enviar_push_alerta
 from ..schemas import CamaraIn, CamaraOut, MonitoringEvent
 
 router = APIRouter(prefix="/devices")
@@ -78,7 +78,7 @@ def ingest_events(
     for intento in range(2):
         ya_recibidos = _event_ids_ya_recibidos(db, kit, eventos)
         insertados = 0
-        alertas_nuevas: list[tuple[str, dict, str | None]] = []  # (event_type, metadata, ubicacion)
+        alertas_nuevas: list[tuple[Evento, str | None]] = []  # (evento, ubicacion)
         for ev in eventos:
             camara = camaras_por_id_local[ev.video_id]
             if ev.event_id is not None:
@@ -86,7 +86,7 @@ def ingest_events(
                     continue
                 ya_recibidos.add((camara.id, ev.event_id))  # también si se repite dentro del lote
             es_alerta_dura = es_alerta(ev.event_type.value, ev.metadata)
-            db.add(Evento(
+            evento = Evento(
                 camara_id=camara.id,
                 residente_id=residente_id,
                 event_type=ev.event_type.value,
@@ -95,10 +95,11 @@ def ingest_events(
                 es_alerta=es_alerta_dura,
                 metadata_json=ev.metadata,
                 event_id=ev.event_id,
-            ))
+            )
+            db.add(evento)
             insertados += 1
             if es_alerta_dura:
-                alertas_nuevas.append((ev.event_type.value, ev.metadata, camara.ubicacion or None))
+                alertas_nuevas.append((evento, camara.ubicacion or None))
         try:
             db.commit()
             break
@@ -109,11 +110,13 @@ def ingest_events(
 
     # RF8: caídas/inmovilidad avisan al momento, no recién al otro día con el resumen de rutina
     # (eso es solo para `routine_deviation`, ver `baseline_runner.py::_registrar_desvio`).
+    # `evento_id`/`hogar_id` (ya con el id asignado por el commit): al tocar la notificación, la
+    # app abre el detalle de esa alerta.
     if alertas_nuevas:
         tokens = [f.familiar.push_token for f in hogar.familiares if f.familiar.push_token]
-        for event_type, metadata, ubicacion in alertas_nuevas:
-            titulo, cuerpo = texto_alerta(event_type, metadata, ubicacion)
-            enviar_push_alerta(tokens, titulo=titulo, cuerpo=cuerpo, data={"event_type": event_type})
+        for evento, ubicacion in alertas_nuevas:
+            titulo, cuerpo = texto_alerta(evento.event_type, evento.metadata_json, ubicacion)
+            enviar_push_alerta(tokens, titulo=titulo, cuerpo=cuerpo, data=datos_push(evento, hogar.id))
 
     return {"insertados": insertados, "duplicados": len(eventos) - insertados}
 

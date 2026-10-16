@@ -12,8 +12,9 @@ reales (2026-10-06, ver "Cómo seguir" → punto 2). KIT/vinculación, eventos (
 `ubicacion`, filtros RF13), CRUD de familiares/roles (RF12), resumen y serie de rutina (RF9,
 `GET /rutina` y `GET /rutina/serie`, este último sumado 2026-10-08 para el gráfico de evolución
 de la app) — todo probado contra Postgres real en producción, con Firebase real. **Sin probar
-todavía**: Firebase Cloud Messaging real (push tokens se guardan, `POST /me/push-token`, pero
-nada los consume del lado de la app — requiere *development build*, bloqueado en EAS). El
+todavía**: Firebase Cloud Messaging real. Los push tokens se guardan (`POST /me/push-token`) y
+la app ya los registra (Frontend, `features/push/`, 2026-10-15, solo Android), pero falta el
+primer *development build* para recibirlas en un celular. El
 resumen/serie de rutina además se corrió contra `dataset_events/events.zip` (CASAS, un hogar real
 con 490 días de historial) como proxy de variabilidad real — ver nota en `app/rutina.py`, no
 reemplaza calibrar con cámara real, que sigue sin existir.
@@ -135,6 +136,7 @@ en `main.py` y en cada `@router` (`tags`, `summary`); son solo metadatos de Open
 | `GET /me` | Perfil del familiar logueado + sus hogares (`rol`, `residente`). **404** si la cuenta de Firebase todavía no tiene `Familiar` → la app llama a `POST /me`. |
 | `POST /me` | Body `{nombre}` (2-60). Crea el `Familiar`; el email sale del token, no del body. Idempotente: si ya existe lo devuelve. |
 | `POST /me/push-token` | Body `{token}` (token de FCM del celular, RF8). **204**. Pisa el anterior (un token por familiar). **404** si la cuenta todavía no tiene `Familiar` (llamar `POST /me` primero). |
+| `DELETE /me/push-token?token=` | Al cerrar sesión (2026-10-15). Borra el token **solo si es el guardado**: si el familiar ya inició sesión en otro celular, cerrar sesión en el viejo no le corta las push al nuevo. **204** siempre (idempotente), **404** sin `Familiar`, **422** sin `token`. |
 | `POST /kits/vincular` | Body `{codigo}` (del QR; acepta minúsculas, espacios, guiones). Crea el `Hogar` ("Mi hogar"), le asigna kit y cámaras y deja al familiar como `responsable_principal`. Devuelve `{hogar_id, numero_serie, cantidad_camaras, camaras}`. **404** código inexistente · **409** kit de otro hogar · **429** 5 intentos fallidos en 15 min (por familiar, en memoria del proceso). Reintento del mismo familiar = idempotente. |
 | `GET /hogares/{id}/camaras` | Cámaras del hogar. Cualquier familiar vinculado. |
 | `PATCH /hogares/{id}/camaras/{camara_id}` | Body `{ubicacion}` (2-40). RF10. **409** si repite la de otra cámara del hogar. Solo `responsable_principal`. |
@@ -450,6 +452,10 @@ borrado en el orden equivocado falle igual que fallaría en Postgres. Cubren (20
   horario encendidas (y una prueba de control muestra que el detector sí la marcaría si
   siguiera esa clase); un hogar que nunca mandó eventos de puerta no recibe alertas de puerta;
   y con `ENTRADAS_Y_SALIDAS_ACTIVADAS=0` el proceso ignora esos eventos.
+- `test_push_token_y_datos.py` (8 pruebas, ver "Cómo seguir" → 3, 2026-10-15): cerrar sesión
+  borra el token de ese celular y no el de otro más nuevo, borrar es idempotente, 404 sin
+  perfil y 422 sin token; la push de una caída lleva `evento_id`/`hogar_id`, cada alerta de un
+  lote lleva el suyo, y la de un desvío de rutina también (sin perder el detalle del desvío).
 - `test_ingestion_idempotente.py` (8 pruebas, ver "Ingestión idempotente"): reenviar el mismo
   lote no duplica, un lote mezclado guarda solo lo nuevo, un evento repetido dentro del lote
   se guarda una vez, una alerta reenviada no vuelve a avisar, los eventos sin identificador se
@@ -646,9 +652,8 @@ vinculado → 200 en `/hogares/{id}/eventos`, y `GET`/`POST /me`. Usuario de pru
 1. ~~Columna `Familiar.push_token`~~ ✅ (migración `a3f9c2d17b40`, 2026-10-06).
 2. ~~Migración~~ ✅ (misma).
 3. ~~Nuevo endpoint~~ ✅ `POST /me/push-token` (`app/routers/me.py`), body `{token}`, **204**.
-   La app móvil lo llama al loguearse (y cuando el SDK de Firebase avisa con `onTokenRefresh`,
-   lo cual aún no está cableado del lado de la app — requiere *development build*, ver
-   `README.md` del Frontend).
+   La app móvil lo llama al loguearse y cuando FCM rota el token (cableado 2026-10-15, ver
+   `src/features/push/README.md` del Frontend).
 4. ~~`app/baseline_runner.py::_registrar_desvio`~~ ✅ usa los tokens reales de `hogar.familiares`
    en vez de una lista vacía.
 5. ~~`fall`/`immobility` con `es_alerta=True` también disparan push~~ ✅ **decidido y hecho**:
@@ -661,6 +666,22 @@ severidad baja no disparan nada, el token se pisa correctamente al loguearse en 
 probar con Firebase Cloud Messaging real todavía (necesita *development build* del lado de la
 app para recibir la notificación — Expo Go no la soporta, ver "Próximos pasos" del README del
 Frontend).
+
+**Agregado 2026-10-15** (los dos pedidos como `PENDIENTE BACKEND` por la app, ver
+`src/api/README.md` del Frontend):
+- **`DELETE /me/push-token?token=`** (`app/routers/me.py`): la app lo llama al cerrar sesión.
+  Sin esto, el celular seguía recibiendo las alertas de la cuenta después de salir. Borra solo
+  si el token coincide con el guardado: con un token por familiar, si inició sesión en otro
+  celular el guardado es el del otro. El token va como query param y no en el body porque un
+  `DELETE` con body no está bien soportado por todos los clientes y proxies.
+- **`evento_id` y `hogar_id` en la `data` de cada push** (`notifications.datos_push`), además
+  de `event_type`: al tocar la notificación la app abre el detalle de esa alerta en vez del
+  feed. En caídas/inmovilidad (`routers/devices.py`) los ids salen después del commit del
+  lote; en desvíos de rutina (`baseline_runner._registrar_desvio`) van junto al detalle del
+  desvío que ya se mandaba, y no se pueden pisar con una clave del detalle.
+
+Probado con `tests/test_push_token_y_datos.py` (ver "Pruebas"). Sigue sin probarse el envío
+real por FCM.
 
 ### 4. CRUD de familiares/roles (RF12) — ✅ HECHO (2026-10-07)
 
