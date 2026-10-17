@@ -6,8 +6,16 @@ from __future__ import annotations
 import logging
 
 from .auth import _get_firebase_app
+from .models import Evento
 
 logger = logging.getLogger(__name__)
+
+
+def datos_push(evento: Evento, hogar_id: int) -> dict:
+    """`data` de la push de un evento: con `evento_id` y `hogar_id`, al tocar la notificación la
+    app abre el detalle de esa alerta (`features/push/usePush.ts` del Frontend). FCM solo acepta
+    strings: `enviar_push_alerta` los convierte."""
+    return {"event_type": evento.event_type, "evento_id": evento.id, "hogar_id": hogar_id}
 
 
 def enviar_push_alerta(tokens_dispositivo: list[str], titulo: str, cuerpo: str, data: dict | None = None) -> None:

@@ -52,7 +52,7 @@ from .alertas import es_alerta as _es_alerta
 from .alertas import texto_desvio
 from .horario import ZONA_ARGENTINA
 from .models import Evento, Hogar
-from .notifications import enviar_push_alerta
+from .notifications import datos_push, enviar_push_alerta
 
 VARIABLE_ALERTAS_DE_HORARIO = "ALERTAS_DE_HORARIO_ACTIVADAS"
 
@@ -102,7 +102,8 @@ def _registrar_desvio(
     tokens = [f.familiar.push_token for f in hogar.familiares if f.familiar.push_token]
     # El aviso dice lo mismo que la pantalla de la app, nunca la clave interna del desvío.
     titulo, cuerpo = texto_desvio(detector, detalle)
-    enviar_push_alerta(tokens, titulo=titulo, cuerpo=cuerpo, data=detalle)
+    # El detalle del desvío va primero: los ids y el tipo de `datos_push` no se pueden pisar.
+    enviar_push_alerta(tokens, titulo=titulo, cuerpo=cuerpo, data={**detalle, **datos_push(evento, hogar.id)})
 
 
 def process_hogar(db: Session, hogar: Hogar, target_date: date) -> None:

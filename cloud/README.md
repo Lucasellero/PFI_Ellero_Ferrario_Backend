@@ -11,9 +11,10 @@ celular real" en el README del repo Frontend). Proyecto de Firebase creado y pro
 reales (2026-10-06, ver "Cómo seguir" → punto 2). KIT/vinculación, eventos (resolver,
 `ubicacion`, filtros RF13), CRUD de familiares/roles (RF12), resumen y serie de rutina (RF9,
 `GET /rutina` y `GET /rutina/serie`, este último sumado 2026-10-08 para el gráfico de evolución
-de la app) — todo probado contra Postgres real en producción, con Firebase real. **Sin probar
-todavía**: Firebase Cloud Messaging real (push tokens se guardan, `POST /me/push-token`, pero
-nada los consume del lado de la app — requiere *development build*, bloqueado en EAS). El
+de la app) — todo probado contra Postgres real en producción, con Firebase real. Firebase Cloud
+Messaging real **probado el 2026-10-17**: una caída mandada a `POST /devices/events` llegó como
+push a un Android (development build del Frontend, `features/push/`, solo Android) — ver "Cómo
+seguir" → 3. El
 resumen/serie de rutina además se corrió contra `dataset_events/events.zip` (CASAS, un hogar real
 con 490 días de historial) como proxy de variabilidad real — ver nota en `app/rutina.py`, no
 reemplaza calibrar con cámara real, que sigue sin existir.
@@ -135,6 +136,7 @@ en `main.py` y en cada `@router` (`tags`, `summary`); son solo metadatos de Open
 | `GET /me` | Perfil del familiar logueado + sus hogares (`rol`, `residente`). **404** si la cuenta de Firebase todavía no tiene `Familiar` → la app llama a `POST /me`. |
 | `POST /me` | Body `{nombre}` (2-60). Crea el `Familiar`; el email sale del token, no del body. Idempotente: si ya existe lo devuelve. |
 | `POST /me/push-token` | Body `{token}` (token de FCM del celular, RF8). **204**. Pisa el anterior (un token por familiar). **404** si la cuenta todavía no tiene `Familiar` (llamar `POST /me` primero). |
+| `DELETE /me/push-token?token=` | Al cerrar sesión (2026-10-15). Borra el token **solo si es el guardado**: si el familiar ya inició sesión en otro celular, cerrar sesión en el viejo no le corta las push al nuevo. **204** siempre (idempotente), **404** sin `Familiar`, **422** sin `token`. |
 | `POST /kits/vincular` | Body `{codigo}` (del QR; acepta minúsculas, espacios, guiones). Crea el `Hogar` ("Mi hogar"), le asigna kit y cámaras y deja al familiar como `responsable_principal`. Devuelve `{hogar_id, numero_serie, cantidad_camaras, camaras}`. **404** código inexistente · **409** kit de otro hogar · **429** 5 intentos fallidos en 15 min (por familiar, en memoria del proceso). Reintento del mismo familiar = idempotente. |
 | `GET /hogares/{id}/camaras` | Cámaras del hogar. Cualquier familiar vinculado. |
 | `PATCH /hogares/{id}/camaras/{camara_id}` | Body `{ubicacion}` (2-40). RF10. **409** si repite la de otra cámara del hogar. Solo `responsable_principal`. |
@@ -286,8 +288,9 @@ positivos en varias clases).
 **Tiempo.** Con 60 días de historial, el proceso diario tardó 42 segundos por hogar en la PC de
 desarrollo (8 núcleos, sin otra carga). Casi todo es el detector de horario, que recalcula un
 KMeans por cada actividad de todo el historial (1.467 para este hogar) aunque solo importen las
-del día evaluado. El costo crece con el historial y con la cantidad de hogares; no se midió en
-la instancia `t3.micro` de AWS.
+del día evaluado. El costo crece con el historial y con la cantidad de hogares. **En la
+`t3.micro` de AWS (2026-10-17) no terminó en más de 50 minutos y dejó la API sin responder**
+(ver "Incidente del 2026-10-17" en "Cómo seguir" → 3): desde ese día la instancia es `t3.small`.
 
 **Segunda ronda, mismo día (2026-10-13).** Dos cosas sobre lo anterior:
 
@@ -450,6 +453,10 @@ borrado en el orden equivocado falle igual que fallaría en Postgres. Cubren (20
   horario encendidas (y una prueba de control muestra que el detector sí la marcaría si
   siguiera esa clase); un hogar que nunca mandó eventos de puerta no recibe alertas de puerta;
   y con `ENTRADAS_Y_SALIDAS_ACTIVADAS=0` el proceso ignora esos eventos.
+- `test_push_token_y_datos.py` (8 pruebas, ver "Cómo seguir" → 3, 2026-10-15): cerrar sesión
+  borra el token de ese celular y no el de otro más nuevo, borrar es idempotente, 404 sin
+  perfil y 422 sin token; la push de una caída lleva `evento_id`/`hogar_id`, cada alerta de un
+  lote lleva el suyo, y la de un desvío de rutina también (sin perder el detalle del desvío).
 - `test_ingestion_idempotente.py` (8 pruebas, ver "Ingestión idempotente"): reenviar el mismo
   lote no duplica, un lote mezclado guarda solo lo nuevo, un evento repetido dentro del lote
   se guarda una vez, una alerta reenviada no vuelve a avisar, los eventos sin identificador se
@@ -490,10 +497,22 @@ Desplegado y probado de punta a punta con un ID token real contra el endpoint pr
 (créditos por alumno), IAM user `lellero@uade.edu.ar`. Recursos reales:
 - RDS Postgres `pfi-lares-db`, `db.t3.micro`, sin acceso público (deshabilitado una vez corrida
   la migración inicial — EB le pega por el security group, no por internet).
-- Elastic Beanstalk `pfi-lares-prod`, plataforma Docker, instancia única `t3.micro`.
+- Elastic Beanstalk **`pfi-lares-prod-2`** (`e-m4cp6g2qpc`, desde el 2026-10-17; reemplaza a
+  `pfi-lares-prod`, ver "Incidente del 2026-10-17"), plataforma Docker, instancia única
+  **`t3.small`**, con **Launch Template** (`DisableIMDSv1=true` y `RootVolumeType=gp3` fijados
+  a propósito: esta cuenta ya no permite crear Launch Configurations) y salud **básica**. Tiene
+  el CNAME de siempre, `pfi-lares-prod.eba-33tv2c2m.us-east-2.elasticbeanstalk.com` (pasado con
+  `swap-environment-cnames`), así que la URL de la app y de los kits no cambió. IP elástica
+  `16.59.119.116`. Configuración guardada como plantilla `pfi-lares-prod-config`.
+- RDS acepta el 5432 solo desde el security group del entorno de Beanstalk
+  (`sg-041b8e8880a0b8c85`, regla en `sg-02de67ef87b651880`). **Si se recrea o reconstruye el
+  entorno, el security group cambia y hay que cambiar esa regla.**
 - Credencial de Firebase pasada como `GOOGLE_APPLICATION_CREDENTIALS_JSON` (el JSON entero como
   variable de entorno, no un archivo montado — ver `app/auth.py::_get_firebase_app`; se agregó
   esta alternativa justo por este deploy, ver commit `fc7ed50`).
+- **Costo (actualizado 2026-10-17):** con `t3.small` la instancia de EB ya **no entra en el Free
+  Tier**: ~US$ 15/mes (US$ 0,0208/h en us-east-2), a cargo de los créditos del Innovation
+  Sandbox. Lo que sigue es el costo hasta esa fecha.
 - **Costo real: $0** — un solo `t3.micro` de EB + un `db.t3.micro` de RDS 24/7 entran dentro del
   Free Tier normal de la cuenta (750 hs/mes cada uno), verificado con
   `aws ce get-cost-and-usage` (toda la semana da ~$0.00 en todos los servicios). Los créditos del
@@ -646,9 +665,8 @@ vinculado → 200 en `/hogares/{id}/eventos`, y `GET`/`POST /me`. Usuario de pru
 1. ~~Columna `Familiar.push_token`~~ ✅ (migración `a3f9c2d17b40`, 2026-10-06).
 2. ~~Migración~~ ✅ (misma).
 3. ~~Nuevo endpoint~~ ✅ `POST /me/push-token` (`app/routers/me.py`), body `{token}`, **204**.
-   La app móvil lo llama al loguearse (y cuando el SDK de Firebase avisa con `onTokenRefresh`,
-   lo cual aún no está cableado del lado de la app — requiere *development build*, ver
-   `README.md` del Frontend).
+   La app móvil lo llama al loguearse y cuando FCM rota el token (cableado 2026-10-15, ver
+   `src/features/push/README.md` del Frontend).
 4. ~~`app/baseline_runner.py::_registrar_desvio`~~ ✅ usa los tokens reales de `hogar.familiares`
    en vez de una lista vacía.
 5. ~~`fall`/`immobility` con `es_alerta=True` también disparan push~~ ✅ **decidido y hecho**:
@@ -661,6 +679,100 @@ severidad baja no disparan nada, el token se pisa correctamente al loguearse en 
 probar con Firebase Cloud Messaging real todavía (necesita *development build* del lado de la
 app para recibir la notificación — Expo Go no la soporta, ver "Próximos pasos" del README del
 Frontend).
+
+**Agregado 2026-10-15** (los dos pedidos como `PENDIENTE BACKEND` por la app, ver
+`src/api/README.md` del Frontend):
+- **`DELETE /me/push-token?token=`** (`app/routers/me.py`): la app lo llama al cerrar sesión.
+  Sin esto, el celular seguía recibiendo las alertas de la cuenta después de salir. Borra solo
+  si el token coincide con el guardado: con un token por familiar, si inició sesión en otro
+  celular el guardado es el del otro. El token va como query param y no en el body porque un
+  `DELETE` con body no está bien soportado por todos los clientes y proxies.
+- **`evento_id` y `hogar_id` en la `data` de cada push** (`notifications.datos_push`), además
+  de `event_type`: al tocar la notificación la app abre el detalle de esa alerta en vez del
+  feed. En caídas/inmovilidad (`routers/devices.py`) los ids salen después del commit del
+  lote; en desvíos de rutina (`baseline_runner._registrar_desvio`) van junto al detalle del
+  desvío que ya se mandaba, y no se pueden pisar con una clave del detalle.
+
+Probado con `tests/test_push_token_y_datos.py` (ver "Pruebas"). Sin desplegar todavía (rama
+`push-token-evento-2026-10-15`).
+
+**Push real probado (2026-10-17)**, contra producción (v8, sin la rama de arriba):
+- Kit de prueba **`LR-000003`** (1 cámara, `cam1`) dado de alta con `alta_kit.py` contra RDS:
+  "Publicly accessible" habilitado un rato con una regla de entrada al 5432 solo para la IP de
+  la PC, script corrido con la `DATABASE_URL` de Elastic Beanstalk, y cerrado enseguida (regla
+  borrada, "Not publicly accessible", verificado que el puerto no responde). Vinculado desde la
+  app a una cuenta de prueba de Lorenzo. Código y API key fuera del repo (los tiene Lorenzo).
+- `fall` con `confirmed: true` mandado con la API key de ese kit → `201` y **la push llegó al
+  Android** ("Posible caída detectada"). Confirma que las credenciales de Firebase del deploy
+  alcanzan para FCM y que la API de Cloud Messaging está habilitada. `immobility` alta
+  mandada también (201), sin confirmar la notificación.
+- **Desvíos de rutina, en curso:** `simular_historial.py --hoy 2026-10-17 --enviar` cargó en
+  ese hogar 14.502 eventos de actividad (60 días de CASAS hh113, del 2026-08-19 al
+  2026-10-17, el último sin comidas), con la API key del kit, por `POST /devices/events`. El
+  proceso de las 03:00 del 2026-10-18 tiene que emitir `cam_comida:ausencia` y el
+  multivariado (lo mismo que verifica `test_linea_base_produccion.py` con esos datos) y
+  mandar las dos push. Los eventos quedan en ese hogar de prueba (se limpian dando de baja el
+  hogar). Para no esperar a las 03:00 se corrió el proceso a mano dentro del contenedor, y eso
+  tiró la API: ver el incidente de abajo. Resultado de los desvíos: pendiente de anotar.
+
+**Incidente del 2026-10-17: API caída ~1 h (12:00–13:15 hora de Argentina).**
+1. 14:42 UTC: un `restartAppServer` (anterior a todo esto) dejó el monitoreo de salud de
+   Beanstalk en *Suspended* ("Failed to check health. Verify the permissions on the
+   environment's service role"). Revisado con `iam simulate-principal-policy` sobre el stack de
+   EB: el rol `aws-elasticbeanstalk-service-role` **tiene los permisos** (políticas
+   `AWSElasticBeanstalkEnhancedHealth` y `AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy`),
+   así que fue un fallo puntual al asumir el rol. Sigue *Suspended*; AWS dice que puede volver
+   solo.
+2. ~15:00 UTC: se corrió a mano `run_baseline_daily.py --date 2026-10-17 --hogar-id 3` en el
+   contenedor (EC2 Instance Connect + `docker exec`), con los 60 días simulados. Una CPU al
+   100 % por 50 minutos (CloudWatch) y la API sin responder: muy probablemente falta de
+   memoria con 1 GB (API + el cálculo; la memoria no se mide por defecto).
+3. 15:50 UTC: la instancia figuró como detenida y el Auto Scaling group la **reemplazó**. La
+   nueva no recibió la IP elástica (la reasociación la hace Beanstalk, con el monitoreo
+   suspendido no la hizo): el CNAME siguió apuntando a `3.18.207.101`, suelta, y la API no se
+   veía desde afuera aunque el contenedor estaba bien (`/health` 200 en la IP nueva).
+4. Arreglo: `aws ec2 associate-address --allocation-id eipalloc-0074538bc2190cf4a
+   --instance-id <la nueva>` → API de vuelta. Después, **instancia a `t3.small`** (2 GB)
+   desde la configuración del entorno (16:13 UTC, ~3 min de corte); esta vez Beanstalk sí
+   pasó la IP elástica a la máquina nueva.
+
+**Para no repetirlo:**
+- No correr `run_baseline_daily.py` a mano en producción sin `--hogar-id`, y nunca con mucho
+  historial en horario de uso: corre en el mismo contenedor que la API. Mejor esperar a las
+  03:00 o probar en local.
+- Si la API no responde pero la instancia está *Running*: comparar su IP pública con
+  `3.18.207.101` (EC2 → Elastic IPs, **región us-east-2**); si la IP elástica quedó suelta,
+  reasociarla.
+- **Resuelto recreando el entorno (16:45–17:10 UTC, API caída ~25 min).** Pasar a salud
+  básica no lo destrabó (quedó en *Grey*). Un *Rebuild environment* falló dos veces: borró la
+  instancia y no pudo crear la nueva porque eligió una **Launch Configuration** ("not available
+  in your account": las cuentas nuevas solo admiten Launch Templates) y, con el stack en
+  `CREATE_FAILED`, el entorno ya no aceptaba cambios de configuración. Además el primer
+  rebuild se trabó borrando el security group viejo, que seguía referenciado por la regla de
+  RDS (hubo que sacarla). Arreglo: plantilla de configuración desde el entorno roto
+  (`create-configuration-template`, copia variables, roles y red), entorno nuevo
+  `pfi-lares-prod-2` desde la plantilla forzando Launch Template y `t3.small`, regla de RDS
+  para su security group, verificación (`POST /devices/events` vacío con la API key de un kit
+  → 201, clave falsa → 401), `swap-environment-cnames` y `terminate-environment` del viejo. El
+  entorno nuevo quedó en **verde**: el monitoreo de salud funciona.
+- Lo que sigue es el diagnóstico del monitoreo **antes** de recrear el entorno, por si vuelve:
+- **Monitoreo de Beanstalk en *Suspended*, sin resolver.** No es puntual: un
+  `restart-app-server` a las 16:23 UTC dio el mismo error en el mismo segundo. Descartado: el
+  rol tiene los permisos (simulación sobre el stack) y Beanstalk lo asume bien (CloudTrail:
+  `AssumeRole` OK a las 16:14, y sus llamadas de las 16:23 con el rol, todas OK; ninguna
+  denegada). El fallo es interno del chequeo de salud y no deja rastro en la cuenta: candidatos,
+  una restricción de la cuenta de Innovation Sandbox (las SCP no las ve la simulación) o un
+  problema del lado de AWS. Siguiente paso: consultar a quien administra las cuentas del
+  Sandbox o a AWS Support; probar pasar el entorno a salud básica (`HealthReporting=basic`).
+  Mientras siga así, **si la instancia se reemplaza sola, la IP elástica puede quedar suelta**:
+  reasociarla como en el paso 4. **No hacer *Rebuild environment*** en esta cuenta sin antes
+  fijar `DisableIMDSv1`/`RootVolumeType` en el entorno y sacar la regla de RDS que apunta a su
+  security group: ver el punto de arriba.
+- Pendiente: acotar el costo del detector de horario (recalcula un KMeans por
+  actividad de todo el historial aunque las alertas de horario estén apagadas), que es lo que
+  hace pesado el proceso diario; y medir memoria (agente de CloudWatch) si se vuelve a ver.
+- Tabla de qué evento avisa qué y cómo repetirlo: `src/features/push/README.md` del Frontend,
+  "Cómo probarlo".
 
 ### 4. CRUD de familiares/roles (RF12) — ✅ HECHO (2026-10-07)
 

@@ -5,10 +5,12 @@
   `Familiar` (la app entonces llama a `POST /me`).
 - `POST /me`: crea el `Familiar` al registrarse. Idempotente: si ya existe, lo devuelve tal cual
   (la app puede reintentar si se cortó la red a mitad del registro).
+- `POST /me/push-token` / `DELETE /me/push-token`: guardar el token de FCM del celular al
+  iniciar sesión, y borrarlo al cerrarla (RF8).
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from ..auth import require_familiar_uid, require_firebase_token
@@ -75,4 +77,23 @@ def registrar_push_token(
         raise HTTPException(status_code=404, detail="Tu cuenta todavía no tiene perfil.")
     familiar.push_token = datos.token
     db.commit()
+    return Response(status_code=204)
+
+
+@router.delete("/push-token", tags=["Cuenta"], summary="Dejar de recibir notificaciones en este celular", status_code=204)
+def borrar_push_token(
+    token: str = Query(min_length=1, max_length=300),
+    uid: str = Depends(require_familiar_uid),
+    db: Session = Depends(get_db),
+) -> Response:
+    """La app lo llama al cerrar sesión, con el token de ese celular. Solo lo borra si es el que
+    está guardado: si el familiar ya inició sesión en otro celular, el token guardado es el del
+    otro, y cerrar sesión en el viejo no le tiene que cortar las push al nuevo. Idempotente: 204
+    también si no había token o era otro."""
+    familiar = db.query(Familiar).filter(Familiar.firebase_uid == uid).first()
+    if familiar is None:
+        raise HTTPException(status_code=404, detail="Tu cuenta todavía no tiene perfil.")
+    if familiar.push_token == token:
+        familiar.push_token = None
+        db.commit()
     return Response(status_code=204)
