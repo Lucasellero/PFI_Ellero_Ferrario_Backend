@@ -693,7 +693,13 @@ Probado con `tests/test_push_token_y_datos.py` (ver "Pruebas"). Sin desplegar to
   Android** ("Posible caída detectada"). Confirma que las credenciales de Firebase del deploy
   alcanzan para FCM y que la API de Cloud Messaging está habilitada. `immobility` alta
   mandada también (201), sin confirmar la notificación.
-- Sin probar con FCM real: los desvíos de rutina del proceso de las 03:00.
+- **Desvíos de rutina, en curso:** `simular_historial.py --hoy 2026-10-17 --enviar` cargó en
+  ese hogar 14.502 eventos de actividad (60 días de CASAS hh113, del 2026-08-19 al
+  2026-10-17, el último sin comidas), con la API key del kit, por `POST /devices/events`. El
+  proceso de las 03:00 del 2026-10-18 tiene que emitir `cam_comida:ausencia` y el
+  multivariado (lo mismo que verifica `test_linea_base_produccion.py` con esos datos) y
+  mandar las dos push. Resultado: pendiente de anotar. Los eventos quedan en ese hogar de
+  prueba (se limpian dando de baja el hogar).
 - Tabla de qué evento avisa qué y cómo repetirlo: `src/features/push/README.md` del Frontend,
   "Cómo probarlo".
 
