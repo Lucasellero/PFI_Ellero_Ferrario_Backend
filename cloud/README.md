@@ -497,9 +497,16 @@ Desplegado y probado de punta a punta con un ID token real contra el endpoint pr
 (créditos por alumno), IAM user `lellero@uade.edu.ar`. Recursos reales:
 - RDS Postgres `pfi-lares-db`, `db.t3.micro`, sin acceso público (deshabilitado una vez corrida
   la migración inicial — EB le pega por el security group, no por internet).
-- Elastic Beanstalk `pfi-lares-prod`, plataforma Docker, instancia única **`t3.small`** (era
-  `t3.micro` hasta el 2026-10-17, ver "Incidente del 2026-10-17"), con la IP elástica
-  `3.18.207.101` (`eipalloc-0074538bc2190cf4a`), que es a la que apunta el CNAME del entorno.
+- Elastic Beanstalk **`pfi-lares-prod-2`** (`e-m4cp6g2qpc`, desde el 2026-10-17; reemplaza a
+  `pfi-lares-prod`, ver "Incidente del 2026-10-17"), plataforma Docker, instancia única
+  **`t3.small`**, con **Launch Template** (`DisableIMDSv1=true` y `RootVolumeType=gp3` fijados
+  a propósito: esta cuenta ya no permite crear Launch Configurations) y salud **básica**. Tiene
+  el CNAME de siempre, `pfi-lares-prod.eba-33tv2c2m.us-east-2.elasticbeanstalk.com` (pasado con
+  `swap-environment-cnames`), así que la URL de la app y de los kits no cambió. IP elástica
+  `16.59.119.116`. Configuración guardada como plantilla `pfi-lares-prod-config`.
+- RDS acepta el 5432 solo desde el security group del entorno de Beanstalk
+  (`sg-041b8e8880a0b8c85`, regla en `sg-02de67ef87b651880`). **Si se recrea o reconstruye el
+  entorno, el security group cambia y hay que cambiar esa regla.**
 - Credencial de Firebase pasada como `GOOGLE_APPLICATION_CREDENTIALS_JSON` (el JSON entero como
   variable de entorno, no un archivo montado — ver `app/auth.py::_get_firebase_app`; se agregó
   esta alternativa justo por este deploy, ver commit `fc7ed50`).
@@ -736,6 +743,19 @@ Probado con `tests/test_push_token_y_datos.py` (ver "Pruebas"). Sin desplegar to
 - Si la API no responde pero la instancia está *Running*: comparar su IP pública con
   `3.18.207.101` (EC2 → Elastic IPs, **región us-east-2**); si la IP elástica quedó suelta,
   reasociarla.
+- **Resuelto recreando el entorno (16:45–17:10 UTC, API caída ~25 min).** Pasar a salud
+  básica no lo destrabó (quedó en *Grey*). Un *Rebuild environment* falló dos veces: borró la
+  instancia y no pudo crear la nueva porque eligió una **Launch Configuration** ("not available
+  in your account": las cuentas nuevas solo admiten Launch Templates) y, con el stack en
+  `CREATE_FAILED`, el entorno ya no aceptaba cambios de configuración. Además el primer
+  rebuild se trabó borrando el security group viejo, que seguía referenciado por la regla de
+  RDS (hubo que sacarla). Arreglo: plantilla de configuración desde el entorno roto
+  (`create-configuration-template`, copia variables, roles y red), entorno nuevo
+  `pfi-lares-prod-2` desde la plantilla forzando Launch Template y `t3.small`, regla de RDS
+  para su security group, verificación (`POST /devices/events` vacío con la API key de un kit
+  → 201, clave falsa → 401), `swap-environment-cnames` y `terminate-environment` del viejo. El
+  entorno nuevo quedó en **verde**: el monitoreo de salud funciona.
+- Lo que sigue es el diagnóstico del monitoreo **antes** de recrear el entorno, por si vuelve:
 - **Monitoreo de Beanstalk en *Suspended*, sin resolver.** No es puntual: un
   `restart-app-server` a las 16:23 UTC dio el mismo error en el mismo segundo. Descartado: el
   rol tiene los permisos (simulación sobre el stack) y Beanstalk lo asume bien (CloudTrail:
@@ -745,7 +765,9 @@ Probado con `tests/test_push_token_y_datos.py` (ver "Pruebas"). Sin desplegar to
   problema del lado de AWS. Siguiente paso: consultar a quien administra las cuentas del
   Sandbox o a AWS Support; probar pasar el entorno a salud básica (`HealthReporting=basic`).
   Mientras siga así, **si la instancia se reemplaza sola, la IP elástica puede quedar suelta**:
-  reasociarla como en el paso 4.
+  reasociarla como en el paso 4. **No hacer *Rebuild environment*** en esta cuenta sin antes
+  fijar `DisableIMDSv1`/`RootVolumeType` en el entorno y sacar la regla de RDS que apunta a su
+  security group: ver el punto de arriba.
 - Pendiente: acotar el costo del detector de horario (recalcula un KMeans por
   actividad de todo el historial aunque las alertas de horario estén apagadas), que es lo que
   hace pesado el proceso diario; y medir memoria (agente de CloudWatch) si se vuelve a ver.
