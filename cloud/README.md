@@ -288,8 +288,9 @@ positivos en varias clases).
 **Tiempo.** Con 60 días de historial, el proceso diario tardó 42 segundos por hogar en la PC de
 desarrollo (8 núcleos, sin otra carga). Casi todo es el detector de horario, que recalcula un
 KMeans por cada actividad de todo el historial (1.467 para este hogar) aunque solo importen las
-del día evaluado. El costo crece con el historial y con la cantidad de hogares; no se midió en
-la instancia `t3.micro` de AWS.
+del día evaluado. El costo crece con el historial y con la cantidad de hogares. **En la
+`t3.micro` de AWS (2026-10-17) no terminó en más de 50 minutos y dejó la API sin responder**
+(ver "Incidente del 2026-10-17" en "Cómo seguir" → 3): desde ese día la instancia es `t3.small`.
 
 **Segunda ronda, mismo día (2026-10-13).** Dos cosas sobre lo anterior:
 
@@ -496,10 +497,15 @@ Desplegado y probado de punta a punta con un ID token real contra el endpoint pr
 (créditos por alumno), IAM user `lellero@uade.edu.ar`. Recursos reales:
 - RDS Postgres `pfi-lares-db`, `db.t3.micro`, sin acceso público (deshabilitado una vez corrida
   la migración inicial — EB le pega por el security group, no por internet).
-- Elastic Beanstalk `pfi-lares-prod`, plataforma Docker, instancia única `t3.micro`.
+- Elastic Beanstalk `pfi-lares-prod`, plataforma Docker, instancia única **`t3.small`** (era
+  `t3.micro` hasta el 2026-10-17, ver "Incidente del 2026-10-17"), con la IP elástica
+  `3.18.207.101` (`eipalloc-0074538bc2190cf4a`), que es a la que apunta el CNAME del entorno.
 - Credencial de Firebase pasada como `GOOGLE_APPLICATION_CREDENTIALS_JSON` (el JSON entero como
   variable de entorno, no un archivo montado — ver `app/auth.py::_get_firebase_app`; se agregó
   esta alternativa justo por este deploy, ver commit `fc7ed50`).
+- **Costo (actualizado 2026-10-17):** con `t3.small` la instancia de EB ya **no entra en el Free
+  Tier**: ~US$ 15/mes (US$ 0,0208/h en us-east-2), a cargo de los créditos del Innovation
+  Sandbox. Lo que sigue es el costo hasta esa fecha.
 - **Costo real: $0** — un solo `t3.micro` de EB + un `db.t3.micro` de RDS 24/7 entran dentro del
   Free Tier normal de la cuenta (750 hs/mes cada uno), verificado con
   `aws ce get-cost-and-usage` (toda la semana da ~$0.00 en todos los servicios). Los créditos del
@@ -698,8 +704,42 @@ Probado con `tests/test_push_token_y_datos.py` (ver "Pruebas"). Sin desplegar to
   2026-10-17, el último sin comidas), con la API key del kit, por `POST /devices/events`. El
   proceso de las 03:00 del 2026-10-18 tiene que emitir `cam_comida:ausencia` y el
   multivariado (lo mismo que verifica `test_linea_base_produccion.py` con esos datos) y
-  mandar las dos push. Resultado: pendiente de anotar. Los eventos quedan en ese hogar de
-  prueba (se limpian dando de baja el hogar).
+  mandar las dos push. Los eventos quedan en ese hogar de prueba (se limpian dando de baja el
+  hogar). Para no esperar a las 03:00 se corrió el proceso a mano dentro del contenedor, y eso
+  tiró la API: ver el incidente de abajo. Resultado de los desvíos: pendiente de anotar.
+
+**Incidente del 2026-10-17: API caída ~1 h (12:00–13:15 hora de Argentina).**
+1. 14:42 UTC: un `restartAppServer` (anterior a todo esto) dejó el monitoreo de salud de
+   Beanstalk en *Suspended* ("Failed to check health. Verify the permissions on the
+   environment's service role"). Revisado con `iam simulate-principal-policy` sobre el stack de
+   EB: el rol `aws-elasticbeanstalk-service-role` **tiene los permisos** (políticas
+   `AWSElasticBeanstalkEnhancedHealth` y `AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy`),
+   así que fue un fallo puntual al asumir el rol. Sigue *Suspended*; AWS dice que puede volver
+   solo.
+2. ~15:00 UTC: se corrió a mano `run_baseline_daily.py --date 2026-10-17 --hogar-id 3` en el
+   contenedor (EC2 Instance Connect + `docker exec`), con los 60 días simulados. Una CPU al
+   100 % por 50 minutos (CloudWatch) y la API sin responder: muy probablemente falta de
+   memoria con 1 GB (API + el cálculo; la memoria no se mide por defecto).
+3. 15:50 UTC: la instancia figuró como detenida y el Auto Scaling group la **reemplazó**. La
+   nueva no recibió la IP elástica (la reasociación la hace Beanstalk, con el monitoreo
+   suspendido no la hizo): el CNAME siguió apuntando a `3.18.207.101`, suelta, y la API no se
+   veía desde afuera aunque el contenedor estaba bien (`/health` 200 en la IP nueva).
+4. Arreglo: `aws ec2 associate-address --allocation-id eipalloc-0074538bc2190cf4a
+   --instance-id <la nueva>` → API de vuelta. Después, **instancia a `t3.small`** (2 GB)
+   desde la configuración del entorno (16:13 UTC, ~3 min de corte); esta vez Beanstalk sí
+   pasó la IP elástica a la máquina nueva.
+
+**Para no repetirlo:**
+- No correr `run_baseline_daily.py` a mano en producción sin `--hogar-id`, y nunca con mucho
+  historial en horario de uso: corre en el mismo contenedor que la API. Mejor esperar a las
+  03:00 o probar en local.
+- Si la API no responde pero la instancia está *Running*: comparar su IP pública con
+  `3.18.207.101` (EC2 → Elastic IPs, **región us-east-2**); si la IP elástica quedó suelta,
+  reasociarla.
+- Pendiente: que el monitoreo de Beanstalk vuelva de *Suspended* (si no vuelve solo,
+  `restart-app-server`); acotar el costo del detector de horario (recalcula un KMeans por
+  actividad de todo el historial aunque las alertas de horario estén apagadas), que es lo que
+  hace pesado el proceso diario; y medir memoria (agente de CloudWatch) si se vuelve a ver.
 - Tabla de qué evento avisa qué y cómo repetirlo: `src/features/push/README.md` del Frontend,
   "Cómo probarlo".
 
