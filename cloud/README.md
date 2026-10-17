@@ -736,8 +736,17 @@ Probado con `tests/test_push_token_y_datos.py` (ver "Pruebas"). Sin desplegar to
 - Si la API no responde pero la instancia está *Running*: comparar su IP pública con
   `3.18.207.101` (EC2 → Elastic IPs, **región us-east-2**); si la IP elástica quedó suelta,
   reasociarla.
-- Pendiente: que el monitoreo de Beanstalk vuelva de *Suspended* (si no vuelve solo,
-  `restart-app-server`); acotar el costo del detector de horario (recalcula un KMeans por
+- **Monitoreo de Beanstalk en *Suspended*, sin resolver.** No es puntual: un
+  `restart-app-server` a las 16:23 UTC dio el mismo error en el mismo segundo. Descartado: el
+  rol tiene los permisos (simulación sobre el stack) y Beanstalk lo asume bien (CloudTrail:
+  `AssumeRole` OK a las 16:14, y sus llamadas de las 16:23 con el rol, todas OK; ninguna
+  denegada). El fallo es interno del chequeo de salud y no deja rastro en la cuenta: candidatos,
+  una restricción de la cuenta de Innovation Sandbox (las SCP no las ve la simulación) o un
+  problema del lado de AWS. Siguiente paso: consultar a quien administra las cuentas del
+  Sandbox o a AWS Support; probar pasar el entorno a salud básica (`HealthReporting=basic`).
+  Mientras siga así, **si la instancia se reemplaza sola, la IP elástica puede quedar suelta**:
+  reasociarla como en el paso 4.
+- Pendiente: acotar el costo del detector de horario (recalcula un KMeans por
   actividad de todo el historial aunque las alertas de horario estén apagadas), que es lo que
   hace pesado el proceso diario; y medir memoria (agente de CloudWatch) si se vuelve a ver.
 - Tabla de qué evento avisa qué y cómo repetirlo: `src/features/push/README.md` del Frontend,
