@@ -11,10 +11,10 @@ celular real" en el README del repo Frontend). Proyecto de Firebase creado y pro
 reales (2026-10-06, ver "Cómo seguir" → punto 2). KIT/vinculación, eventos (resolver,
 `ubicacion`, filtros RF13), CRUD de familiares/roles (RF12), resumen y serie de rutina (RF9,
 `GET /rutina` y `GET /rutina/serie`, este último sumado 2026-10-08 para el gráfico de evolución
-de la app) — todo probado contra Postgres real en producción, con Firebase real. **Sin probar
-todavía**: Firebase Cloud Messaging real. Los push tokens se guardan (`POST /me/push-token`) y
-la app ya los registra (Frontend, `features/push/`, 2026-10-15, solo Android), pero falta el
-primer *development build* para recibirlas en un celular. El
+de la app) — todo probado contra Postgres real en producción, con Firebase real. Firebase Cloud
+Messaging real **probado el 2026-10-17**: una caída mandada a `POST /devices/events` llegó como
+push a un Android (development build del Frontend, `features/push/`, solo Android) — ver "Cómo
+seguir" → 3. El
 resumen/serie de rutina además se corrió contra `dataset_events/events.zip` (CASAS, un hogar real
 con 490 días de historial) como proxy de variabilidad real — ver nota en `app/rutina.py`, no
 reemplaza calibrar con cámara real, que sigue sin existir.
@@ -680,8 +680,22 @@ Frontend).
   lote; en desvíos de rutina (`baseline_runner._registrar_desvio`) van junto al detalle del
   desvío que ya se mandaba, y no se pueden pisar con una clave del detalle.
 
-Probado con `tests/test_push_token_y_datos.py` (ver "Pruebas"). Sigue sin probarse el envío
-real por FCM.
+Probado con `tests/test_push_token_y_datos.py` (ver "Pruebas"). Sin desplegar todavía (rama
+`push-token-evento-2026-10-15`).
+
+**Push real probado (2026-10-17)**, contra producción (v8, sin la rama de arriba):
+- Kit de prueba **`LR-000003`** (1 cámara, `cam1`) dado de alta con `alta_kit.py` contra RDS:
+  "Publicly accessible" habilitado un rato con una regla de entrada al 5432 solo para la IP de
+  la PC, script corrido con la `DATABASE_URL` de Elastic Beanstalk, y cerrado enseguida (regla
+  borrada, "Not publicly accessible", verificado que el puerto no responde). Vinculado desde la
+  app a una cuenta de prueba de Lorenzo. Código y API key fuera del repo (los tiene Lorenzo).
+- `fall` con `confirmed: true` mandado con la API key de ese kit → `201` y **la push llegó al
+  Android** ("Posible caída detectada"). Confirma que las credenciales de Firebase del deploy
+  alcanzan para FCM y que la API de Cloud Messaging está habilitada. `immobility` alta
+  mandada también (201), sin confirmar la notificación.
+- Sin probar con FCM real: los desvíos de rutina del proceso de las 03:00.
+- Tabla de qué evento avisa qué y cómo repetirlo: `src/features/push/README.md` del Frontend,
+  "Cómo probarlo".
 
 ### 4. CRUD de familiares/roles (RF12) — ✅ HECHO (2026-10-07)
 
