@@ -531,6 +531,15 @@ runbook abajo — no se volvió a tocar RDS ni Firebase, solo código de `cloud/
   `routers/mobile.py`, `schemas.py`).
 - **v4 (2026-10-08)**: indicadores `cocina`/`movilidad` sumados a `app/rutina.py` (antes solo
   `comida`/`sedentarismo`).
+- **v9 (2026-10-17)**: `main` en `788ee48`, en el entorno nuevo `pfi-lares-prod-2`. Trae
+  `DELETE /me/push-token` y `evento_id`/`hogar_id` en la `data` de cada push. Sin migración.
+  Bundle armado solo con archivos versionados en git (`git ls-tree` + `git show` del commit,
+  48 archivos: `cloud/` sin `tests/`, `baseline/src/`, `events/` y el `Dockerfile` en la raíz)
+  y escaneado contra secretos antes de subirlo. Verificado: entorno en verde, `/health` 200,
+  `DELETE /me/push-token` en el OpenAPI publicado. Volver atrás: `update-environment
+  --version-label v8`. El security group del entorno tiene el 22 abierto **solo** para EC2
+  Instance Connect (lista de prefijos `pl-03915406641cb1f53`), para poder entrar al contenedor
+  desde la consola.
 - **v8 (2026-10-14)**: `main` en `c8f3a52` (las v5–v7 no quedaron anotadas acá). Trae la línea
   base con entradas y salidas de casa y los parámetros votados (la puerta avisa desde el primer
   día sin eventos), el aviso al celular con el texto de la app, la ingestión idempotente, la
