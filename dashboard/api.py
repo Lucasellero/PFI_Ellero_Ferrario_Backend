@@ -182,6 +182,14 @@ async def _startup() -> None:
     asyncio.create_task(_background_broadcaster())
 
 
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    # Si el dashboard se cierra con el runner andando, no dejarlo huérfano.
+    if _is_running():
+        runner_proc.terminate()
+        await runner_proc.wait()
+
+
 # ── Rutas HTTP ─────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
