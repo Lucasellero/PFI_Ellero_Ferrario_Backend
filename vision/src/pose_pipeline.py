@@ -95,6 +95,21 @@ IMMOBILITY_SAMPLE_WINDOW_S = 2.0       # ventana para promediar el desplazamient
 IMMOBILITY_POSTURE_VOTE_N = 5          # cuántas clasificaciones de postura recientes se usan (mayoría) para decidir sentado/acostado al reportar
 IMMOBILITY_HISTORY_SECONDS = 15.0      # retención propia de _smoothed_displacement_rate, mayor a history_seconds (2.5, pensado para la velocidad de caída) — ver docstring de _smoothed_displacement_rate
 
+# Histéresis de detección (ver FallImmobilityDetector._detect y vision/README.md,
+# "Histéresis de detección"): una persona en reposo en un sillón vista desde
+# cámara ancha/elevada cae por debajo del umbral de caja de YOLO buena parte
+# del tiempo. Bajar el umbral global la recupera pero multiplica las cajas
+# espurias (x7 a 0.05). En cambio: umbral ALTO para crear un seguimiento,
+# umbral bajo solo para mantenerlo, y solo si la caja débil solapa con la caja
+# que lo creó (el "ancla"). Las detecciones débiles alimentan únicamente el
+# tracking de inmovilidad — nunca la heurística de caída.
+PERSON_BOX_CONFIDENCE = 0.25           # confianza de caja para una detección normal (= default de Ultralytics, el que ya se usaba implícitamente)
+TRACK_CREATE_BOX_CONFIDENCE = 0.5      # confianza de caja para que una detección normal fije el ancla. Más alto que PERSON_BOX_CONFIDENCE a propósito: los falsos positivos de YOLO sobre objetos (ej. una planta) caen en 0.25-0.31, y sostenerlos con cajas débiles los convertía en una "persona" permanente
+TRACK_KEEP_BOX_CONFIDENCE = 0.05       # confianza de caja mínima para mantener un seguimiento ya creado
+TRACK_KEEP_MIN_IOU = 0.5               # solape mínimo de la caja débil con el ancla (no con la débil anterior: encadenar débiles deja que el seguimiento derive hacia otro objeto)
+TRACK_KEEP_MAX_GAP_S = 3.0             # sin ninguna caja aceptada por más de esto => el seguimiento se pierde (hace falta otra detección que fije ancla)
+TRACK_WEAK_MAX_S = 60.0                # tope desde la última vez que se fijó el ancla: un seguimiento "fantasma" nunca llega a IMMOBILITY_WINDOW_S por sí solo
+
 
 @dataclass
 class PoseSample:
@@ -106,6 +121,8 @@ class PoseSample:
     keypoints: np.ndarray      # normalizados a [0, 1] por ancho/alto del frame
     bbox_touches_edge: bool = False   # el bbox llega al borde superior/izq/der del frame => persona parcialmente fuera de cuadro
     torso_visible: bool = True        # hombros + cadera detectados con confianza suficiente (ver TORSO_KEYPOINT_MIN_CONF)
+    bbox: np.ndarray | None = None    # (x1, y1, x2, y2) normalizado a [0, 1] por ancho/alto del frame
+    weak: bool = False                # detección débil sostenida por histéresis (ver TRACK_KEEP_BOX_CONFIDENCE): keypoints no confiables, solo sirve la caja
 
     @property
     def framing_ok(self) -> bool:
@@ -140,16 +157,27 @@ def detect_person(model: YOLO, image: np.ndarray) -> tuple[np.ndarray, np.ndarra
     areas = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
     idx = int(areas.argmax())
 
+    kpts, box, kpts_conf = _extract(result, boxes, idx)
+    if kpts_conf is not None and float(kpts_conf.mean()) < MIN_KEYPOINT_CONFIDENCE:
+        return None
+    return kpts, box, kpts_conf
+
+
+def _extract(result, boxes: np.ndarray, idx: int) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
     kpts_conf = None
     if result.keypoints.conf is not None:
         kpts_conf = result.keypoints.conf[idx].cpu().numpy()
-        mean_confidence = float(kpts_conf.mean())
-        if mean_confidence < MIN_KEYPOINT_CONFIDENCE:
-            return None
+    return result.keypoints.xy[idx].cpu().numpy(), boxes[idx], kpts_conf
 
-    kpts = result.keypoints.xy[idx].cpu().numpy()
-    box = boxes[idx]
-    return kpts, box, kpts_conf
+
+def _iou(a: np.ndarray, b: np.ndarray) -> float:
+    iw = min(a[2], b[2]) - max(a[0], b[0])
+    ih = min(a[3], b[3]) - max(a[1], b[1])
+    if iw <= 0 or ih <= 0:
+        return 0.0
+    inter = iw * ih
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return float(inter / union) if union > 0 else 0.0
 
 
 def build_pose_sample(
@@ -192,6 +220,7 @@ def build_pose_sample(
         keypoints=kpts / np.array([w, h]),
         bbox_touches_edge=bbox_touches_edge,
         torso_visible=torso_visible,
+        bbox=np.asarray(box, dtype=float) / np.array([w, h, w, h]),
     )
 
 
@@ -266,6 +295,16 @@ class FallImmobilityDetector:
         self._postfall_window_s = postfall_window_s
         self._postfall_since: float | None = None
         self._postfall_reported = False
+        # Histéresis de detección (ver _detect).
+        self._anchor_box: np.ndarray | None = None
+        self._anchor_t: float = float("-inf")
+        self._track_last_t: float = float("-inf")
+        # True si en el último frame hay una persona, por detección normal O
+        # por una detección débil sostenida por histéresis. `last_detection`
+        # sigue siendo None en el segundo caso (no hay keypoints usables), así
+        # que quien solo necesite "¿hay alguien?" (ej. el gate de movimiento
+        # de runner/) debe mirar esto y no `last_detection`.
+        self.person_present: bool = False
         self.last_detection: tuple[np.ndarray, np.ndarray] | None = None
         # Confianza por keypoint de la última detección, separada de
         # last_detection para no romper los call sites que hacen
@@ -275,10 +314,20 @@ class FallImmobilityDetector:
     def process_frame(self, image: np.ndarray, timestamp_s: float) -> list[dict]:
         events: list[dict] = []
         h, w = image.shape[:2]
-        detection = detect_person(self._model, image)
+        detection, weak = self._detect(image, timestamp_s)
+        self.person_present = detection is not None or weak is not None
         if detection is None:
             self.last_detection = None
             self.last_detection_conf = None
+            if weak is not None:
+                # Detección débil: solo cuenta para sedentarismo/inmovilidad.
+                # No entra a self._history ni a _detect_fall / _track_postfall,
+                # que siguen corriendo sobre los mismos frames que antes.
+                kpts, box, kpts_conf = weak
+                sample = build_pose_sample(kpts, box, w, h, timestamp_s, kpts_conf=kpts_conf)
+                sample.weak = True
+                self._push_immobility_sample(sample)
+                events.extend(self._track_immobility(sample))
             return events
         kpts, box, kpts_conf = detection
         self.last_detection = (kpts, box)
@@ -287,9 +336,7 @@ class FallImmobilityDetector:
         sample = build_pose_sample(kpts, box, w, h, timestamp_s, kpts_conf=kpts_conf)
         self._history.append(sample)
         self._trim_history(sample.timestamp_s)
-        self._immobility_history.append(sample)
-        while self._immobility_history and sample.timestamp_s - self._immobility_history[0].timestamp_s > IMMOBILITY_HISTORY_SECONDS:
-            self._immobility_history.popleft()
+        self._push_immobility_sample(sample)
         self._heights_history.append((sample.timestamp_s, sample.bbox_height_frac))
         while self._heights_history and sample.timestamp_s - self._heights_history[0][0] > FALL_BASELINE_WINDOW_S + FALL_CONFIRM_WINDOW_S:
             self._heights_history.popleft()
@@ -320,6 +367,60 @@ class FallImmobilityDetector:
         events.extend(self._track_immobility(sample))
         events.extend(self._track_postfall(sample))
         return events
+
+    def _detect(self, image: np.ndarray, timestamp_s: float):
+        """Detección con histéresis. Devuelve `(detection, weak)`, a lo sumo
+        uno de los dos distinto de None, ambos con la forma de `detect_person`.
+
+        `detection` es lo mismo que devolvería `detect_person`: la caja más
+        grande entre las de confianza >= PERSON_BOX_CONFIDENCE, descartada si
+        la confianza promedio de keypoints no llega a MIN_KEYPOINT_CONFIDENCE.
+        Si además su confianza de caja llega a TRACK_CREATE_BOX_CONFIDENCE,
+        fija el ancla del seguimiento.
+
+        `weak` aparece solo si hay un ancla vigente y no hubo detección normal
+        en este frame: la caja de confianza >= TRACK_KEEP_BOX_CONFIDENCE que
+        más solapa con el ancla (IoU >= TRACK_KEEP_MIN_IOU). Una caja débil en
+        cualquier otro lugar del frame se ignora — por eso esto no "detecta
+        cualquier cosa" como sí lo haría bajar el umbral global.
+        """
+        result = self._model(image, verbose=False, conf=TRACK_KEEP_BOX_CONFIDENCE)[0]
+        if result.keypoints is None or len(result.keypoints.xy) == 0:
+            return None, None
+        boxes = result.boxes.xyxy.cpu().numpy()
+        box_conf = result.boxes.conf.cpu().numpy()
+
+        strong = np.flatnonzero(box_conf >= PERSON_BOX_CONFIDENCE)
+        if len(strong):
+            areas = (boxes[strong, 2] - boxes[strong, 0]) * (boxes[strong, 3] - boxes[strong, 1])
+            idx = int(strong[areas.argmax()])
+            detection = _extract(result, boxes, idx)
+            kpts_conf = detection[2]
+            if kpts_conf is None or float(kpts_conf.mean()) >= MIN_KEYPOINT_CONFIDENCE:
+                if box_conf[idx] >= TRACK_CREATE_BOX_CONFIDENCE:
+                    self._anchor_box = detection[1]
+                    self._anchor_t = self._track_last_t = timestamp_s
+                elif self._anchor_box is not None and _iou(detection[1], self._anchor_box) >= TRACK_KEEP_MIN_IOU:
+                    self._track_last_t = timestamp_s
+                return detection, None
+
+        if (
+            self._anchor_box is None
+            or timestamp_s - self._track_last_t > TRACK_KEEP_MAX_GAP_S
+            or timestamp_s - self._anchor_t > TRACK_WEAK_MAX_S
+        ):
+            return None, None
+        overlaps = np.array([_iou(b, self._anchor_box) for b in boxes])
+        best = int(overlaps.argmax())
+        if overlaps[best] < TRACK_KEEP_MIN_IOU:
+            return None, None
+        self._track_last_t = timestamp_s
+        return None, _extract(result, boxes, best)
+
+    def _push_immobility_sample(self, sample: PoseSample) -> None:
+        self._immobility_history.append(sample)
+        while self._immobility_history and sample.timestamp_s - self._immobility_history[0].timestamp_s > IMMOBILITY_HISTORY_SECONDS:
+            self._immobility_history.popleft()
 
     def _trim_history(self, now: float) -> None:
         while self._history and now - self._history[0].timestamp_s > self._history_seconds:
@@ -408,7 +509,23 @@ class FallImmobilityDetector:
         from .posture import classify_posture  # import local: posture.py importa PoseSample de este módulo
 
         events: list[dict] = []
-        rate = self._smoothed_displacement_rate(sample)
+        rate = None if sample.weak else self._smoothed_displacement_rate(sample)
+        if rate is None:
+            # Sin tasa por keypoints (muestra débil, o muestra normal sin otra
+            # normal reciente contra la cual comparar): se cae a la tasa por
+            # caja, que solo puede SOSTENER la cuenta de quietud. Si da
+            # "se mueve" se ignora en vez de resetear — la caja débil tiembla
+            # sola — salvo que no haya ninguna muestra débil en juego, que es
+            # el caso de siempre (hueco real de detección => reset).
+            weak_rate = self._weak_displacement_rate(sample)
+            if weak_rate is None:
+                if sample.weak:
+                    return events
+            elif weak_rate > IMMOBILITY_MOVEMENT_THRESHOLD and (
+                sample.weak or any(s.weak for s in self._immobility_history)
+            ):
+                return events
+            rate = weak_rate
         moving = rate is None or rate > IMMOBILITY_MOVEMENT_THRESHOLD
         self._posture_history.append(classify_posture(sample))
 
@@ -503,14 +620,38 @@ class FallImmobilityDetector:
         persona se quedó quieta 213s medidos offline, el detector end-to-end
         nunca disparó — el motivo no era que la persona se moviera, era que
         un solo hueco de detección de ~4s (nada anómalo) volaba el contador."""
-        if not self._immobility_history:
+        # Solo muestras normales: las débiles (ver _detect) comparten el
+        # historial pero no tienen keypoints confiables — se miden aparte, por
+        # caja, en _weak_displacement_rate.
+        ref = self._reference_sample(sample, [s for s in self._immobility_history if not s.weak])
+        if ref is None:
+            return None
+        return float(np.nanmean(np.abs(sample.keypoints - ref.keypoints))) / (sample.timestamp_s - ref.timestamp_s)
+
+    def _weak_displacement_rate(self, sample: PoseSample) -> float | None:
+        """Como `_smoothed_displacement_rate` pero midiendo con la caja y
+        contra cualquier muestra del historial, normal o débil. En una
+        detección débil los keypoints no sirven (Ultralytics además pone en
+        (0, 0) los de confianza < 0.5, lo que daría un desplazamiento
+        artificialmente bajo). Misma escala que por keypoints (mediana
+        caminando: 0.059 por caja vs. 0.059 por keypoints), así que vale el
+        mismo umbral — pero la caja débil tiembla más, por eso esta tasa solo
+        se usa para sostener la cuenta de quietud, nunca para resetearla (ver
+        _track_immobility)."""
+        ref = self._reference_sample(sample, self._immobility_history)
+        if ref is None or sample.bbox is None or ref.bbox is None:
+            return None
+        return float(np.mean(np.abs(sample.bbox - ref.bbox))) / (sample.timestamp_s - ref.timestamp_s)
+
+    @staticmethod
+    def _reference_sample(sample: PoseSample, history) -> PoseSample | None:
+        if not history:
             return None
         target_t = sample.timestamp_s - IMMOBILITY_SAMPLE_WINDOW_S
-        ref = min(self._immobility_history, key=lambda s: abs(s.timestamp_s - target_t))
-        dt = sample.timestamp_s - ref.timestamp_s
-        if dt < IMMOBILITY_SAMPLE_WINDOW_S / 2:
+        ref = min(history, key=lambda s: abs(s.timestamp_s - target_t))
+        if sample.timestamp_s - ref.timestamp_s < IMMOBILITY_SAMPLE_WINDOW_S / 2:
             return None
-        return float(np.nanmean(np.abs(sample.keypoints - ref.keypoints))) / dt
+        return ref
 
     def _majority_posture(self) -> str:
         if not self._posture_history:
