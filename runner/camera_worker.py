@@ -65,6 +65,24 @@ _EATING_CONFIRM_THRESHOLD = 0.55
 _FALL_TEMPORAL_CONFIRM = 0.45
 _FALL_TEMPORAL_REJECT = 0.15
 
+# Mitigación de falsas alarmas al acostarse: APAGADA (los dos en 0 = el
+# comportamiento de siempre). Ver vision/README.md, "Actualización 2026-10-18".
+#
+# _SKELETON_GAP_TOLERANCE_S: segundos sin detección que el buffer de esqueleto
+# tolera antes de vaciarse (ver SkeletonSequenceBuffer.mark_missing).
+# _FALL_CLIP_MIN_PROBE_LOGIT: logit mínimo del probe de CLIP para confirmar una
+# caída cuando decide CLIP (sin ventana o temporal indeciso).
+#
+# Con yolo11s-pose, 0.6 s y 0.3 bajaban las alertas falsas sobre clips cortos de
+# acostarse (12 -> 7), pero en la cadena completa (evaluate_falls.py --temporal
+# --clip, 292 clips) las falsas alertas suben de 9 a 27, 17 de ellas en los
+# videos continuos de ToyotaSmarthome_FP (0 con la configuración vigente). Con
+# yolo11n-pose la tolerancia sola también empeora (14 -> 17 sobre los clips de
+# acostarse). El temporal y el probe se entrenaron con esqueletos de yolo11n:
+# volver a medir si se re-entrenan.
+_SKELETON_GAP_TOLERANCE_S = 0.0
+_FALL_CLIP_MIN_PROBE_LOGIT = 0.0
+
 # ClipActivityClassifier se importa como paquete desde la raíz del proyecto
 # (disponible porque python -m runner agrega el root al sys.path).
 try:
@@ -158,7 +176,7 @@ class CameraWorker(threading.Thread):
             (self._clip is not None and skeleton_classifier is not None) or self._fall_temporal is not None
         )
         if need_buffer:
-            self._skeleton_buffer = SkeletonSequenceBuffer()
+            self._skeleton_buffer = SkeletonSequenceBuffer(gap_tolerance_s=_SKELETON_GAP_TOLERANCE_S)
         if self._clip is not None:
             if _SKELETON_AVAILABLE and skeleton_classifier is not None:
                 self._hybrid = HybridActivityClassifier(
@@ -280,7 +298,7 @@ class CameraWorker(threading.Thread):
 
                 # ── Buffer de esqueleto para fusion/ (mismo criterio que el
                 # historial de inmovilidad de vision/: push por frame con
-                # detección, reset en cada hueco — no interpolar sobre el
+                # detección, reset en huecos de más de _SKELETON_GAP_TOLERANCE_S — no interpolar sobre el
                 # vacío, ver keypoint_sequence.py) ─
                 if self._skeleton_buffer is not None:
                     if detector.last_detection is not None:
@@ -296,10 +314,13 @@ class CameraWorker(threading.Thread):
                         )
                         self._skeleton_buffer.push(frame.timestamp_s, feat)
                     else:
-                        self._skeleton_buffer.reset()
+                        self._skeleton_buffer.mark_missing(frame.timestamp_s)
 
                 if self._motion is not None:
-                    if detector.last_detection is not None:
+                    # person_present y no last_detection: una persona acostada
+                    # sostenida solo por detección débil (ver _detect en
+                    # vision/src/pose_pipeline.py) no debe dormir el pipeline.
+                    if detector.person_present:
                         self._last_person_seen_ts = frame.timestamp_s
                     elif frame.timestamp_s - self._last_person_seen_ts > self._motion_absence_timeout:
                         self._sleep()
@@ -459,7 +480,7 @@ class CameraWorker(threading.Thread):
             return True, 0.0
         _, box = detector.last_detection
         crop = crop_to_person(frame.image, box)
-        return self._fall_confirm.confirm(crop)
+        return self._fall_confirm.confirm(crop, min_probe_logit=_FALL_CLIP_MIN_PROBE_LOGIT)
 
     def _confirm_fall_event(self, raw: dict, frame, detector) -> bool:
         """Segunda etapa de un evento de caída de evidencia completa.

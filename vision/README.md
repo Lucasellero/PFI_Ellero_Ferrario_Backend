@@ -24,7 +24,9 @@
 - **Bloqueante identificado, no resuelto**: `yolo11n-pose` no detecta bien a una
   persona acostada en sillón visto desde cámara ancha/elevada (94.5% de frames sin
   ninguna detección) — limita la rama "acostado" de inmovilidad en ese ángulo de
-  cámara específico. Es un límite del modelo de pose, no de la lógica del detector.
+  cámara específico. Es un límite del modelo de pose, no de la lógica del detector. Desde
+  2026-10-18, la histéresis de detección recupera parte de esos frames para inmovilidad
+  (ver "Actualización 2026-10-18").
 
 ## Actualización 2026-09-01 — guardas de encuadre + clasificador temporal de caída
 
@@ -133,6 +135,84 @@ bajan de 91 a 9 y las caídas con algún evento pasan de 133 a 132.
 - No se simula el gate de movimiento del runner ni el paso por la nube.
 - "Caída detectada" es por clip: algún evento dentro del tramo anotado.
 - `Kaggle` sigue fuera (su `Fall.csv` está pendiente).
+
+## Actualización 2026-10-18 — histéresis de detección; `yolo11s-pose` no se adopta
+
+### Histéresis de detección
+
+Ataca el bloqueante de arriba (persona acostada en un sillón vista desde cámara ancha/elevada:
+YOLO la pierde buena parte del tiempo). Bajar el umbral global de caja la recupera, pero
+multiplica las cajas espurias. `FallImmobilityDetector._detect` usa en cambio dos umbrales:
+
+- una detección normal (caja ≥ `PERSON_BOX_CONFIDENCE` = 0,25, como siempre) con caja ≥
+  `TRACK_CREATE_BOX_CONFIDENCE` = 0,5 fija un **ancla**;
+- sin detección normal en el frame, una caja **débil** (≥ `TRACK_KEEP_BOX_CONFIDENCE` = 0,05)
+  mantiene el seguimiento solo si solapa con el ancla (IoU ≥ 0,5), hasta 3 s sin ninguna caja
+  aceptada y como mucho 60 s desde la última vez que se fijó el ancla.
+
+Las detecciones débiles alimentan **solo** el tracking de inmovilidad (con la tasa de
+desplazamiento medida por caja, que puede sostener la cuenta de quietud pero no resetearla) y
+`person_present`, que usa el gate de movimiento del runner para no dormir la cámara con alguien
+acostado. Nunca entran a la heurística de caída: `last_detection` sigue en `None`.
+
+`sweep_detection_hysteresis.py --model <modelo> --ref yolo11m-pose.pt`, sobre 32 clips de
+`acostado`/`acostarse` (2.100 frames a 5 fps) y, como control de cajas espurias, 40 de `mirar
+tele` y 60 de `caminar`. "Coincide con la referencia" = la caja débil aceptada solapa (IoU ≥ 0,3)
+con donde `yolo11m-pose` ve a la persona. "Fantasma" = cuánto sobrevive el seguimiento si la
+persona desaparece y solo quedan cajas débiles de otro clip (400 pruebas).
+
+| `yolo11n-pose` | Frames con persona (acostado) | Cajas espurias cada 1000 frames (tele / caminar) |
+|---|---|---|
+| Umbral global 0,25 (sin cambios) | 44,8 % de frames con alguna caja; 41,7 % que pasan el filtro de keypoints | 34,6 / 55,7 |
+| Umbral global 0,05 | 92,8 % | 236,4 / 376,5 |
+| **Histéresis integrada** | **41,7 % + 15,8 % débil = 57,5 %** | ninguna nueva (solo acepta cajas sobre el ancla) |
+
+Con la histéresis integrada, el 89 % de las cajas débiles verificables coinciden con la
+referencia (93/104), y el seguimiento fantasma dura como máximo 29,2 s (más de 5 s en el 0,5 %
+de las pruebas). Variantes que aceptan más frames (IoU 0,3, o 15 s de hueco) dejan seguimientos
+fantasma de hasta ~70 s. La primera versión (crear el ancla con 0,25 y encadenar débil con
+débil) llegaba a 82 % de frames, pero en el clip más largo era un seguimiento colgado de una
+planta.
+
+Con `yolo11s-pose` la histéresis casi no suma: 43,4 % → 47,5 % (75 % de coincidencia, fantasma
+máximo 4,8 s), porque ese modelo, o detecta a la persona, o no le da ni una caja débil.
+
+**Efecto sobre caídas: ninguno**, como se buscaba. `evaluate_falls.py --temporal --clip --fps-cap
+10` con la histéresis da exactamente los números de la actualización 2026-10-13 (120/158 con
+alerta, 9 falsas alertas). El efecto sobre la inmovilidad de punta a punta (el bloqueante de los 3
+de 4 clips de `ToyotaSmarthome_FP`) **no está medido**.
+
+### `yolo11s-pose` + tolerancia de huecos + umbral de CLIP: se midió y empeora
+
+Con `yolo11s-pose`, dos cambios en `runner/camera_worker.py` bajaban las falsas alarmas sobre
+clips cortos de acostarse/levantarse (12 → 7): que el buffer de esqueleto tolere huecos de
+detección de hasta 0,6 s (`_SKELETON_GAP_TOLERANCE_S`) y exigir logit ≥ 0,3 al probe de CLIP
+(`_FALL_CLIP_MIN_PROBE_LOGIT`). En la cadena completa, sobre los mismos 292 clips de arriba
+(`evaluate_falls.py --temporal --clip --fps-cap 10 --pose-model yolo11s-pose.pt
+--gap-tolerance-s 0.6 --clip-min-logit 0.3`):
+
+| | Vigente (`yolo11n`) | `yolo11s` + 0,6 s + 0,3 |
+|---|---|---|
+| Caídas con alerta | 120 de 158 | 121 de 158 |
+| Solo como sospecha | 12 | 8 |
+| Sin ningún evento | 26 | 29 |
+| **Falsas alertas finales** | **9** | **27** |
+| — en `ToyotaSmarthome_FP` (1,40 h continuas) | **0** | **17** |
+| — CAUCAFall / URFD / ToyotaSmarthome | 6 / 2 / 1 | 5 / 3 / 2 |
+
+Detecta lo mismo y triplica las falsas alertas, casi todas en los videos domésticos continuos,
+que son los más parecidos a producción. **No se adopta**: `cameras.yaml` sigue con
+`yolo11n-pose.pt` y las dos constantes quedan en 0 (el comportamiento de siempre). Con
+`yolo11n-pose`, la tolerancia sola tampoco servía (14 → 17 sobre los clips de acostarse).
+
+Causa probable, sin verificar: el clasificador temporal y el probe de CLIP se entrenaron con
+esqueletos y eventos de `yolo11n` (incluidos estos 4 videos como negativos), así que con
+`yolo11s` reciben entradas distintas de las que conocen. Para volver a probar `yolo11s` habría
+que re-entrenar las dos etapas con su salida (`fusion/extract_falls.py --pose-model
+yolo11s-pose.pt`) y repetir esta medición.
+
+`evaluate_falls.py` suma `--pose-model`, `--gap-tolerance-s` y `--clip-min-logit` para replicar
+esas opciones del runner; sin ellas corre igual que antes.
 
 ## Estructura
 

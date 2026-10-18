@@ -124,16 +124,17 @@ class FallConfirmationClassifier:
         # [0] = embedding de texto promedio de FALL_PROMPTS, [1] = de NOTFALL_PROMPTS
         self._text_features = np.load(features_path)
 
-    def confirm(self, person_crop_bgr: np.ndarray) -> tuple[bool, float]:
+    def confirm(self, person_crop_bgr: np.ndarray, min_probe_logit: float = 0.0) -> tuple[bool, float]:
         """Devuelve (confirmado, margin). `person_crop_bgr` ya debe estar
         recortado a la persona (ver `crop_to_person` en `clip_classifier.py`).
 
-        Con probe, `margin` es el logit de la regresión logística (>0 confirma).
+        Con probe, `margin` es el logit de la regresión logística (confirma si
+        supera `min_probe_logit`; 0 = frontera de decisión del probe).
         Con zero-shot, es la diferencia de similitud fall vs. notfall."""
         image_features = self._image_classifier.encode_image(person_crop_bgr)
         if self._probe_W is not None:
             logit = float(image_features @ self._probe_W + self._probe_b)
-            return logit > 0.0, logit
+            return logit > min_probe_logit, logit
         fall_score = float(image_features @ self._text_features[0])
         notfall_score = float(image_features @ self._text_features[1])
         margin = fall_score - notfall_score
