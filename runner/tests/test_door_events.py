@@ -170,10 +170,12 @@ def correr(camera_worker, tmp_path, monkeypatch):
             def __init__(self, model_path=None):
                 self.last_detection = None
                 self.last_detection_conf = None
+                self.person_present = False
 
             def process_frame(self, image, timestamp_s):
                 punto = posicion(int(timestamp_s))
                 self.last_detection = None if punto is None else (_esqueleto(*punto), np.array([0, 0, 64, 48]))
+                self.person_present = self.last_detection is not None
                 return []
 
         reloj = {"t": -1}

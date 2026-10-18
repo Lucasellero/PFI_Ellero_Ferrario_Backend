@@ -116,16 +116,22 @@ _TEMPORAL_CONFIRM = 0.45  # fall_score >= esto => el temporal confirma sin consu
 _TEMPORAL_REJECT = 0.15  # fall_score <= esto => el temporal descarta el evento geométrico (mismo criterio que runner/camera_worker.py::_FALL_TEMPORAL_REJECT)
 
 
-def run_detector(video_path: str, temporal=None, fps_cap: float | None = None, clip=None, stats: dict | None = None) -> list[dict]:
+def run_detector(
+    video_path: str, temporal=None, fps_cap: float | None = None, clip=None, stats: dict | None = None,
+    pose_model: str | None = None, gap_tolerance_s: float = 0.0, clip_min_logit: float = 0.0,
+) -> list[dict]:
     """Eventos de caída del clip. Con `clip`, a cada evento 'full' se le adjunta el margen de la
     confirmación CLIP (`clip_confirmation_margin`); cuál etapa decide lo resuelve `_decision`.
     `stats` (opcional) recibe la duración del clip y las escaladas por inmovilidad de una
-    sospecha (`immobility` con `trigger: post_fall_sospecha`)."""
-    det = FallImmobilityDetector()
+    sospecha (`immobility` con `trigger: post_fall_sospecha`).
+    `pose_model`, `gap_tolerance_s` y `clip_min_logit` replican `pose_model` de cameras.yaml,
+    `_SKELETON_GAP_TOLERANCE_S` y `_FALL_CLIP_MIN_PROBE_LOGIT` de runner/camera_worker.py; los
+    defaults son el comportamiento previo a esas opciones."""
+    det = FallImmobilityDetector(model_path=str(_ROOT / pose_model)) if pose_model else FallImmobilityDetector()
     buffer = frame_features = None
     if temporal is not None:
         clf, BufferCls, frame_features = temporal
-        buffer = BufferCls()
+        buffer = BufferCls(gap_tolerance_s=gap_tolerance_s)
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     # Subsampleo opcional: en clips muy largos (ToyotaSmarthome_FP, ~1600s)
@@ -156,7 +162,7 @@ def run_detector(video_path: str, temporal=None, fps_cap: float | None = None, c
                     ps.aspect_ratio, ps.torso_angle_deg, ps.hip_y, ps.bbox_height_frac,
                 ))
             else:
-                buffer.reset()
+                buffer.mark_missing(t)
             for e in raw:
                 if e["event_type"] != "fall" or e["metadata"].get("evidence") == "partial":
                     continue
@@ -169,7 +175,7 @@ def run_detector(video_path: str, temporal=None, fps_cap: float | None = None, c
             confirmador, crop_to_person = clip
             for e in raw:
                 if e["event_type"] == "fall" and e["metadata"].get("evidence") != "partial":
-                    confirmed, margin = confirmador.confirm(crop_to_person(img, det.last_detection[1]))
+                    confirmed, margin = confirmador.confirm(crop_to_person(img, det.last_detection[1]), min_probe_logit=clip_min_logit)
                     e["metadata"]["clip_confirmation_margin"] = round(margin, 4)
                     e["metadata"]["clip_confirmed"] = bool(confirmed)
         events.extend(raw)
@@ -214,6 +220,9 @@ def main() -> None:
     ap.add_argument("--fps-cap", type=float, default=None, help="Subsamplear a este FPS (para clips largos; el timestamp real se mantiene)")
     ap.add_argument("--tau", type=float, default=_TEMPORAL_REJECT, help=f"fall_score <= tau => el temporal descarta el evento (default {_TEMPORAL_REJECT})")
     ap.add_argument("--dump-scores", default=None, help="CSV con (video, t, evidence, temporal_score, tipo) por evento de caída — para barrer tau offline")
+    ap.add_argument("--pose-model", default=None, help="Pesos de YOLO-pose relativos a la raíz del repo (ej. yolo11s-pose.pt); usar el mismo que `pose_model` en cameras.yaml. Default: el del detector (yolo11n-pose.pt)")
+    ap.add_argument("--gap-tolerance-s", type=float, default=0.0, help="Ver SkeletonSequenceBuffer.mark_missing; el runner usa _SKELETON_GAP_TOLERANCE_S")
+    ap.add_argument("--clip-min-logit", type=float, default=0.0, help="Logit mínimo del probe de CLIP para confirmar; el runner usa _FALL_CLIP_MIN_PROBE_LOGIT")
     a = ap.parse_args()
     only = set(a.only.split(",")) if a.only else None
     temporal = _load_temporal() if a.temporal else None
@@ -250,7 +259,10 @@ def main() -> None:
 
     for case in cases:
         stats: dict = {}
-        all_events = run_detector(case["video"], temporal=temporal, fps_cap=a.fps_cap, clip=clip, stats=stats)
+        all_events = run_detector(
+            case["video"], temporal=temporal, fps_cap=a.fps_cap, clip=clip, stats=stats,
+            pose_model=a.pose_model, gap_tolerance_s=a.gap_tolerance_s, clip_min_logit=a.clip_min_logit,
+        )
         total_s += stats["duration_s"]
         nonfall_s += sum(min(e, stats["duration_s"]) - s for s, e in case["nonfall_segments"] if min(e, stats["duration_s"]) > s)
         try:

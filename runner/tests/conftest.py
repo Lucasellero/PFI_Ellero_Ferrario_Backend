@@ -18,9 +18,11 @@ class DetectorFalso:
     def __init__(self, model_path: str | None = None):
         self.last_detection = None
         self.last_detection_conf = None
+        self.person_present = False
 
     def process_frame(self, image, timestamp_s: float) -> list[dict]:
         self.last_detection = ("kpts", "box") if type(self).hay_persona(timestamp_s) else None
+        self.person_present = self.last_detection is not None
         return []
 
 
