@@ -109,9 +109,11 @@ class SkeletonSequenceBuffer:
         window_s: float = 2.0,
         n_frames: int = 16,
         retention_s: float | None = None,
+        gap_tolerance_s: float = 0.0,
     ) -> None:
         self.window_s = window_s
         self.n_frames = n_frames
+        self.gap_tolerance_s = gap_tolerance_s
         self._retention_s = retention_s if retention_s is not None else window_s * 1.5
         self._history: deque[_SkeletonFrame] = deque()
 
@@ -119,6 +121,15 @@ class SkeletonSequenceBuffer:
         self._history.append(_SkeletonFrame(timestamp_s, features))
         while self._history and timestamp_s - self._history[0].timestamp_s > self._retention_s:
             self._history.popleft()
+
+    def mark_missing(self, timestamp_s: float) -> None:
+        """Frame sin detección: resetea solo si el hueco ya supera
+        `gap_tolerance_s` (0 = resetear al primer frame perdido, el
+        comportamiento histórico). Con tolerancia, un parpadeo corto del
+        detector no tira los ~2s de historia; `build_window` sigue exigiendo
+        `min_coverage`, así que un hueco largo igual deja sin ventana."""
+        if self._history and timestamp_s - self._history[-1].timestamp_s > self.gap_tolerance_s:
+            self._history.clear()
 
     def reset(self) -> None:
         """Limpiar al perder la detección de la persona (o al pasar a otro

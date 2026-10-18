@@ -24,12 +24,22 @@ Uso:
     python extract_falls.py <carpeta_videos> [--fps-cap 8] [--window-s 2.0]
         [--n-frames 16] [--post-fall-s 3.0] [--max-normal-per-video 40]
         [--only CAUCAFall,URFD] [--skip ToyotaSmarthome_FP] [-o fall_windows.npz]
+        [--pose-model yolo11s-pose.pt] [--gap-tolerance-s 0.6]
+        [--negative-dirs "acostarse,levantarse (acostado)"]
+
+`--negative-dirs`: carpetas de clips de actividad SIN `Fall.csv` (una acción
+por clip, ninguna caída) que se suman enteras como `normal`, con hard-negative
+mining igual que el resto. Es el caso que `ToyotaSmarthome_FP` no cubre:
+acostarse/levantarse ("bajar rápido y quedar horizontal" sin ser caída). Su
+grupo para el split es la PERSONA (`_pNN_` en el nombre), no el video — ver
+`groups` en el `.npz` y `train_fall_temporal.py`.
 """
 from __future__ import annotations
 
 import argparse
 import csv as csv_mod
 import pickle
+import re
 import sys
 from pathlib import Path
 
@@ -56,13 +66,20 @@ parser.add_argument("--max-normal-per-video", type=int, default=40, help="Tope d
 parser.add_argument("--mine-hard-negatives", action="store_true", help="Además de las 'normal' aleatorias, agregar como 'normal' las ventanas en los instantes donde la heurística geométrica de vision/ dispara un FP (tramo no-caída) — sin tope. Ataca el caso que el modelo no aprende a rechazar (sillón bajo = firma de caída).")
 parser.add_argument("--only", default=None, help="Lista separada por comas de subcarpetas a incluir (default: todas)")
 parser.add_argument("--skip", default=None, help="Lista separada por comas de subcarpetas a excluir")
+parser.add_argument("--pose-model", default="yolo11n-pose.pt", help="Pesos de YOLO-pose (relativo a la raíz del repo). Usar el mismo que `pose_model` en cameras.yaml")
+parser.add_argument("--gap-tolerance-s", type=float, default=0.0, help="Ver SkeletonSequenceBuffer.mark_missing — misma regla que runner/camera_worker.py")
+parser.add_argument("--negative-dirs", default=None, help="Lista separada por comas de subcarpetas de clips sin Fall.csv que se toman enteras como 'normal' (grupo = persona)")
 parser.add_argument("--no-cache", action="store_true", help="Ignora fall_windows_cache.pkl y recomputa")
 parser.add_argument("-o", "--output", default=None, help="Default: fusion/fall_windows.npz")
 args = parser.parse_args()
 
 VIDEOS_DIR = Path(args.videos_dir)
 OUT_PATH = Path(args.output) if args.output else Path(__file__).parent / "fall_windows.npz"
-CACHE_PATH = Path(__file__).parent / "fall_windows_cache.pkl"
+# Un cache por archivo de salida: permite extraer en paralelo con dos modelos
+# de pose sin que un proceso pise el pickle del otro.
+CACHE_PATH = Path(__file__).parent / "fall_windows_cache.pkl" if args.output is None else OUT_PATH.with_name(f"{OUT_PATH.stem}_cache.pkl")
+NEGATIVE_DIRS = [d.strip() for d in args.negative_dirs.split(",")] if args.negative_dirs else []
+PERSON_RE = re.compile(r"_(p\d+)_")
 ONLY = set(args.only.split(",")) if args.only else None
 SKIP = set(args.skip.split(",")) if args.skip else set()
 
@@ -74,7 +91,7 @@ if CACHE_PATH.exists() and not args.no_cache:
 def cache_key(path: Path) -> tuple:
     # "v2": el cache ahora guarda también los timestamps donde la heurística
     # geométrica dispara (para --mine-hard-negatives).
-    return ("v2", str(path), round(path.stat().st_mtime, 1), args.fps_cap, args.window_s, args.n_frames, args.min_coverage)
+    return ("v3", str(path), round(path.stat().st_mtime, 1), args.fps_cap, args.window_s, args.n_frames, args.min_coverage, args.pose_model, args.gap_tolerance_s)
 
 
 def label_for(t: float, fall_segments, nonfall_segments) -> str | None:
@@ -107,8 +124,8 @@ def extract_video(path: Path) -> dict:
     cap = cv2.VideoCapture(str(path))
     native_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     stride = max(1, round(native_fps / args.fps_cap))
-    buffer = SkeletonSequenceBuffer(window_s=args.window_s, n_frames=args.n_frames)
-    det = FallImmobilityDetector(model_path=str(ROOT / "yolo11n-pose.pt"))
+    buffer = SkeletonSequenceBuffer(window_s=args.window_s, n_frames=args.n_frames, gap_tolerance_s=args.gap_tolerance_s)
+    det = FallImmobilityDetector(model_path=str(ROOT / args.pose_model))
 
     candidates: list[tuple[float, np.ndarray]] = []
     fire_times: list[float] = []
@@ -135,7 +152,7 @@ def extract_video(path: Path) -> dict:
                 if window is not None:
                     candidates.append((t, window))
             else:
-                buffer.reset()
+                buffer.mark_missing(t)
         frame_idx += 1
     cap.release()
 
@@ -145,12 +162,60 @@ def extract_video(path: Path) -> dict:
 
 def main() -> None:
     csv_paths = sorted(VIDEOS_DIR.glob("**/Fall.csv"))
-    if not csv_paths:
+    if not csv_paths and not NEGATIVE_DIRS:
         raise SystemExit(f"No se encontró ningún Fall.csv bajo {VIDEOS_DIR}")
 
-    rows_window, rows_label, rows_video, rows_ts, rows_dataset = [], [], [], [], []
+    rows_window, rows_label, rows_video, rows_ts, rows_dataset, rows_group = [], [], [], [], [], []
     rows_hard: list[int] = []   # índices de ventanas que son hard negatives minados
     rng = np.random.default_rng(7)
+
+    def add_video(video: Path, dataset: str, group: str, fall_segments, nonfall_segments, display: str) -> None:
+        res = extract_video(video)
+        candidates, fire_times = res["candidates"], res["fire_times"]
+        per_video_normal = []
+        n_pos = 0
+        for t, window in candidates:
+            lbl = label_for(t, fall_segments, nonfall_segments)
+            if lbl is None:
+                continue
+            if lbl == "normal":
+                per_video_normal.append((t, window))
+                continue
+            rows_window.append(window); rows_label.append(lbl)
+            rows_video.append(video.stem); rows_ts.append(t); rows_dataset.append(dataset); rows_group.append(group)
+            n_pos += 1
+
+        # Subsamplear los 'normal' aleatorios de este video al tope configurado.
+        if len(per_video_normal) > args.max_normal_per_video:
+            idx = rng.choice(len(per_video_normal), args.max_normal_per_video, replace=False)
+            per_video_normal = [per_video_normal[i] for i in sorted(idx)]
+        for t, window in per_video_normal:
+            rows_window.append(window); rows_label.append("normal")
+            rows_video.append(video.stem); rows_ts.append(t); rows_dataset.append(dataset); rows_group.append(group)
+
+        # Hard negatives: ventana en cada instante donde la heurística
+        # geométrica dispara DENTRO de un tramo no-caída (o clip NoFall
+        # entero). Es el caso que el modelo no aprende con muestreo
+        # aleatorio: la geometría dispara justo en el momento más
+        # parecido a una caída (bbox colapsa + pico de velocidad al
+        # dejarse caer en un sillón bajo).
+        n_hard = 0
+        if args.mine_hard_negatives and candidates:
+            cand_ts = np.array([t for t, _ in candidates])
+            for ft in fire_times:
+                if label_for(ft, fall_segments, nonfall_segments) != "normal":
+                    continue  # el disparo cae en un tramo de caída real: no es hard negative
+                j = int(np.abs(cand_ts - ft).argmin())
+                if abs(cand_ts[j] - ft) > args.window_s:
+                    continue  # sin ventana cercana al disparo
+                t, window = candidates[j]
+                rows_window.append(window); rows_label.append("normal")
+                rows_video.append(video.stem); rows_ts.append(t); rows_dataset.append(dataset); rows_group.append(group)
+                rows_hard.append(len(rows_window) - 1)
+                n_hard += 1
+
+        hn = f" (+{n_hard} hard-neg)" if n_hard else ""
+        print(f"{display}: {n_pos} caída, {len(per_video_normal)} normal{hn}", flush=True)
 
     for csv_path in csv_paths:
         # dataset = nombre de la subcarpeta de primer nivel bajo videos/
@@ -176,52 +241,14 @@ def main() -> None:
             fall_segments = [(s[1], s[2]) for s in segments if s[3]]
             nonfall_segments = [(s[1], s[2]) for s in segments if not s[3]]
 
-            res = extract_video(video)
-            candidates, fire_times = res["candidates"], res["fire_times"]
-            per_video_normal = []
-            n_pos = 0
-            for t, window in candidates:
-                lbl = label_for(t, fall_segments, nonfall_segments)
-                if lbl is None:
-                    continue
-                if lbl == "normal":
-                    per_video_normal.append((t, window))
-                    continue
-                rows_window.append(window); rows_label.append(lbl)
-                rows_video.append(video.stem); rows_ts.append(t); rows_dataset.append(dataset)
-                n_pos += 1
+            add_video(video, dataset, video.stem, fall_segments, nonfall_segments, f"{dataset}/{fname}")
 
-            # Subsamplear los 'normal' aleatorios de este video al tope configurado.
-            if len(per_video_normal) > args.max_normal_per_video:
-                idx = rng.choice(len(per_video_normal), args.max_normal_per_video, replace=False)
-                per_video_normal = [per_video_normal[i] for i in sorted(idx)]
-            for t, window in per_video_normal:
-                rows_window.append(window); rows_label.append("normal")
-                rows_video.append(video.stem); rows_ts.append(t); rows_dataset.append(dataset)
-
-            # Hard negatives: ventana en cada instante donde la heurística
-            # geométrica dispara DENTRO de un tramo no-caída (o clip NoFall
-            # entero). Es el caso que el modelo no aprende con muestreo
-            # aleatorio: la geometría dispara justo en el momento más
-            # parecido a una caída (bbox colapsa + pico de velocidad al
-            # dejarse caer en un sillón bajo).
-            n_hard = 0
-            if args.mine_hard_negatives and candidates:
-                cand_ts = np.array([t for t, _ in candidates])
-                for ft in fire_times:
-                    if label_for(ft, fall_segments, nonfall_segments) != "normal":
-                        continue  # el disparo cae en un tramo de caída real: no es hard negative
-                    j = int(np.abs(cand_ts - ft).argmin())
-                    if abs(cand_ts[j] - ft) > args.window_s:
-                        continue  # sin ventana cercana al disparo
-                    t, window = candidates[j]
-                    rows_window.append(window); rows_label.append("normal")
-                    rows_video.append(video.stem); rows_ts.append(t); rows_dataset.append(dataset)
-                    rows_hard.append(len(rows_window) - 1)
-                    n_hard += 1
-
-            hn = f" (+{n_hard} hard-neg)" if n_hard else ""
-            print(f"{dataset}/{fname}: {n_pos} caída, {len(per_video_normal)} normal{hn}", flush=True)
+    # Clips de actividad sin Fall.csv: todo el clip es 'normal'.
+    for folder_name in NEGATIVE_DIRS:
+        for video in sorted((VIDEOS_DIR / folder_name).glob("*.mp4")):
+            person = PERSON_RE.search(video.name)
+            group = f"persona_{person.group(1)}" if person else video.stem
+            add_video(video, folder_name, group, [], [], f"{folder_name}/{video.name}")
 
     if not args.no_cache:
         CACHE_PATH.write_bytes(pickle.dumps(_cache))
@@ -244,6 +271,7 @@ def main() -> None:
         labels=labels,
         videos=videos,
         datasets=datasets,
+        groups=np.array(rows_group),
         timestamps=timestamps,
         is_hard_negative=is_hard_negative,
         window_s=np.array(args.window_s),

@@ -19,12 +19,23 @@ Diferencias con `train_temporal_classifier.py` (actividad):
      que es la queja que motivó todo esto (ver `vision/README.md`, evidencia
      parcial).
 
-Al final entrena sobre todo el cache y guarda `fusion/models/fall_temporal.pt`.
+Al final entrena sobre todo el cache y guarda `fusion/models/fall_temporal.pt`
+(o `--output-name`, para entrenar un candidato sin pisar el modelo vigente).
 Siguiente paso: `python export_fall_temporal_onnx.py`.
 
+El grupo del GroupKFold es `groups` del `.npz` si existe (video para los
+datasets de caída, PERSONA para los clips de `extract_falls.py
+--negative-dirs`), y si no, el video.
+
+`--score-events`: `.npz` con ventanas de eventos geométricos (`windows`
+`(N, P, n_frames, feat)`, `group` `(N,)`). Cada evento se puntúa con el modelo
+del fold que NO vio a su grupo y se guarda `<archivo>_oof.npy` `(N, P)` — es lo
+que permite medir end-to-end las alertas falsas sobre personas no vistas.
+
 Uso:
-    python train_fall_temporal.py [--features fall_windows.npz] [--folds 5]
-        [--epochs 40] [--aug-prob 0.5] [--hidden-size 64] [--num-layers 2]
+    python train_fall_temporal.py [--features fall_windows.npz [otro.npz ...]]
+        [--folds 5] [--epochs 40] [--aug-prob 0.5] [--hidden-size 64]
+        [--num-layers 2] [--output-name fall_temporal] [--score-events ev.npz ...]
 """
 from __future__ import annotations
 
@@ -45,7 +56,9 @@ from fusion.src.keypoint_sequence import NUM_KEYPOINTS
 from fusion.src.temporal_model import GRUActivityClassifier
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-parser.add_argument("--features", default=None, help="Default: fusion/fall_windows.npz")
+parser.add_argument("--features", nargs="+", default=None, help="Uno o más .npz de extract_falls.py (se concatenan). Default: fusion/fall_windows.npz")
+parser.add_argument("--output-name", default="fall_temporal", help="Nombre base del checkpoint en fusion/models/")
+parser.add_argument("--score-events", nargs="*", default=[], help="Ver docstring")
 parser.add_argument("--folds", type=int, default=5)
 parser.add_argument("--hidden-size", type=int, default=64)
 parser.add_argument("--num-layers", type=int, default=2)
@@ -62,13 +75,20 @@ args = parser.parse_args()
 torch.manual_seed(args.seed)
 np.random.seed(args.seed)
 
-features_path = Path(args.features) if args.features else Path(__file__).parent / "fall_windows.npz"
-data = np.load(features_path, allow_pickle=True)
-X = data["windows"].astype(np.float32)       # (N, n_frames, feat_dim)
-y_raw = data["labels"]                        # etiquetas finas de extract_falls.py
-videos = data["videos"]
-datasets = data["datasets"] if "datasets" in data else np.array(["?"] * len(y_raw))
-hard_neg = data["is_hard_negative"] if "is_hard_negative" in data else np.zeros(len(y_raw), bool)
+features_paths = [Path(f) for f in args.features] if args.features else [Path(__file__).parent / "fall_windows.npz"]
+parts = [np.load(f, allow_pickle=True) for f in features_paths]
+
+
+def _column(key: str, fallback=None) -> np.ndarray:
+    return np.concatenate([d[key] if key in d else fallback(d) for d in parts])
+
+
+X = _column("windows").astype(np.float32)     # (N, n_frames, feat_dim)
+y_raw = _column("labels")                      # etiquetas finas de extract_falls.py
+videos = _column("videos")
+datasets = _column("datasets", lambda d: np.array(["?"] * len(d["labels"])))
+hard_neg = _column("is_hard_negative", lambda d: np.zeros(len(d["labels"]), bool))
+groups = _column("groups", lambda d: d["videos"])
 
 # Colapso a binario normal/caida (ver docstring de fall_temporal.py).
 unknown = sorted(set(y_raw) - set(RAW_TO_LABEL))
@@ -83,7 +103,7 @@ input_size = X.shape[-1]
 n_frames = X.shape[1]
 device = torch.device(args.device)
 
-print(f"{len(y)} ventanas, {len(set(videos))} videos, feat_dim={input_size}, n_frames={n_frames}")
+print(f"{len(y)} ventanas, {len(set(videos))} videos, {len(set(groups))} grupos, feat_dim={input_size}, n_frames={n_frames}")
 print("Por clase:", {lbl: int((y == i).sum()) for lbl, i in label_to_idx.items()})
 
 # --- Layout del vector de features (ver keypoint_sequence.frame_features) ---
@@ -200,19 +220,44 @@ def predict(model, mask) -> np.ndarray:
     return out.argmax(1).cpu().numpy()
 
 
+def fall_scores(model, windows: np.ndarray) -> np.ndarray:
+    """Probabilidad de caída (suma de clases positivas) por ventana."""
+    with torch.no_grad():
+        probs = torch.softmax(model(torch.from_numpy(windows).float().to(device)), dim=1).cpu().numpy()
+    return probs[:, sorted(pos_idx)].sum(axis=1)
+
+
+events = [np.load(f, allow_pickle=True) for f in args.score_events]
+events_oof = [np.full(e["windows"].shape[:2], np.nan, np.float32) for e in events]
+
+
 # --- Evaluación out-of-fold, GroupKFold por video ---
 gkf = GroupKFold(n_splits=args.folds)
 oof_pred = np.full(len(y), -1)
-for k, (tr, te) in enumerate(gkf.split(X, y, groups=videos)):
+for k, (tr, te) in enumerate(gkf.split(X, y, groups=groups)):
     tr_mask = np.zeros(len(y), bool); tr_mask[tr] = True
     model = train_fold(tr_mask, args.epochs)
     oof_pred[te] = predict(model, te)
+    # Eventos de los grupos de test de este fold. Un grupo que no aportó
+    # ninguna ventana al entrenamiento no fue visto por ningún fold: se
+    # puntúa con el primero.
+    train_groups = list(set(groups[tr]))
+    for ev, out in zip(events, events_oof):
+        sel = np.isnan(out[:, 0]) & ~np.isin(ev["group"], train_groups)
+        if sel.any():
+            w = ev["windows"][sel]
+            out[sel] = fall_scores(model, w.reshape(-1, *w.shape[2:])).reshape(w.shape[:2])
     print(f"fold {k+1}/{args.folds}: train={tr_mask.sum()} test={len(te)} ventanas", flush=True)
 
 # Recall por video de caída: el video tiene al menos una ventana caída_* y
 # alguna de ellas se predijo como caída.
 true_pos = np.isin(y, list(pos_idx))
 pred_pos = np.isin(oof_pred, list(pos_idx))
+for f, out in zip(args.score_events, events_oof):
+    out_scores = Path(f).with_name(Path(f).stem + "_oof.npy")
+    np.save(out_scores, out)
+    print(f"Scores out-of-fold de eventos -> {out_scores}")
+
 fall_videos = sorted(set(videos[true_pos]))
 recalled = [v for v in fall_videos if pred_pos[(videos == v) & true_pos].any()]
 recall = len(recalled) / len(fall_videos) if fall_videos else float("nan")
@@ -236,6 +281,7 @@ print("Matriz de confusión (fila=real, col=predicho):")
 print("            " + "  ".join(f"{l[:10]:>10}" for l in FALL_LABELS))
 for i, l in enumerate(FALL_LABELS):
     print(f"{l[:12]:>12} " + "  ".join(f"{cm[i,j]:>10}" for j in range(len(FALL_LABELS))))
+print(f"Hard negatives predichos como caída: {int((pred_pos & hard_neg).sum())}/{int(hard_neg.sum())}")
 print("\nBaseline documentado (heurística + confirmación CLIP, vision/README.md): "
       "84.8% recall / 30 FP out-of-fold; Benabdennour 2026: 97.7% F1.")
 
@@ -247,7 +293,7 @@ print(f"Parámetros: {final.num_parameters():,}")
 
 out_dir = Path(__file__).parent / "models"
 out_dir.mkdir(exist_ok=True)
-out_path = out_dir / "fall_temporal.pt"
+out_path = out_dir / f"{args.output_name}.pt"
 torch.save(
     {
         "state_dict": final.state_dict(),
@@ -259,4 +305,5 @@ torch.save(
     },
     out_path,
 )
-print(f"Guardado {out_path}\nSiguiente: python export_fall_temporal_onnx.py")
+print(f"Guardado {out_path}\nSiguiente: python export_fall_temporal_onnx.py"
+      + ("" if args.output_name == "fall_temporal" else f" --name {args.output_name}"))
