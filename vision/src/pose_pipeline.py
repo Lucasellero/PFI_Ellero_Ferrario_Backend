@@ -275,8 +275,16 @@ class FallImmobilityDetector:
             import torch
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self._model.to(device)
-        self._history: deque[PoseSample] = deque()
         self._history_seconds = history_seconds
+        self._postfall_window_s = postfall_window_s
+        self.reset()
+
+    def reset(self) -> None:
+        """Olvida todo lo visto (historiales, cooldown de caída, cuentas de
+        inmovilidad, seguimiento) sin recargar el modelo. Para cuando el video
+        arranca de nuevo desde el principio: el contenido no es continuación
+        del anterior aunque el timestamp siga creciendo."""
+        self._history: deque[PoseSample] = deque()
         # Historial propio para inmovilidad, separado de self._history (2.5s,
         # dimensionado para la velocidad de caída) — ver _smoothed_displacement_rate.
         self._immobility_history: deque[PoseSample] = deque()
@@ -292,7 +300,6 @@ class FallImmobilityDetector:
         # de inmovilidad con ventana corta (postfall_window_s) que escala a un
         # evento de severidad alta si la persona queda quieta — y se cancela si
         # se levanta. Independiente de _track_immobility (sedentarismo, 180s).
-        self._postfall_window_s = postfall_window_s
         self._postfall_since: float | None = None
         self._postfall_reported = False
         # Histéresis de detección (ver _detect).

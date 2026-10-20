@@ -141,6 +141,7 @@ class CameraWorker(threading.Thread):
         puerta_activada: bool = True,
         puerta_ausencia_min_s: float = DEFAULT_AUSENCIA_MIN_S,
         puerta_memoria_s: float = DEFAULT_MEMORIA_PUERTA_S,
+        demo: bool = False,
     ):
         super().__init__(name=f"cam-{config.id}", daemon=True)
         self._config = config
@@ -149,6 +150,7 @@ class CameraWorker(threading.Thread):
         # OJO: no llamar self._stop — threading.Thread ya usa ese nombre
         # internamente (método privado), pisarlo rompe Thread.join().
         self._stop_event = stop_event
+        self._demo = demo
         self._clip = clip_classifier
         self._fall_confirm = None
         if self._clip is not None and _FALL_CONFIRMATION_AVAILABLE:
@@ -224,6 +226,9 @@ class CameraWorker(threading.Thread):
         # emite nada.
         self._door: Optional[DoorEventDetector] = None
         puerta = (config.zones or {}).get(ZONA_PUERTA)
+        self._door_polygon = puerta
+        self._door_ausencia_min_s = puerta_ausencia_min_s
+        self._door_memoria_s = puerta_memoria_s
         if puerta_activada and puerta:
             self._door = DoorEventDetector(puerta, puerta_ausencia_min_s, puerta_memoria_s)
 
@@ -236,9 +241,13 @@ class CameraWorker(threading.Thread):
         # proceso matado) no es de esta corrida: se borra antes de empezar.
         self._delete_preview()
         detector = FallImmobilityDetector(model_path=self._pose_model)
+        # Modo demo (ver playback_state.py): un archivo se reproduce una sola vez y se
+        # pausa desde el dashboard; make_source ignora playback_id en streams en vivo.
         source = make_source(
-            self._config.source, self._config.realtime, self._config.loop,
+            self._config.source, self._config.realtime,
+            False if self._demo else self._config.loop,
             stop_event=self._stop_event,
+            playback_id=self._config.id if self._demo else None,
         )
 
         if self._motion_gate_enabled:
@@ -277,6 +286,9 @@ class CameraWorker(threading.Thread):
             for frame in source.frames():
                 if self._stop_event.is_set():
                     break
+
+                if frame.restarted:
+                    self._reset_for_restart(frame.timestamp_s, detector)
 
                 # ── Gate de movimiento: decide si este frame corre YOLO/CLIP ─
                 if self._motion is not None:
@@ -437,6 +449,28 @@ class CameraWorker(threading.Thread):
                 "[%s] %s @ %.2fs (zona puerta)",
                 self._config.id, "salida de casa" if salida else "entrada a casa", door_event.timestamp_s,
             )
+
+    def _reset_for_restart(self, ts: float, detector) -> None:
+        """El video arrancó de nuevo desde el principio (loop, o play después del final en modo
+        demo). El timestamp no vuelve a 0 — el tiempo en pausa no cuenta, ver VideoFileLoop —, así
+        que sin esto el replay se ve como continuación del anterior: la caída del segundo play caía
+        dentro del minuto del agrupador (o del cooldown del detector) y no se publicaba, y la
+        actividad seguía la ventana de CLIP y la deduplicación de antes."""
+        detector.reset()
+        self._caidas = AgrupadorDeCaidas()
+        if self._door is not None:
+            self._door = DoorEventDetector(
+                self._door_polygon, self._door_ausencia_min_s, self._door_memoria_s,
+            )
+        if self._skeleton_buffer is not None:
+            self._skeleton_buffer.reset()
+        self._clip_sampling = False
+        self._clip_next_window_ts = ts
+        self._clip_prev_ts = ts
+        self._last_activity_label = None
+        self._last_activity_emit_ts = float("-inf")
+        self._last_person_seen_ts = ts
+        self._log.info("[%s] el video arrancó de nuevo — estado de detección reiniciado", self._config.id)
 
     def _update_motion_gate(self, frame) -> None:
         """Corre el detector de movimiento barato y, si hay movimiento y el

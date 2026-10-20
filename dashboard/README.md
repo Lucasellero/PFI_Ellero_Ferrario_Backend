@@ -53,6 +53,12 @@ para logs) y del store de eventos (SQLite) para los datos, igual que
 | `GET /api/motion` | estado del gate de movimiento (despierta/dormida) por cámara |
 | `POST /api/focus` | marca qué cámara está en vista única (`{"cam_id": "..."}` o `null`) |
 | `GET /api/frame-stream/{cam_id}` | preview de esa cámara como stream MJPEG (`multipart/x-mixed-replace`) |
+| `GET /api/demo` | si el modo demo está activado (clave `demo` de `cameras.yaml`, `true` por defecto) |
+| `GET /api/playback` | estado de reproducción (pausado, terminado, posición, duración) de los videos en modo demo |
+| `POST /api/playback/{cam_id}` | play/pausa del video de esa cámara (`{"paused": bool}`); play sobre un video terminado lo reinicia |
+| `GET /api/kit` | kit de esta controladora (`kit.yaml`): serie, código, QR en SVG y estado de la sincronización con la nube (`runner_state/cloud.json`). Nunca devuelve la API key |
+| `POST /api/kit/fuente` | elige qué fuente se sube a la nube como la cámara del kit (`{"cam_id": "..."}` o `null`); botón APP de cada fuente |
+| `GET /kit` | etiqueta del kit para imprimir (QR + código + serie) |
 | `WS /ws` | push de logs del runner + eventos nuevos + estado, cada ~1s |
 
 `GET`/`POST /api/overlay` leen y escriben `runner_state/overlay.json` vía
@@ -169,6 +175,20 @@ al agregar el badge de movimiento: los dos puntos uno al lado del otro no se
 distinguían y esa señal ya la muestra el placeholder de la celda
 ("Conectando…"/ícono de pausa cuando el `<img>` no carga).
 
+## Modo demo (2026-10-19)
+
+Encendido por defecto, sin botón en el panel (se sacó el 2026-10-19): solo se apaga con
+`demo: false` en `cameras.yaml`, y aplica al reiniciar el runner. Con el modo activo, el
+checkbox de loop del formulario de video se oculta: el runner reproduce los archivos una sola vez igual (ver "Modo demo" en
+`runner/README.md`).
+
+Cada cámara de archivo arranca en pausa (la celda dice "En pausa — dale play" mientras no hay
+vista previa) y muestra un botón play/pausa y la posición (`0:12 / 0:45`, o `FIN` al
+terminar) en el pie de su celda de la grilla y en el recuadro de la vista única.
+`pollPlayback()` en `static/index.html` consulta `GET /api/playback` cada 0,5 s; una cámara que
+no está en modo demo, o el runner apagado, no aparece en la respuesta y no muestra controles.
+`POST /api/stop` borra también el estado de reproducción de cada cámara.
+
 ## Seguridad de rutas de archivo
 
 `upload-video` sanitiza el nombre (`Path(file.filename).name`, descarta
@@ -197,3 +217,11 @@ ver logs/eventos/preview en vivo.
 
 - Autenticación — pensado para uso local, no exposición a internet.
 - Multi-usuario / control de acceso.
+
+## App móvil (2026-10-19)
+
+El botón **App móvil** del encabezado muestra el QR para vincular esta controladora desde la app,
+y si la nube ya acepta sus eventos. Necesita `kit.yaml` en la raíz del repo y `segno`
+(`requirements.txt`). Sin `segno` muestra solo el código para tipear. Cómo generar `kit.yaml`,
+qué significa cada estado y el guion de la demo: "Vincular con la app móvil" en
+`runner/README.md`.

@@ -21,18 +21,34 @@ class CameraConfig:
     # rompe nada. Medido en vlm/README.md ("Fase 1 de PLAN_sustitucion_clip.md...",
     # 2026-09-21): +6pts de accuracy en Cooking cuando está configurado.
     zones: dict[str, list[list[float]]] | None = None
+    # False: la cámara corre y se ve en el dashboard, pero sus eventos no se suben a la nube (ver
+    # "Vincular con la app móvil" en runner/README.md). Sirve para tener varias cámaras de video
+    # en una demo con un kit que tiene menos cámaras.
+    nube: bool = True
 
 
 @dataclass
 class CloudSyncConfig:
-    """Sección opcional `cloud:` de `cameras.yaml` — sin ella, `runner/cloud_sync.py` no se
-    arranca y nada cambia respecto a una instalación sin nube. Ver `cloud/README.md`."""
+    """Sección opcional `cloud:` de `cameras.yaml`, o el archivo `kit.yaml` al lado (ver
+    `load_config`) — sin ninguno de los dos, `runner/cloud_sync.py` no se arranca y nada cambia
+    respecto a una instalación sin nube. Ver `cloud/README.md`."""
     url: str
     api_key: str
     interval_s: float = 30.0
     # Días que un evento ya confirmado por la nube sigue en events/events.db antes de borrarse
     # (ver `EventStore.purge_synced` y `runner/cloud_sync.py`). Los no sincronizados no se tocan.
     retencion_local_dias: float = 7.0
+    # Para demos: no sube los eventos que ya estaban pendientes al arrancar ni los generados
+    # mientras el kit no está vinculado (409); los marca como enviados sin mandarlos. Ver
+    # "Vincular con la app móvil" en runner/README.md.
+    solo_desde_vinculacion: bool = False
+    # `identificador_local` de la cámara del kit en la nube (clave `camara` de kit.yaml). Con esto,
+    # la fuente elegida desde el dashboard (botón "App") se sube con este id y las demás no se
+    # suben. None: cada fuente se sube con su propio id, como antes.
+    camara_kit: str | None = None
+
+
+KIT_FILENAME = "kit.yaml"
 
 
 @dataclass
@@ -53,17 +69,28 @@ class RunnerConfig:
     puerta_ausencia_min_s: float = 60.0  # segundos sin ver a nadie para que desaparecer/aparecer en la puerta cuente como salida/entrada
     puerta_memoria_s: float = 2.0        # la última vez que se vio a la persona tiene que haber sido en la puerta, con esta tolerancia
     cloud_sync: CloudSyncConfig | None = None  # None = sin sincronización a la nube (default)
+    # Modo demo (ver "Modo demo" en README.md): las cámaras de archivo se reproducen una sola vez
+    # (ignora `loop`) y se pausan/reanudan desde el dashboard. Sin efecto en streams en vivo.
+    # Encendido por defecto; `demo: false` en cameras.yaml lo apaga.
+    demo: bool = True
 
 
 def load_config(path: Path) -> RunnerConfig:
     data = yaml.safe_load(path.read_text())
     cameras = [CameraConfig(**c) for c in data["cameras"]]
+    # La sección `cloud:` de cameras.yaml tiene prioridad; si no está, se usa `kit.yaml` (mismo
+    # directorio, fuera de git: tiene la API key y el código de vinculación del kit).
     cloud_data = data.get("cloud")
+    kit_path = path.parent / KIT_FILENAME
+    if not cloud_data and kit_path.exists():
+        cloud_data = yaml.safe_load(kit_path.read_text()) or None
     cloud_sync = (
         CloudSyncConfig(
             url=cloud_data["url"], api_key=cloud_data["api_key"],
             interval_s=float(cloud_data.get("interval_s", 30.0)),
             retencion_local_dias=float(cloud_data.get("retencion_local_dias", 7.0)),
+            solo_desde_vinculacion=bool(cloud_data.get("solo_desde_vinculacion", False)),
+            camara_kit=cloud_data.get("camara"),
         )
         if cloud_data else None
     )
@@ -85,4 +112,5 @@ def load_config(path: Path) -> RunnerConfig:
         puerta_ausencia_min_s=float(data.get("puerta_ausencia_min_s", 60.0)),
         puerta_memoria_s=float(data.get("puerta_memoria_s", 2.0)),
         cloud_sync=cloud_sync,
+        demo=bool(data.get("demo", True)),
     )

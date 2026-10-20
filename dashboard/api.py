@@ -16,15 +16,23 @@ Expone:
   POST /api/overlay → activa/desactiva el overlay en todas las cámaras
   GET  /api/motion  → estado del gate de movimiento (runner/motion_gate.py) por cámara
   POST /api/focus   → marca qué cámara está en vista única (runner/focus_state.py)
+  GET  /api/demo    → si el modo demo está activado (clave `demo` de cameras.yaml, true por defecto)
+  GET  /api/playback → estado de reproducción de los videos en modo demo (runner/playback_state.py)
+  POST /api/playback/{cam_id} → play/pausa del video de esa cámara
   GET  /api/frame-stream/{cam_id} → preview en vivo como stream MJPEG (fluido si está en foco)
+  GET  /api/kit     → kit de esta controladora (kit.yaml): QR de vinculación y estado de la nube
+  POST /api/kit/fuente → elige qué fuente se sube a la nube como la cámara del kit
+  GET  /kit         → etiqueta imprimible con el QR del kit
   WS   /ws          → stream de logs + estado en tiempo real
 """
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import sqlite3
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -35,13 +43,21 @@ import yaml
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 
+from runner.cloud_state import STATE_PATH as CLOUD_STATE_PATH
+from runner.cloud_state import SOURCE_PATH as CLOUD_SOURCE_PATH
+from runner.cloud_state import read_cloud_source, read_cloud_state, write_cloud_source
+from runner.config import KIT_FILENAME
 from runner.focus_state import write_focused_camera
 from runner.motion_state import read_all_motion_state
 from runner.overlay_state import read_overlay_enabled, write_overlay_enabled
+from runner.playback_state import delete_status as delete_playback_status
+from runner.playback_state import read_all_status as read_all_playback_status
+from runner.playback_state import write_paused
 from runner.preview_file import FRAMES_DIR, delete_preview
 
 ROOT = Path(__file__).resolve().parents[1]
 CAMERAS_YAML = ROOT / "cameras.yaml"
+KIT_YAML = ROOT / KIT_FILENAME
 DB_PATH = ROOT / "events" / "events.db"
 VIDEOS_DIR = ROOT / "videos"
 UPLOADS_DIR = VIDEOS_DIR / "uploads"
@@ -237,7 +253,136 @@ async def stop_runner() -> dict:
     # lo mata sin darle tiempo: se borra también acá para que la imagen no quede en disco.
     for cam in _read_cameras_yaml().get("cameras") or []:
         delete_preview(str(cam.get("id", "")), FRAMES_DIR)
+        delete_playback_status(str(cam.get("id", "")))
     return {"status": "stopped"}
+
+
+@app.get("/api/demo")
+async def get_demo() -> dict:
+    # Mismo default que runner/config.py: encendido salvo `demo: false` en cameras.yaml.
+    return {"demo": bool(_read_cameras_yaml().get("demo", True))}
+
+
+@app.get("/api/playback")
+async def get_playback() -> dict:
+    """{"cameras": {"<id>": {"paused", "ended", "position_s", "duration_s", "updated_at"}}} de
+    los videos que se están reproduciendo en modo demo. Las demás cámaras no aparecen."""
+    return {"cameras": read_all_playback_status()}
+
+
+@app.post("/api/playback/{cam_id}")
+async def set_playback(cam_id: str, body: dict) -> dict:
+    """Pausa o reanuda el video de esa cámara. Si el video ya terminó, play lo arranca de nuevo."""
+    if "paused" not in body:
+        raise HTTPException(400, "El campo 'paused' es requerido")
+    paused = bool(body["paused"])
+    write_paused(cam_id, paused)
+    return {"cam_id": cam_id, "paused": paused}
+
+
+def _read_kit() -> dict | None:
+    """kit.yaml (ver "Vincular con la app móvil" en runner/README.md), o None si no hay."""
+    if not KIT_YAML.exists():
+        return None
+    return yaml.safe_load(KIT_YAML.read_text()) or None
+
+
+def _qr_kit(kit: dict) -> str:
+    """Lo que lee el escáner de la app (src/features/vinculacion/codigoKit.ts del Frontend)."""
+    return f"lares://vincular?serie={kit['numero_serie']}&codigo={kit['codigo_vinculacion']}"
+
+
+def _qr_svg(texto: str) -> Optional[str]:
+    try:
+        import segno
+    except ImportError:  # sin segno el panel muestra el código para tipearlo a mano
+        return None
+    # omitsize: SVG con viewBox y sin width/height fijos, para que el CSS lo escale sin recortarlo.
+    return segno.make(texto, error="m").svg_inline(omitsize=True, border=4, dark="#000", light="#fff")
+
+
+def _codigo_legible(codigo: str) -> str:
+    return f"{codigo[:4]}-{codigo[4:]}"
+
+
+@app.get("/api/kit")
+async def get_kit() -> dict:
+    """Kit de esta controladora para vincularlo desde la app: serie, código, QR (SVG) y el último
+    estado de la sincronización con la nube que dejó el runner (runner/cloud_state.py). Nunca
+    devuelve la API key. `estado_vigente` es False si el runner no escribió nada hace rato
+    (detenido, o la nube no configurada en esta corrida)."""
+    kit = _read_kit()
+    if kit is None:
+        return {"configurado": False}
+    codigo = str(kit.get("codigo_vinculacion") or "")
+    serie = str(kit.get("numero_serie") or "")
+    if not codigo or not serie:
+        raise HTTPException(500, "kit.yaml no tiene numero_serie y codigo_vinculacion")
+    estado = read_cloud_state(CLOUD_STATE_PATH)
+    margen = max(3 * float(kit.get("interval_s", 30.0)), 30.0)
+    vigente = bool(estado) and time.time() - float(estado.get("actualizado_at", 0)) < margen
+    return {
+        "configurado": True,
+        "numero_serie": serie,
+        "codigo": _codigo_legible(codigo),
+        "qr_svg": _qr_svg(_qr_kit(kit)),
+        "url": kit.get("url"),
+        "solo_desde_vinculacion": bool(kit.get("solo_desde_vinculacion", False)),
+        "estado": estado,
+        "estado_vigente": vigente,
+        # Botón "App" de cada fuente: solo con `camara` en kit.yaml.
+        "camara_kit": kit.get("camara"),
+        "fuente_nube": read_cloud_source(CLOUD_SOURCE_PATH),
+    }
+
+
+@app.post("/api/kit/fuente")
+async def set_kit_source(body: dict) -> dict:
+    """Elige la fuente de cameras.yaml que se sube a la nube como la cámara del kit
+    (`{"cam_id": "..."}`, o `null` para ninguna). El runner lo toma en el próximo ciclo de
+    sincronización, sin reiniciar; los eventos de las demás fuentes no se suben."""
+    kit = _read_kit()
+    if kit is None or not kit.get("camara"):
+        raise HTTPException(400, "kit.yaml no tiene la clave `camara` (la cámara del kit en la nube)")
+    cam_id = body.get("cam_id") or None
+    if cam_id is not None and not any(
+        str(c.get("id")) == cam_id for c in _read_cameras_yaml().get("cameras") or []
+    ):
+        raise HTTPException(404, f"No existe una fuente con id '{cam_id}'")
+    write_cloud_source(cam_id, CLOUD_SOURCE_PATH)
+    return {"cam_id": cam_id}
+
+
+@app.get("/kit", response_class=HTMLResponse)
+async def kit_label() -> str:
+    """Etiqueta del kit para imprimir: QR, código para tipear y número de serie."""
+    kit = _read_kit()
+    if kit is None:
+        raise HTTPException(404, "No hay kit.yaml en esta controladora")
+    serie = html.escape(str(kit["numero_serie"]))
+    codigo = html.escape(_codigo_legible(str(kit["codigo_vinculacion"])))
+    qr = _qr_svg(_qr_kit(kit)) or ""
+    return f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><title>Kit {serie}</title>
+<style>
+  body {{ font-family: -apple-system, 'Segoe UI', system-ui, sans-serif; background: #fff; color: #000;
+         display: flex; justify-content: center; padding: 40px 16px; }}
+  .etiqueta {{ border: 2px solid #000; border-radius: 16px; padding: 28px 36px; text-align: center; }}
+  h1 {{ font-size: 22px; margin: 0 0 4px; }}
+  p {{ margin: 4px 0; color: #333; }}
+  .qr svg {{ display: block; width: 300px; height: 300px; margin: 16px auto; }}
+  .codigo {{ font: 700 30px 'SF Mono', Consolas, monospace; letter-spacing: .12em; color: #000; }}
+  @media print {{ .no-print {{ display: none; }} }}
+</style></head>
+<body><div class="etiqueta">
+  <h1>Kit Lares</h1>
+  <p>Escaneá este código desde la app para vincular el kit</p>
+  <div class="qr">{qr}</div>
+  <p>o ingresá el código a mano</p>
+  <p class="codigo">{codigo}</p>
+  <p>N.º de serie {serie}</p>
+  <p class="no-print"><button onclick="print()">Imprimir</button></p>
+</div></body></html>"""
 
 
 @app.get("/api/overlay")

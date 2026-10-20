@@ -1,36 +1,29 @@
 cameras:
-- id: webcam
-  source: http://0.0.0.0:8080/stream.mjpg
+- id: VIDEO CAIDA 2
+  source: videos/uploads/CAUCAFall_FallBackwardsS1.avi
   realtime: true
-  loop: false
-  # zones: opcional, configuración manual una sola vez por cámara real (ver
-  # runner/README.md, sección "Clasificación de actividades (CLIP)", y
-  # fusion/src/zone_context.py). Sin esta clave, el sistema funciona igual
-  # que hoy — la mejora medida (+6pts Cooking, ver vlm/README.md "Fase 1 de
-  # PLAN_sustitucion_clip.md...") solo aplica una vez que se dibujan los
-  # polígonos reales de ESTA cámara. Ejemplo de esquema (comentado, no
-  # activo — coordenadas normalizadas 0-1, [x,y] por vértice, en el orden
-  # que se camina el polígono):
-  # zones:
-  #   cocina: [[0.0, 0.3], [0.6, 0.3], [0.6, 0.9], [0.0, 0.9]]
-  #   mesa:   [[0.6, 0.4], [1.0, 0.4], [1.0, 0.9], [0.6, 0.9]]
-  #   puerta: [[0.85, 0.2], [1.0, 0.2], [1.0, 0.95], [0.85, 0.95]]
-  # Con "puerta" dibujada (la puerta de calle, no una interior) la cámara emite entradas y
-  # salidas de casa (ver runner/door_events.py). Sin ella no emite ninguna. Se apaga en todas
-  # las cámaras con "puerta_activada: false" al nivel de pose_model. Validado con Toyota Smarthome
-  # (entrar y salir de cuadro, no una puerta de calle): ver "Validación con video" en runner/README.md.
+  loop: true
+- id: VIDEO CAIDA 1
+  source: videos/uploads/22.mp4
+  realtime: true
+  loop: true
+- id: VIDEO NOCHE
+  source: videos/uploads/WhatsApp Video 2026-10-19 at 23.13.42.mp4
+  realtime: true
+  loop: true
+- id: COMIENDO
+  source: videos/uploads/Eat.Attable_p02_r08_v11_c01.mp4
+  realtime: true
+  loop: true
+- id: COCINANDO
+  source: videos/uploads/Cook.Cut_p02_r00_v14_c03.mp4
+  realtime: true
+  loop: true
+- id: DESCANSANDO
+  source: videos/uploads/Readbook_p12_r00_v05_c05_old(1).mp4
+  realtime: true
+  loop: true
 pose_model: yolo11n-pose.pt
 log_level: INFO
 clip_heartbeat_s: 0
-# cloud: opcional, sincronización de eventos al backend cloud (ver cloud/README.md y
-# runner/cloud_sync.py). Sin esta clave, el sistema funciona igual que hoy — 100% local, nada
-# sale de la Pi. "url" es la base del backend (sin /devices/events al final), "api_key" es la
-# que muestra una sola vez el alta del kit (cloud/alta_kit.py, ver "Correr localmente" en cloud/README.md).
-# "retencion_local_dias" (default 7): días que un evento ya enviado a la nube sigue en
-# events/events.db antes de borrarse; los que todavía no se enviaron no se borran nunca.
-# Ejemplo (comentado, no activo):
-# cloud:
-#   url: https://monitor-api.ejemplo.com
-#   api_key: "la-api-key-del-kit"
-#   interval_s: 30
-#   retencion_local_dias: 7
+demo: true

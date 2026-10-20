@@ -23,6 +23,7 @@ runner/
 ├── motion_gate.py       # detector de movimiento barato (MOG2) que pausa YOLO/CLIP sin nadie en cuadro
 ├── motion_state.py      # publica awake/dormida por cámara en runner_state/motion/, para que dashboard/ lo muestre
 ├── overlay_state.py     # lee/escribe runner_state/overlay.json (toggle de overlay compartido con dashboard/)
+├── playback_state.py    # play/pausa de los videos en modo demo, compartido con dashboard/ (ver "Modo demo")
 ├── preview_file.py      # ruta y borrado de la vista previa runner_state/frames/{id}.jpg (ver "Frame preview")
 ├── door_events.py       # entradas y salidas de casa por la zona `puerta` (ver "Entradas y salidas de casa")
 ├── cloud_sync.py        # thread opcional: envía eventos a la nube y purga los ya enviados
@@ -747,6 +748,103 @@ este cambio no lo manda y sigue como antes (se guarda todo, sin detectar repetid
 Tampoco se midió qué pasa si se corta la energía de la controladora mientras escribe en su
 SQLite.
 
+## Vincular con la app móvil (2026-10-19)
+
+Para que esta máquina actúe como el kit de un hogar y las alertas lleguen como push a la app,
+igual que una controladora real: QR → la app vincula el kit → el runner sube eventos → la nube
+manda la push.
+
+**1. `kit.yaml` en la raíz del repo** (fuera de git, ver `.gitignore`). Lo genera
+`cloud/alta_kit.py` contra la base de la nube, sin mostrar el código ni la API key:
+
+```
+cd cloud
+DATABASE_URL=... python alta_kit.py --camaras 2 --ids "VIDEO CAIDA 2" "VIDEO CAIDA 1" \
+    --kit-yaml ../kit.yaml --url http://<backend>
+```
+
+Los `--ids` tienen que ser los `id` de `cameras.yaml`: un evento de una cámara que no está en el
+kit lo rechaza la nube (404), con el lote entero, y el panel lo muestra como error. Para tener
+más cámaras que las del kit (varios videos en una demo), las que sobran llevan `nube: false` en
+`cameras.yaml`: corren y se ven en el dashboard, pero sus eventos se marcan como enviados sin
+mandarlos. `alta_kit.py` no pisa un
+`kit.yaml` existente (perderías la API key de ese kit, que no se puede recuperar).
+
+```yaml
+url: http://<backend>
+numero_serie: LR-000004
+codigo_vinculacion: 7K3P9QXM   # el del QR
+api_key: ...
+interval_s: 10
+camara: cam1                   # cámara del kit a la que se sube la fuente elegida con "APP"
+solo_desde_vinculacion: true
+```
+
+**Qué fuente llega a la app: botón APP** de cada fuente en el dashboard (con `camara` en
+`kit.yaml`). Solo la fuente marcada se sube a la nube, con el id de la cámara del kit
+(`camara`), así que los `id` de `cameras.yaml` pueden ser cualquiera y puede haber más fuentes
+que cámaras en el kit. Sin ninguna marcada no se sube nada. El cambio lo toma el runner en el
+próximo ciclo, sin reiniciar (`runner_state/cloud_source.json`, lo escribe
+`POST /api/kit/fuente`). Las demás fuentes se marcan como enviadas sin mandarlas.
+
+Con `kit.yaml` presente el runner sincroniza solo, sin tocar `cameras.yaml`. Si `cameras.yaml`
+tiene una sección `cloud:`, esa tiene prioridad y `kit.yaml` solo sirve para el QR.
+
+**2. El QR en el dashboard.** Botón **App móvil** en el encabezado (con un punto de color según
+el estado): QR, código para tipear y el estado de la nube. **Etiqueta para imprimir** abre
+`GET /kit`. El QR es `lares://vincular?serie=...&codigo=...`, el formato que lee el escáner de la
+app (`src/features/vinculacion/codigoKit.ts` del Frontend).
+
+**3. Estado de la nube** (`cloud_state.py`, `runner_state/cloud.json`). Lo escribe
+`CloudSyncThread` después de cada intento y lo lee el panel:
+
+| Estado | Cuándo |
+|---|---|
+| `conectado` | la nube aceptó el último lote |
+| `esperando_vinculacion` | 409: nadie escaneó el QR, o falta cargar al residente |
+| `dado_de_baja` | 410: el hogar se dio de baja; el mismo QR sirve para vincular de nuevo |
+| `sin_conexion` | no se llegó a la nube |
+| `api_key_invalida` | 401 |
+| `error` | otra respuesta (ej. 404, cámara que no está en el kit), con el detalle |
+
+**El estado cambia recién con el próximo evento.** Con la cola vacía la controladora no le
+pregunta nada a la nube, y la nube en producción no tiene un endpoint para que el kit consulte
+si ya está vinculado. Entonces, después de vincular, el panel sigue en "Esperando la
+vinculación" hasta que una cámara detecta algo: en la demo, dar play a un video.
+
+**4. `solo_desde_vinculacion: true` (para demos).** Al arrancar, marca como enviados sin
+mandarlos todos los eventos pendientes de `events/events.db`. Al 2026-10-19 eran 2.497 de
+corridas anteriores, 581 de ellos caídas, que se subirían todos juntos al vincular y llenarían
+de push el celular. Mientras el kit no está vinculado (409), también marca cada lote como
+enviado en vez de guardarlo para después. Los eventos no se borran: siguen en el panel y se
+purgan con la retención local como cualquier evento enviado. Con `false` (default si falta la
+clave) se comporta como una controladora real: guarda todo y lo sube al vincular. Ojo: con
+`true` tampoco se suben los eventos de un corte de conexión si el runner se reinicia antes de
+que vuelva la red.
+
+### Guion de la demo
+
+1. Antes: `kit.yaml` generado, app instalada (development build de Android, Expo Go no recibe
+   push) y sesión iniciada.
+2. Dashboard → **Iniciar**. Panel **App móvil**: "Esperando la vinculación" (o "Conectando…" si
+   todavía no hubo eventos).
+3. En la app: **Vinculá tu kit** → **Escanear el código QR** → apuntar al panel o a la etiqueta
+   impresa → datos del residente.
+4. Play al video de la caída. Con el primer evento el panel pasa a **Vinculado con la app**.
+   Cuando la caída se confirma, llega la push "Posible caída detectada".
+
+Solo generan push las caídas confirmadas y las inmovilidades marcadas como alerta, ver
+`cloud/app/alertas.py`. La actividad aparece en la app, pero sin notificación.
+
+**Repetir la demo:** el código del QR es de un solo uso mientras el kit está vinculado (409 en
+`POST /kits/vincular`). Para volver a empezar hace falta dar de baja el hogar
+(`DELETE /hogares/{id}`, que la app todavía no tiene en ninguna pantalla) o un kit nuevo
+(`alta_kit.py` con otro `--kit-yaml`).
+
+Pruebas en `tests/test_vinculacion_app.py`, contra el backend `cloud/` real en local:
+`kit.yaml`, los estados, `solo_desde_vinculacion` de punta a punta. Y en
+`dashboard/tests/test_kit_app_movil.py`.
+
 ## Pruebas
 
 ```
@@ -788,3 +886,49 @@ Cubren (2026-10-13):
 - Balanceo de carga entre cámaras si el CPU no alcanza para todas en
   paralelo — asume que el hardware objetivo (Pi 5) soporta la cantidad de
   cámaras configuradas.
+
+## Modo demo (2026-10-19)
+
+Pensado para mostrar el sistema con videos grabados. **Encendido por defecto**; se apaga con
+`demo: false` en `cameras.yaml` (al nivel de `pose_model`), y aplica la próxima vez que arranca
+el runner. El dashboard ya no tiene botón para cambiarlo. Con el modo demo activo, cada cámara cuya fuente es un
+archivo:
+
+- **arranca en pausa**: no procesa nada hasta que se le da play desde el panel;
+- se reproduce **una sola vez**: la clave `loop` de la cámara se ignora (no se reescribe, así
+  que al apagar el modo demo vuelve a valer lo que tenía);
+- se puede **pausar y reanudar** desde el panel (botón en la grilla y en la vista única);
+- al terminar **queda en pausa sobre el último frame** en vez de cortar el worker; play la
+  arranca de nuevo desde el principio.
+
+Los streams en vivo (RTSP/HTTP/webcam) no cambian.
+
+Cómo funciona: `VideoFileLoop` recibe `playback_id` (el id de la cámara) y antes de leer cada
+frame mira, como mucho cada 0,1 s, `runner_state/playback/{id}.control.json` (lo escribe el
+dashboard). Publica posición, duración y si está pausado o terminó en
+`runner_state/playback/{id}.status.json` cada 0,5 s y en cada cambio, y lo borra al detenerse.
+Dos archivos por cámara para que el runner y el dashboard nunca escriban el mismo (mismo patrón
+que `overlay_state.py` y `motion_state.py`).
+
+**El tiempo en pausa no cuenta.** Con `realtime: true` los timestamps son de reloj, así que una
+pausa se vería como tiempo transcurrido: `vision/` sumaría inmovilidad con el video quieto (y
+dispararía la alerta de 180 s), y al reanudar el acompasamiento descartaría de golpe todos los
+frames "atrasados". `VideoFileLoop` descuenta del reloj el tiempo acumulado en pausa. Al
+reiniciar después del final, los timestamps siguen creciendo (no vuelven a 0), igual que en un
+loop con `realtime: true`.
+
+**Al reiniciar se olvida lo detectado (2026-10-20).** Como el timestamp no vuelve a 0, el worker
+no tenía cómo saber que el segundo play no es continuación del primero, y las detecciones solo
+salían la primera vez: en `CAUCAFall_FallBackwardsS1.avi` (6,25 s) la caída del segundo play
+(@ 9,7 s) se detectaba pero no se publicaba ("ya se publicó una hace menos de un minuto", ver
+`fall_grouping.py`), y el cooldown de caída, el historial de inmovilidad, la ventana de CLIP y el
+buffer de esqueleto también arrastraban lo del play anterior. Ahora `VideoFileLoop` marca el
+primer frame de cada pasada nueva con `Frame.restarted`, y `CameraWorker._reset_for_restart`
+reinicia el detector de `vision/` (`FallImmobilityDetector.reset()`, no recarga el modelo), el
+agrupador de caídas, la detección de puerta, el buffer de esqueleto y el muestreo/deduplicación de
+CLIP. Lo mismo vale para el loop normal (`loop: true` sin modo demo). Verificado con el worker
+real: la caída sale en los dos plays (@ 3,45 s y @ 9,70 s), y las actividades de
+`Cook.Cut_p02_r00_v14_c03.mp4` salen en las dos pasadas.
+
+Pruebas en `tests/test_modo_demo.py`.
+

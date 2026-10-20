@@ -144,6 +144,7 @@ def main() -> None:
             puerta_activada=config.puerta_activada,
             puerta_ausencia_min_s=config.puerta_ausencia_min_s,
             puerta_memoria_s=config.puerta_memoria_s,
+            demo=config.demo,
         )
         for cam in config.cameras
     ]
@@ -157,16 +158,25 @@ def main() -> None:
         config.clip_interval_s,
         "activo" if config.motion_gate_enabled else "inactivo",
     )
+    if config.demo:
+        logger.info("Modo demo: los videos se reproducen una sola vez, con play/pausa desde el panel")
     cloud_sync_thread = None
     if config.cloud_sync is not None:
         logger.info(
-            "cloud_sync: activado (%s, cada %.0fs, retención local de %g días)",
+            "cloud_sync: activado (%s, cada %.0fs, retención local de %g días%s)",
             config.cloud_sync.url, config.cloud_sync.interval_s, config.cloud_sync.retencion_local_dias,
+            ", solo eventos desde la vinculación" if config.cloud_sync.solo_desde_vinculacion else "",
         )
+        locales = [c.id for c in config.cameras if not c.nube]
+        if locales:
+            logger.info("cloud_sync: sin subir a la nube (nube: false): %s", ", ".join(locales))
         cloud_sync_thread = CloudSyncThread(
             db_path=_DB_PATH, url=config.cloud_sync.url, api_key=config.cloud_sync.api_key,
             interval_s=config.cloud_sync.interval_s, stop_event=stop_event,
             retencion_local_dias=config.cloud_sync.retencion_local_dias,
+            solo_desde_vinculacion=config.cloud_sync.solo_desde_vinculacion,
+            camaras_locales=frozenset(c.id for c in config.cameras if not c.nube),
+            camara_kit=config.cloud_sync.camara_kit,
         )
         cloud_sync_thread.start()
 

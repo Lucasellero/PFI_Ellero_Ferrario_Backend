@@ -746,6 +746,22 @@
       opacity: .6;
     }
 
+    /* Modo demo (runner/playback_state.py): play/pausa de los videos. */
+    .playback-ctrl { display: none; align-items: center; gap: 6px; flex-shrink: 0; }
+    .playback-ctrl.visible { display: inline-flex; }
+    .playback-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 22px; height: 22px; padding: 0;
+      border-radius: 50%; border: 1px solid var(--border);
+      background: var(--surface2); color: var(--text);
+      font-size: 11px; cursor: pointer; transition: all .15s;
+    }
+    .playback-btn:hover { border-color: var(--muted); background: var(--border); }
+    .playback-btn .icon { fill: currentColor; stroke: none; }
+    .playback-time { font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; }
+    .single-feed-info .playback-btn { width: 26px; height: 26px; font-size: 13px; }
+    .single-feed-info .playback-time { color: #ddd; font-size: 11px; }
+
     .single-feed-info {
       position: absolute;
       bottom: 10px;
@@ -846,6 +862,48 @@
     ::-webkit-scrollbar { width: 5px; height: 5px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    /* ── App móvil (kit + QR de vinculación, ver GET /api/kit) ──────────── */
+    .kit-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+    .kit-dot.ok   { background: var(--motion); }
+    .kit-dot.wait { background: var(--warning); animation: blink 2s ease-in-out infinite; }
+    .kit-dot.err  { background: var(--danger); }
+    #kitModal {
+      position: fixed; inset: 0; z-index: 50;
+      background: rgba(0,0,0,.65);
+      display: none; align-items: center; justify-content: center;
+      padding: 16px;
+    }
+    #kitModal.open { display: flex; }
+    .kit-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+      box-shadow: 0 12px 40px rgba(0,0,0,.5);
+      width: min(420px, 100%); max-height: 100%; overflow: auto;
+      padding: 20px 22px; position: relative; text-align: center;
+    }
+    .kit-card h2 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+    .kit-card .kit-sub { color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .kit-close { position: absolute; top: 12px; right: 12px; }
+    .kit-qr { margin: 16px auto 10px; width: fit-content; border-radius: 10px; overflow: hidden; line-height: 0; }
+    .kit-qr svg { width: 232px; height: 232px; }
+    .kit-code { font-family: var(--mono); font-size: 22px; font-weight: 700; letter-spacing: .14em; }
+    .kit-serie { color: var(--muted); font-size: 11px; margin-top: 2px; }
+    .kit-estado {
+      margin-top: 16px; padding: 10px 12px; border-radius: 8px; text-align: left;
+      background: var(--surface2); border: 1px solid var(--border);
+      display: flex; gap: 10px; align-items: flex-start;
+    }
+    .kit-estado .kit-dot { margin-top: 5px; }
+    .kit-estado-titulo { font-weight: 600; }
+    .kit-estado-detalle { color: var(--muted); font-size: 12px; margin-top: 2px; line-height: 1.45; word-break: break-word; }
+    .cam-app {
+      font-size: 10px; font-weight: 700; letter-spacing: .04em;
+      padding: 2px 7px; border-radius: 10px; cursor: pointer; flex-shrink: 0;
+      background: transparent; color: var(--muted); border: 1px solid var(--border);
+    }
+    .cam-app:hover { color: var(--text); border-color: var(--muted); }
+    .cam-app.on { background: rgba(61,220,113,.14); color: var(--motion); border-color: rgba(61,220,113,.45); }
+    .kit-actions { margin-top: 14px; display: flex; gap: 8px; justify-content: center; }
   </style>
 </head>
 <body>
@@ -869,6 +927,7 @@
   <symbol id="icon-inbox" viewBox="0 0 24 24"><path d="M4 12h4l2 3h4l2-3h4"/><path d="M4 12 6 5h12l2 7v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-6Z"/></symbol>
   <symbol id="icon-pause" viewBox="0 0 24 24"><rect x="7" y="5" width="3.5" height="14" rx="1"/><rect x="13.5" y="5" width="3.5" height="14" rx="1"/></symbol>
   <symbol id="icon-loader" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 1-6.4 2.6"/></symbol>
+  <symbol id="icon-phone" viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2"/><path d="M10.5 18.5h3"/></symbol>
   <symbol id="icon-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.2A11 11 0 0 1 12 5c6.5 0 10 7 10 7a15.6 15.6 0 0 1-4 4.6M6.6 6.6C4 8.3 2 12 2 12s3.5 7 10 7a9.9 9.9 0 0 0 3.4-.6"/><path d="M9.5 10a3 3 0 0 0 4.2 4.2"/></symbol>
 </svg>
 
@@ -889,6 +948,7 @@
 
   <div class="spacer"></div>
 
+  <button class="btn btn-ghost" id="btnKit" onclick="openKitModal()" title="Vincular con la app móvil"><span class="kit-dot" id="kitDot"></span><svg class="icon"><use href="#icon-phone"/></svg> App móvil</button>
   <a class="btn btn-ghost" href="/logs"><svg class="icon"><use href="#icon-doc"/></svg> Ver logs</a>
   <button class="btn btn-start" id="btnStart" onclick="startRunner()"><svg class="icon"><use href="#icon-play"/></svg> Iniciar</button>
   <button class="btn btn-stop"  id="btnStop"  onclick="stopRunner()" disabled><svg class="icon"><use href="#icon-stop"/></svg> Detener</button>
@@ -950,6 +1010,7 @@
           <label class="check-row">
             <input type="checkbox" id="fLoop" checked> Loop (repetir al terminar)
           </label>
+          <div id="demoLoopHint" class="empty-state" style="display:none">En modo demo los videos se reproducen una sola vez, con play/pausa.</div>
         </div>
 
         <div class="form-actions">
@@ -1051,6 +1112,7 @@
             <div class="single-feed-info" id="singleFeedInfo">
               <span id="singleCamLabel"></span>
               <span class="motion-badge" id="singleMotionBadge" title=""></span>
+              <span class="playback-ctrl" id="singlePlayback"></span>
             </div>
           </div>
 
@@ -1102,6 +1164,14 @@
 
 <div id="toasts"></div>
 
+<!-- App móvil: QR para vincular el kit desde la app + estado de la nube (GET /api/kit) -->
+<div id="kitModal" onclick="if (event.target === this) closeKitModal()">
+  <div class="kit-card" role="dialog" aria-modal="true" aria-labelledby="kitTitle">
+    <button class="btn btn-ghost btn-sm kit-close" onclick="closeKitModal()" aria-label="Cerrar"><svg class="icon"><use href="#icon-x"/></svg></button>
+    <div id="kitBody"></div>
+  </div>
+</div>
+
 <script>
 // ── Estado ──────────────────────────────────────────────────────────────────
 let ws          = null;
@@ -1120,6 +1190,10 @@ let framePoller = null;
 let showOverlay = true;      // bbox + keypoints de YOLO en el preview de cada cámara
 let motionPoller = null;
 let motionState  = {};       // cam_id -> {awake, updated_at}, ver /api/motion
+let demoMode     = true;     // clave `demo` de cameras.yaml (true por defecto), ver /api/demo
+let playbackPoller = null;
+let playbackState  = {};     // cam_id -> {paused, ended, position_s, duration_s}, ver /api/playback
+let kitInfo        = null;   // GET /api/kit: serie, código, QR y estado de la nube
 
 // ── Init ────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
@@ -1129,6 +1203,10 @@ window.addEventListener('DOMContentLoaded', () => {
   loadOverlayState();
   startFramePoller();
   startMotionPoller();
+  loadDemoState();
+  startPlaybackPoller();
+  pollKit();
+  setInterval(pollKit, 2000);
 });
 
 // ── WebSocket ────────────────────────────────────────────────────────────────
@@ -1312,6 +1390,94 @@ function renderMotionBadge(el, state) {
   }
 }
 
+// ── Modo demo: play/pausa de videos (runner/playback_state.py) ───────────────
+// Con el modo demo (encendido salvo `demo: false` en cameras.yaml), cada cámara de archivo se reproduce una
+// sola vez y se pausa desde acá; al terminar queda en el último frame y play
+// la arranca de nuevo. El runner publica posición/estado por cámara y el panel
+// lo pollea cada medio segundo; una cámara que no está en modo demo (o el
+// runner apagado) no aparece y no muestra controles.
+async function loadDemoState() {
+  const res = await apiFetch('GET', '/api/demo');
+  if (!res.ok) return;
+  const data = await res.json();
+  demoMode = !!data.demo;
+  updateDemoUI();
+}
+
+function updateDemoUI() {
+  const loop = document.getElementById('fLoop');
+  loop.disabled = demoMode;
+  loop.closest('.check-row').style.display = demoMode ? 'none' : '';
+  document.getElementById('demoLoopHint').style.display = demoMode ? 'block' : 'none';
+}
+
+function startPlaybackPoller() {
+  if (playbackPoller) return;
+  playbackPoller = setInterval(pollPlayback, 500);
+  pollPlayback();
+}
+
+async function pollPlayback() {
+  try {
+    const res = await apiFetch('GET', '/api/playback');
+    if (!res.ok) return;
+    const data = await res.json();
+    playbackState = data.cameras || {};
+    applyPlaybackControls();
+  } catch {
+    // red caída o runner reiniciando — se reintenta en el próximo tick
+  }
+}
+
+function applyPlaybackControls() {
+  document.querySelectorAll('.cam-cell').forEach(cell => {
+    const ctrl = cell.querySelector('.playback-ctrl');
+    if (ctrl) renderPlaybackControl(ctrl, cell.dataset.cam);
+    // Los videos arrancan en pausa: sin esto la celda diría "Conectando…"
+    // hasta que se les dé play.
+    const st = playbackState[cell.dataset.cam];
+    const phText = cell.querySelector('.ph-text');
+    if (phText && isRunning) phText.textContent = st && st.paused ? 'En pausa — dale play' : 'Conectando…';
+  });
+  if (selectedCam) renderPlaybackControl(document.getElementById('singlePlayback'), selectedCam);
+}
+
+function fmtTime(s) {
+  s = Math.max(0, Math.floor(s || 0));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function renderPlaybackControl(el, camId) {
+  const st = playbackState[camId];
+  if (!st) {
+    el.classList.remove('visible');
+    el.innerHTML = '';
+    return;
+  }
+  el.classList.add('visible');
+  const playing = !st.paused;
+  const icon  = playing ? 'icon-pause' : 'icon-play';
+  const title = playing ? 'Pausar' : (st.ended ? 'Reproducir de nuevo desde el principio' : 'Reproducir');
+  const time  = st.ended
+    ? 'FIN'
+    : `${fmtTime(st.position_s)}${st.duration_s ? ' / ' + fmtTime(st.duration_s) : ''}`;
+  el.innerHTML = `
+    <button class="playback-btn" title="${title}"
+            onclick="event.stopPropagation(); togglePlayback('${escHtml(camId)}')"><svg class="icon"><use href="#${icon}"/></svg></button>
+    <span class="playback-time">${time}</span>`;
+}
+
+async function togglePlayback(camId) {
+  const st = playbackState[camId];
+  if (!st) return;
+  const paused = !st.paused;
+  const res = await apiFetch('POST', `/api/playback/${encodeURIComponent(camId)}`, { paused });
+  if (!res.ok) { toast('err', 'No se pudo cambiar la reproducción'); return; }
+  // Se refleja ya; el próximo poll trae el estado real del runner.
+  playbackState[camId] = { ...st, paused, ended: paused ? st.ended : false };
+  applyPlaybackControls();
+}
+
 // ── Cameras ───────────────────────────────────────────────────────────────────
 async function loadCameras() {
   const res = await apiFetch('GET', '/api/cameras');
@@ -1353,6 +1519,7 @@ function renderCameras(cams) {
           <div class="cam-src" title="${escHtml(cam.source)}">${escHtml(src)}</div>
         </div>
         <span class="cam-badge ${cls}">${badge}</span>
+        ${cloudSourceButton(cam.id)}
         <button class="btn-icon"
                 onclick="event.stopPropagation(); removeCamera('${escHtml(cam.id)}')"
                 title="Eliminar">✕</button>
@@ -1456,6 +1623,7 @@ function renderVideoGrid(cams) {
           <span style="font-size:13px">${icon}</span>
           <span class="cam-cell-name">${escHtml(cam.id)}</span>
           <span class="motion-badge" title=""></span>
+          <span class="playback-ctrl"></span>
         </div>
       </div>`;
   }).join('');
@@ -1463,6 +1631,7 @@ function renderVideoGrid(cams) {
   // Para fuentes en vivo, dispara un poll inmediato si el runner está activo
   if (framePoller) pollFrames();
   applyMotionBadges();
+  applyPlaybackControls();
 }
 
 function onCellClick(camId) {
@@ -1567,6 +1736,7 @@ function selectCamera(camId) {
   document.getElementById('feedNoCam').style.display = 'none';
 
   renderMotionBadge(document.getElementById('singleMotionBadge'), motionState[camId]);
+  renderPlaybackControl(document.getElementById('singlePlayback'), camId);
   rebuildSingleEvents(camId);
 }
 
@@ -1886,6 +2056,137 @@ function clearEventView() {
     el.classList.remove('has-events');
   });
 }
+
+// ── App móvil (kit.yaml + estado de la nube, ver GET /api/kit) ─────────────────
+async function pollKit() {
+  const antes = kitInfo ? `${kitInfo.camara_kit}|${kitInfo.fuente_nube}` : null;
+  try {
+    const r = await fetch('/api/kit');
+    if (!r.ok) return;
+    kitInfo = await r.json();
+  } catch { return; }
+  if (`${kitInfo.camara_kit}|${kitInfo.fuente_nube}` !== antes && activeCameras.length) {
+    renderCameras(activeCameras);
+  }
+  const estado = kitEstado(kitInfo);
+  document.getElementById('kitDot').className = 'kit-dot ' + estado.clase;
+  document.getElementById('btnKit').title = estado.titulo;
+  if (document.getElementById('kitModal').classList.contains('open')) renderKit();
+}
+
+function kitEstado(info) {
+  if (!info || !info.configurado) return { clase: '', titulo: 'Sin kit configurado' };
+  const e = info.estado;
+  if (!e || !info.estado_vigente) {
+    return { clase: '', titulo: 'Sin conexión activa con la nube',
+             detalle: 'Iniciá el sistema para que la controladora se conecte con la nube.' };
+  }
+  const enviados = e.enviados ? `${e.enviados} eventos enviados en esta sesión` : '';
+  const hace = e.ultimo_envio_at ? ` · último envío hace ${fmtHace(e.ultimo_envio_at)}` : '';
+  switch (e.estado) {
+    case 'conectado':
+      return { clase: 'ok', titulo: 'Vinculado con la app',
+               detalle: `Las alertas llegan como notificación al celular. ${enviados}${hace}` };
+    case 'esperando_vinculacion':
+      return { clase: 'wait', titulo: 'Esperando la vinculación',
+               detalle: 'Escaneá el QR desde la app y completá los datos del residente. Se confirma acá con el próximo evento que detecte una cámara.' };
+    case 'iniciando':
+      return { clase: 'wait', titulo: 'Conectando con la nube…',
+               detalle: 'Se confirma con el primer evento que detecte una cámara.' };
+    case 'dado_de_baja':
+      return { clase: 'err', titulo: 'El hogar se dio de baja',
+               detalle: 'Escaneá el QR de nuevo desde la app para vincular el kit a un hogar nuevo.' };
+    case 'sin_conexion':
+      return { clase: 'err', titulo: 'Sin conexión con la nube', detalle: e.detalle };
+    case 'api_key_invalida':
+      return { clase: 'err', titulo: 'La nube no reconoce este kit',
+               detalle: 'Revisá la api_key de kit.yaml.' };
+    default:
+      return { clase: 'err', titulo: 'La nube rechazó los eventos', detalle: e.detalle };
+  }
+}
+
+// Botón "App" de cada fuente: cuál se sube a la nube como la cámara del kit (POST /api/kit/fuente).
+function cloudSourceButton(camId) {
+  if (!kitInfo || !kitInfo.configurado || !kitInfo.camara_kit) return '';
+  const on = kitInfo.fuente_nube === camId;
+  const title = on
+    ? 'Esta fuente llega a la app. Clic para desconectarla'
+    : 'Conectar esta fuente a la app (deja de llegar la que estaba conectada)';
+  return `<button class="cam-app ${on ? 'on' : ''}" title="${title}"
+            onclick="event.stopPropagation(); setCloudSource(${on ? 'null' : `'${escHtml(camId)}'`})">APP</button>`;
+}
+
+async function setCloudSource(camId) {
+  const r = await apiFetch('POST', '/api/kit/fuente', { cam_id: camId });
+  if (!r.ok) { toast('err', 'No se pudo cambiar la fuente conectada a la app'); return; }
+  toast('ok', camId ? `"${camId}" conectada a la app` : 'Ninguna fuente conectada a la app');
+  await pollKit();
+}
+
+function fmtHace(ts) {
+  const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.floor(s / 60)} min`;
+  return `${Math.floor(s / 3600)} h`;
+}
+
+function renderKit() {
+  const body = document.getElementById('kitBody');
+  const info = kitInfo;
+  if (!info) { body.innerHTML = '<div class="kit-sub">Cargando…</div>'; return; }
+  if (!info.configurado) {
+    body.innerHTML = `
+      <h2 id="kitTitle">App móvil</h2>
+      <p class="kit-sub" style="margin-top:8px">Esta controladora no tiene un kit configurado.<br>
+      Generá <code>kit.yaml</code> con <code>cloud/alta_kit.py --kit-yaml</code>
+      (ver "Vincular con la app móvil" en runner/README.md).</p>`;
+    return;
+  }
+  const estado = kitEstado(info);
+  const qr = info.qr_svg
+    ? `<div class="kit-qr">${info.qr_svg}</div>`
+    : '<p class="kit-sub" style="margin:16px 0 8px">(falta instalar <code>segno</code> para mostrar el QR)</p>';
+  body.innerHTML = `
+    <h2 id="kitTitle">Vinculá la app móvil</h2>
+    <div class="kit-sub">En la app: <b>Vinculá tu kit</b> → <b>Escanear el código QR</b></div>
+    ${qr}
+    <div class="kit-sub">o ingresá el código a mano</div>
+    <div class="kit-code">${escHtml(info.codigo)}</div>
+    <div class="kit-serie">Kit ${escHtml(info.numero_serie)}</div>
+    <div class="kit-estado">
+      <span class="kit-dot ${estado.clase}"></span>
+      <div>
+        <div class="kit-estado-titulo">${escHtml(estado.titulo)}</div>
+        ${estado.detalle ? `<div class="kit-estado-detalle">${escHtml(estado.detalle)}</div>` : ''}
+      </div>
+    </div>
+    ${info.camara_kit ? `
+    <div class="kit-estado">
+      <span class="kit-dot ${info.fuente_nube ? 'ok' : 'err'}"></span>
+      <div>
+        <div class="kit-estado-titulo">${info.fuente_nube
+          ? `Fuente conectada: ${escHtml(info.fuente_nube)}`
+          : 'Ninguna fuente conectada a la app'}</div>
+        <div class="kit-estado-detalle">Se cambia con el botón APP de cada fuente, en la lista de la izquierda.</div>
+      </div>
+    </div>` : ''}
+    <div class="kit-actions">
+      <a class="btn btn-ghost btn-sm" href="/kit" target="_blank">Etiqueta para imprimir</a>
+    </div>`;
+}
+
+function openKitModal() {
+  document.getElementById('kitModal').classList.add('open');
+  renderKit();
+  pollKit();
+}
+
+function closeKitModal() {
+  document.getElementById('kitModal').classList.remove('open');
+}
+
+document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeKitModal(); });
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
 function toast(type, msg) {

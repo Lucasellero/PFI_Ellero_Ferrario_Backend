@@ -97,3 +97,6 @@ evaluation/output/
 
 # Cache de pytest (ver pytest.ini)
 .pytest_cache/
+
+# Kit de esta controladora (cloud/alta_kit.py --kit-yaml): API key y código de vinculación.
+kit.yaml

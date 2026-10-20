@@ -3,3 +3,4 @@ uvicorn[standard]>=0.29.0
 aiofiles>=23.2.0
 python-multipart>=0.0.9
 pyyaml>=6.0
+segno>=1.6.1   # QR del kit en el panel (GET /api/kit, GET /kit)

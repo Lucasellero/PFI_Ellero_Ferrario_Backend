@@ -1,6 +1,7 @@
 """Abstracción de fuente de video: archivo local (con loop) o stream en vivo (IP/webcam).
 
-VideoFileLoop  — lee un .mp4/.avi y opcionalmente lo reinicia al terminar.
+VideoFileLoop  — lee un .mp4/.avi y opcionalmente lo reinicia al terminar; en modo demo
+                 se puede pausar desde el dashboard (ver playback_state.py).
 LiveStream     — lee desde URL RTSP/HTTP o índice de webcam; reconecta ante errores.
 
 Ambas clases exponen el mismo iterador frames() → Iterator[Frame].
@@ -40,10 +41,14 @@ from typing import Iterator
 import cv2
 import numpy as np
 
+from . import playback_state
+
 logger = logging.getLogger(__name__)
 
 RECONNECT_DELAY_S = 3.0   # espera entre intentos de reconexión en streams en vivo
 LATEST_FRAME_TIMEOUT_S = 1.0  # cuánto esperar por un frame nuevo antes de revisar si hay que cortar
+PLAYBACK_POLL_S = 0.1            # modo demo: cada cuánto se mira si el dashboard pausó/reanudó el video
+PLAYBACK_STATUS_INTERVAL_S = 0.5 # modo demo: cada cuánto se publica la posición del video
 
 
 @dataclass
@@ -55,6 +60,11 @@ class Frame:
     # fuente. Lo necesita `baseline/` para ubicar cada evento en el
     # día/hora real del mundo (ver events/schema.py::wall_clock_ts).
     wall_clock_ts: float = field(default_factory=time.time)
+    # True en el primer frame de un video que arrancó de nuevo desde el principio (loop, o play
+    # después del final en modo demo). timestamp_s no vuelve a 0 (sigue creciendo), así que quien
+    # consume los frames tiene que usar esto, y no un salto atrás del timestamp, para saber que
+    # el contenido no es continuación del anterior (ver CameraWorker._reset_for_restart).
+    restarted: bool = False
 
 
 def _is_live_source(source: str) -> bool:
@@ -70,15 +80,89 @@ def _is_live_source(source: str) -> bool:
 
 class VideoFileLoop:
     """Lee un archivo de video. Si `loop` es True lo reinicia indefinidamente
-    al terminar; si es False, la iteración termina cuando el video se acaba."""
+    al terminar; si es False, la iteración termina cuando el video se acaba.
 
-    def __init__(self, path: str, realtime: bool = False, loop: bool = True):
+    Con `playback_id` (modo demo, ver playback_state.py) el video arranca en
+    pausa, se pausa/reanuda desde el dashboard, y al terminar no corta la iteración: queda en
+    pausa y, cuando se le vuelve a dar play, arranca de nuevo desde el
+    principio (`loop` se ignora). El tiempo en pausa no cuenta para los
+    timestamps (ver `_clock`)."""
+
+    def __init__(
+        self,
+        path: str,
+        realtime: bool = False,
+        loop: bool = True,
+        playback_id: str | None = None,
+        stop_event: threading.Event | None = None,
+    ):
         self._path = path
         self._realtime = realtime
         self._loop = loop
-        self._start = time.monotonic()
+        self._playback_id = playback_id
+        self._stop = stop_event if stop_event is not None else threading.Event()
+        # Segundos acumulados en pausa: se descuentan del reloj para que,
+        # con realtime=True, una pausa no se vea como tiempo transcurrido
+        # (vision/ sumaría inmovilidad mientras el video está quieto, y el
+        # acompasamiento descartaría de golpe todos los frames "atrasados").
+        self._paused_total = 0.0
+        self._last_control_check = float("-inf")
+        self._last_status_write = float("-inf")
+        self._start = self._clock()
+
+    def _clock(self) -> float:
+        return time.monotonic() - self._paused_total
+
+    def _publish_status(self, *, paused: bool, ended: bool, position_s: float,
+                        duration_s: float, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and now - self._last_status_write < PLAYBACK_STATUS_INTERVAL_S:
+            return
+        self._last_status_write = now
+        playback_state.write_status(
+            self._playback_id, paused=paused, ended=ended,
+            position_s=position_s, duration_s=duration_s,
+        )
+
+    def _wait_for_play(self, *, ended: bool, position_s: float, duration_s: float) -> bool:
+        """Bloquea mientras el control diga pausa. Devuelve False si se pidió cortar."""
+        self._publish_status(paused=True, ended=ended, position_s=position_s,
+                             duration_s=duration_s, force=True)
+        paused_at = time.monotonic()
+        while playback_state.read_paused(self._playback_id):
+            if self._stop.wait(PLAYBACK_POLL_S):
+                return False
+        self._paused_total += time.monotonic() - paused_at
+        self._publish_status(paused=False, ended=False, position_s=0.0 if ended else position_s,
+                             duration_s=duration_s, force=True)
+        return True
+
+    def _hold_if_paused(self, position_s: float, duration_s: float) -> bool:
+        """Revisa el control como mucho cada PLAYBACK_POLL_S. Devuelve False si se pidió cortar."""
+        now = time.monotonic()
+        if now - self._last_control_check < PLAYBACK_POLL_S:
+            return True
+        self._last_control_check = now
+        if self._stop.is_set():
+            return False
+        if playback_state.read_paused(self._playback_id):
+            return self._wait_for_play(ended=False, position_s=position_s, duration_s=duration_s)
+        self._publish_status(paused=False, ended=False, position_s=position_s, duration_s=duration_s)
+        return True
 
     def frames(self) -> Iterator[Frame]:
+        if self._playback_id is None:
+            yield from self._frames()
+            return
+        # Arranca en pausa (espera el play del dashboard), sin importar cómo
+        # haya quedado la corrida anterior.
+        playback_state.write_paused(self._playback_id, True)
+        try:
+            yield from self._frames()
+        finally:
+            playback_state.delete_status(self._playback_id)
+
+    def _frames(self) -> Iterator[Frame]:
         loop_count = 0
         # Cuenta total de frames entregados across loops (nunca se resetea,
         # a diferencia de frame_idx abajo) — con realtime=False es la base
@@ -91,14 +175,21 @@ class VideoFileLoop:
 
             fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
             frame_duration = 1.0 / fps
+            duration_s = (cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0) * frame_duration
             loop_count += 1
             if loop_count > 1:
                 logger.debug("Loop #%d en %s", loop_count, self._path)
 
-            playback_start = time.monotonic()
+            playback_start = self._clock()
             frame_idx = 0
+            restarted = loop_count > 1
             try:
                 while True:
+                    if self._playback_id is not None and not self._hold_if_paused(
+                        frame_idx * frame_duration, duration_s
+                    ):
+                        return
+
                     ok, image = cap.read()
                     if not ok:
                         break   # fin del video
@@ -107,13 +198,13 @@ class VideoFileLoop:
                     frame_idx += 1
 
                     if self._realtime:
-                        elapsed = time.monotonic() - playback_start
+                        elapsed = self._clock() - playback_start
                         if elapsed > scheduled_t + frame_duration:
                             continue  # vamos atrasados: descartar este frame para alcanzar el tiempo real
                         wait = scheduled_t - elapsed
                         if wait > 0:
                             time.sleep(wait)
-                        timestamp_s = time.monotonic() - self._start
+                        timestamp_s = self._clock() - self._start
                     else:
                         # Con realtime=True el frame ya está acompasado al
                         # tiempo real transcurrido (sleep arriba), así que
@@ -131,9 +222,18 @@ class VideoFileLoop:
                         timestamp_s = played_frames * frame_duration
 
                     played_frames += 1
-                    yield Frame(image=image, timestamp_s=timestamp_s)
+                    yield Frame(image=image, timestamp_s=timestamp_s, restarted=restarted)
+                    restarted = False
             finally:
                 cap.release()
+
+            if self._playback_id is not None:
+                # Modo demo: queda en pausa al final; con play arranca de nuevo.
+                logger.info("Fin del video en %s — en pausa hasta que se le dé play", self._path)
+                playback_state.write_paused(self._playback_id, True)
+                if not self._wait_for_play(ended=True, position_s=duration_s, duration_s=duration_s):
+                    return
+                continue
 
             if not self._loop:
                 return
@@ -227,11 +327,15 @@ def make_source(
     realtime: bool = False,
     loop: bool = True,
     stop_event: threading.Event | None = None,
+    playback_id: str | None = None,
 ) -> VideoFileLoop | LiveStream:
+    """`playback_id`: id de la cámara en modo demo (play/pausa desde el
+    dashboard, ver playback_state.py). Solo aplica a archivos."""
     if _is_live_source(source):
         return LiveStream(source, realtime=realtime, stop_event=stop_event)
     # Resuelve rutas relativas al root del proyecto
     path = Path(source)
     if not path.is_absolute():
         path = _PROJECT_ROOT / path
-    return VideoFileLoop(str(path), realtime=realtime, loop=loop)
+    return VideoFileLoop(str(path), realtime=realtime, loop=loop,
+                         playback_id=playback_id, stop_event=stop_event)
