@@ -137,7 +137,7 @@ en `main.py` y en cada `@router` (`tags`, `summary`); son solo metadatos de Open
 | `POST /me` | Body `{nombre}` (2-60). Crea el `Familiar`; el email sale del token, no del body. Idempotente: si ya existe lo devuelve. |
 | `POST /me/push-token` | Body `{token}` (token de FCM del celular, RF8). **204**. Pisa el anterior (un token por familiar). **404** si la cuenta todavía no tiene `Familiar` (llamar `POST /me` primero). |
 | `DELETE /me/push-token?token=` | Al cerrar sesión (2026-10-15). Borra el token **solo si es el guardado**: si el familiar ya inició sesión en otro celular, cerrar sesión en el viejo no le corta las push al nuevo. **204** siempre (idempotente), **404** sin `Familiar`, **422** sin `token`. |
-| `POST /kits/vincular` | Body `{codigo}` (del QR; acepta minúsculas, espacios, guiones). Crea el `Hogar` ("Mi hogar"), le asigna kit y cámaras y deja al familiar como `responsable_principal`. Devuelve `{hogar_id, numero_serie, cantidad_camaras, camaras}`. **404** código inexistente · **409** kit de otro hogar · **429** 5 intentos fallidos en 15 min (por familiar, en memoria del proceso). Reintento del mismo familiar = idempotente. |
+| `POST /kits/vincular` | Body `{codigo}` (del QR; acepta minúsculas, espacios, guiones). Crea el `Hogar` ("Mi hogar"), le asigna kit y cámaras y deja al familiar como `responsable_principal`. Devuelve `{hogar_id, numero_serie, cantidad_camaras, camaras}`. **404** código inexistente · **409** kit de otro hogar · **429** 20 intentos fallidos en 15 min (por familiar, en memoria del proceso; eran 5 hasta el 2026-10-19). Reintento del mismo familiar = idempotente. |
 | `GET /hogares/{id}/camaras` | Cámaras del hogar. Cualquier familiar vinculado. |
 | `PATCH /hogares/{id}/camaras/{camara_id}` | Body `{ubicacion}` (2-40). RF10. **409** si repite la de otra cámara del hogar. Solo `responsable_principal`. |
 | `DELETE /hogares/{id}` | Baja del hogar (2026-10-13). **204**. Solo `responsable_principal` (**403** para un `familiar` común o alguien ajeno al hogar). Borra residente, eventos, línea base, vínculos de familiares y el hogar; el kit y sus cámaras quedan sin hogar para volver a vincularse. No se puede deshacer. Ver "Baja del hogar". |
@@ -172,7 +172,12 @@ Dar de alta un kit "de fábrica" (muestra UNA vez el código del QR y la API key
 ```
 py alta_kit.py --camaras 2                    # cámaras cam1, cam2
 py alta_kit.py --camaras 1 --ids webcam       # ids = los `id` de cameras.yaml
+py alta_kit.py --camaras 2 --ids cam1 cam2 --kit-yaml ../kit.yaml --url http://...
 ```
+
+Con `--kit-yaml` no se muestran el código ni la API key: se escriben en ese archivo, que leen
+`runner/` y el panel **App móvil** del dashboard. Ver "Vincular con la app móvil" en
+`runner/README.md`.
 
 El hogar lo crea la vinculación desde la app (`POST /kits/vincular` con el código, después
 `PUT /hogares/{id}/residente`). Recién con residente la Pi puede sincronizar eventos (antes: 409).

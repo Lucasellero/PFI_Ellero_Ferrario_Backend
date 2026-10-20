@@ -2,8 +2,9 @@
 hogar nuevo, con él como `responsable_principal` (RF14). Contrato y decisiones en
 `docs/vinculacion-kit.md` del repo Frontend, sección 5.
 
-Límite de intentos fallidos por familiar (5 en 15 min → 429): con 8 caracteres Crockford el
-código no se adivina, pero evita barridos. Se guarda en memoria del proceso — alcanza para una
+Límite de intentos fallidos por familiar (20 en 15 min → 429): con 8 caracteres Crockford el
+código no se adivina (32⁸ ≈ 10¹² combinaciones), pero evita barridos. Era 5 hasta el
+2026-10-19: se subió porque en las pruebas desde la app era fácil llegar a 5 tipeando mal. Se guarda en memoria del proceso — alcanza para una
 instancia; con varias instancias detrás del balanceador (EB) cada una cuenta por separado.
 """
 from __future__ import annotations
@@ -24,7 +25,7 @@ from .mobile import NOMBRE_HOGAR_PROVISORIO
 
 router = APIRouter(prefix="/kits")
 
-MAX_INTENTOS_FALLIDOS = 5
+MAX_INTENTOS_FALLIDOS = 20
 VENTANA_INTENTOS_S = 15 * 60
 _fallidos: dict[int, deque[float]] = defaultdict(deque)  # familiar_id -> timestamps
 
