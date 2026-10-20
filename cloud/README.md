@@ -536,6 +536,10 @@ runbook abajo — no se volvió a tocar RDS ni Firebase, solo código de `cloud/
   `routers/mobile.py`, `schemas.py`).
 - **v4 (2026-10-08)**: indicadores `cocina`/`movilidad` sumados a `app/rutina.py` (antes solo
   `comida`/`sedentarismo`).
+- **v10 (2026-10-20 02:37 UTC)**: `main` en `0b80b7e`. Límite de vinculación del kit de 5 a
+  20 intentos fallidos en 15 min (`MAX_INTENTOS_FALLIDOS`). Mismo armado del bundle que v9 (48
+  archivos, sin secretos). Verificado: verde, `/health` 200, base OK. El deploy reinicia el
+  contador en memoria (destrabó a quien estaba bloqueado). Volver atrás: `--version-label v9`.
 - **v9 (2026-10-17)**: `main` en `788ee48`, en el entorno nuevo `pfi-lares-prod-2`. Trae
   `DELETE /me/push-token` y `evento_id`/`hogar_id` en la `data` de cada push. Sin migración.
   Bundle armado solo con archivos versionados en git (`git ls-tree` + `git show` del commit,
